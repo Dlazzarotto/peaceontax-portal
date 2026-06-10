@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
-import { getUser, getRole } from '@/lib/supabase'
+import { getUser, getRole } from '@/lib/supabase-server'
 
 export default async function FirmLayout({ children }: { children: React.ReactNode }) {
   const user = await getUser()

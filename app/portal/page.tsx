@@ -1,4 +1,4 @@
-import { getUser, supabaseServer } from '@/lib/supabase'
+import { getUser, supabaseServer } from '@/lib/supabase-server'
 import Link from 'next/link'
 
 export default async function PortalPage() {

@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { supabaseBrowser } from '@/lib/supabase'
+import { supabaseBrowser } from '@/lib/supabase-browser'
 
 export default function InvitePage() {
   const { token } = useParams()

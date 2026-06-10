@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase'
+import { supabaseAdmin } from '@/lib/supabase-browser'
 
 const PORTAL_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://portal.peaceontax.com'
 

@@ -1,4 +1,4 @@
-import { getUser, supabaseServer } from '@/lib/supabase'
+import { getUser, supabaseServer } from '@/lib/supabase-server'
 
 export default async function DashboardPage() {
   const user = await getUser()

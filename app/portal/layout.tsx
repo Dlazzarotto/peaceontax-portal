@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation'
-import { getUser, getRole, supabaseServer } from '@/lib/supabase'
+import { getUser, getRole, supabaseServer } from '@/lib/supabase-server'
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const user = await getUser()
