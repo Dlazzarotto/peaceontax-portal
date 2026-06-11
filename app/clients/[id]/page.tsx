@@ -96,7 +96,7 @@ export default function ClientDetailPage() {
             </div>
           </div>
         </div>
-        <div style={{ display:'flex', gap:8' }}>
+        <div style={{ display:'flex', gap:8 }}>
           <span style={{ fontSize:12, padding:'4px 12px', borderRadius:20, background:client.type==='business'?'#e8f0ff':'#f0e8ff', color:client.type==='business'?'#1a3560':'#5a1a8a', fontWeight:700 }}>
             {client.type==='business'?'Business':'Individual'}
           </span>
