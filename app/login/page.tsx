@@ -27,10 +27,10 @@ export default function LoginPage() {
     <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#2D3278,#1a1f5e)', display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'Georgia,serif' }}>
       <div style={{ background:'#fff', borderRadius:20, padding:'40px 38px', width:390, boxShadow:'0 30px 80px rgba(0,0,0,0.4)' }}>
 
-        {/* Logo */}
-        <div style={{ textAlign:'center', marginBottom:28 }}>
-          <img src="/logo.png" alt="Peace on Tax" style={{ width:220, height:'auto', marginBottom:8 }} />
-          <p style={{ color:'#6a7a9a', fontSize:12, margin:0 }}>Client Portal · Massachusetts</p>
+        {/* Logo — centralizado */}
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', marginBottom:28 }}>
+          <img src="/logo.png" alt="Peace on Tax" style={{ width:220, height:'auto', marginBottom:8, display:'block' }} />
+          <p style={{ color:'#6a7a9a', fontSize:12, margin:0, textAlign:'center' }}>Client Portal · Massachusetts</p>
         </div>
 
         {/* Role selector */}

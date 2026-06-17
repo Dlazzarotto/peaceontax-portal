@@ -9,12 +9,11 @@ export default async function InvitationsLayout({ children }: { children: React.
   return (
     <div style={{ minHeight:'100vh', background:'#f0f4fa' }}>
       <nav style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', padding:'0 24px', height:56, display:'flex', alignItems:'center', gap:20, boxShadow:'0 2px 16px rgba(45,50,120,0.4)' }}>
-        <Link href="/dashboard" style={{ display:'flex', alignItems:'center', gap:8, textDecoration:'none' }}>
-          <div style={{ width:28, height:28, background:'linear-gradient(135deg,#F47B20,#e06010)', borderRadius:7, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13 }}>📒</div>
-          <span style={{ fontFamily:'Georgia,serif', fontWeight:800, fontSize:15, color:'#fff' }}>Peace on Tax</span>
+        <Link href="/dashboard" style={{ display:'flex', alignItems:'center', textDecoration:'none' }}>
+          <img src="/logo.png" alt="Peace on Tax" style={{ height:30, width:'auto' }} />
         </Link>
         {[['Dashboard','/dashboard'],['Clients','/clients'],['Invitations','/invitations']].map(([l,h]) => (
-          <Link key={h} href={h} style={{ textDecoration:'none', fontSize:13, color:'rgba(255,255,255,0.7)' }}>{l}</Link>
+          <Link key={h} href={h} style={{ color:'rgba(255,255,255,0.7)', textDecoration:'none', fontSize:13 }}>{l}</Link>
         ))}
       </nav>
       <main style={{ padding:'24px 28px', maxWidth:1200, margin:'0 auto' }}>{children}</main>
