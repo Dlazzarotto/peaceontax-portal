@@ -6,11 +6,7 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
     const db = supabaseAdmin()
     const { data: doc } = await db.from('documents').select('*').eq('id', params.id).single()
     if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-    const { data: { signedUrl } } = await db.storage
-      .from('client-documents')
-      .createSignedUrl(doc.storage_path, 3600)
-
+    const { data: { signedUrl } } = await db.storage.from('client-documents').createSignedUrl(doc.storage_path, 3600)
     return NextResponse.json({ document: doc, url: signedUrl })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

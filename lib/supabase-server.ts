@@ -4,18 +4,14 @@ import { cookies } from 'next/headers'
 const URL  = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
-// Server Components and Route Handlers only
 export async function supabaseServer() {
   const store = await cookies()
   return createServerClient(URL, ANON, {
     cookies: {
       getAll: () => store.getAll(),
       setAll: (pairs) => {
-        try {
-          pairs.forEach(({ name, value, options }) =>
-            store.set(name, value, options)
-          )
-        } catch {}
+        try { pairs.forEach(({ name, value, options }) => store.set(name, value, options)) }
+        catch {}
       },
     },
   })

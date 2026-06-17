@@ -7,14 +7,14 @@ export async function POST(req: NextRequest) {
     const file = formData.get('file') as File
     const clientId = formData.get('clientId') as string
     const folderPath = formData.get('folderPath') as string
-    if (!file || !clientId || !folderPath) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+    if (!file || !clientId) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
     const db = supabaseAdmin()
-    const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`
-    const storagePath = `${clientId}/${folderPath}/${fileName}`
+    const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`
+    const path = `${clientId}/${folderPath||'general'}/${safeName}`
     const buffer = await file.arrayBuffer()
-    const { error: uploadErr } = await db.storage.from('client-documents').upload(storagePath, buffer, { contentType: file.type })
+    const { error: uploadErr } = await db.storage.from('client-documents').upload(path, buffer, { contentType: file.type })
     if (uploadErr) throw uploadErr
-    const { data: doc } = await db.from('documents').insert({ client_id: clientId, folder_path: folderPath, file_name: file.name, storage_path: storagePath, file_size: file.size, status: 'uploaded' }).select().single()
+    const { data: doc } = await db.from('documents').insert({ client_id: clientId, folder_path: folderPath, file_name: file.name, storage_path: path, file_size: file.size, status: 'uploaded' }).select().single()
     return NextResponse.json({ document: doc })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
