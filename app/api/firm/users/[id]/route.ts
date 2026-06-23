@@ -3,12 +3,19 @@ import { supabaseAdmin } from '@/lib/supabase-browser'
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const { name, role, title, phone, password } = await req.json()
+    const { name, role, title, phone, password, reactivate } = await req.json()
     const db = supabaseAdmin()
-    const updates: any = {
-      user_metadata: { role, full_name: name, title: title||'', phone: phone||'' }
+
+    const updates: any = {}
+
+    // Reactivate — remove ban
+    if (reactivate) {
+      updates.ban_duration = 'none'
+    } else {
+      updates.user_metadata = { role, full_name: name, title: title||'', phone: phone||'' }
+      if (password && password.length >= 8) updates.password = password
     }
-    if (password && password.length >= 8) updates.password = password
+
     const { data, error } = await db.auth.admin.updateUserById(params.id, updates)
     if (error) throw error
     return NextResponse.json({ user: data.user })
