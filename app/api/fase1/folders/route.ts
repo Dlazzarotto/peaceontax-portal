@@ -1,25 +1,20 @@
-// GET  /api/fase1/folders?clientId=...      → árvore completa do cliente
-// POST /api/fase1/folders                   → cria pasta customizada
-//   Body: { clientId, parentId|null, name } (ex.: "Annual Report", "Sales Tax")
-// AUDITAR: usar o server client autenticado do portal (respeita RLS),
-// não o service role, para que cliente só veja as próprias pastas.
+// GET  /api/fase1/folders?clientId=...  → árvore (staff: qualquer; cliente: só a própria)
+// POST /api/fase1/folders               → pasta customizada (mesma regra)
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-function db() {
-  // Substituir pelo helper de sessão do portal (ex.: createServerClient de @supabase/ssr)
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-}
+import { getAuth, canAccessClient, serviceDb } from "@/lib/api-auth";
 
 export async function GET(req: NextRequest) {
+  const auth = await getAuth();
+  if (!auth) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+
   const clientId = req.nextUrl.searchParams.get("clientId");
   if (!clientId) return NextResponse.json({ error: "clientId obrigatório" }, { status: 400 });
+  if (!(await canAccessClient(auth, clientId))) {
+    return NextResponse.json({ error: "Sem acesso a este cliente" }, { status: 403 });
+  }
 
-  const { data, error } = await db()
+  const { data, error } = await serviceDb()
     .from("client_folders")
     .select("id,parent_id,name,folder_type,fiscal_year,bank_account_label,statement_month,is_system")
     .eq("client_id", clientId)
@@ -32,8 +27,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { clientId, parentId, name } = await req.json();
+  const auth = await getAuth();
+  if (!auth) return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
 
+  const { clientId, parentId, name } = await req.json();
   const clean = String(name ?? "").trim();
   if (!clientId || !clean) {
     return NextResponse.json({ error: "clientId e name obrigatórios" }, { status: 400 });
@@ -41,8 +38,11 @@ export async function POST(req: NextRequest) {
   if (clean.length > 80 || /[\/\\<>:"|?*]/.test(clean)) {
     return NextResponse.json({ error: "Nome de pasta inválido" }, { status: 400 });
   }
+  if (!(await canAccessClient(auth, clientId))) {
+    return NextResponse.json({ error: "Sem acesso a este cliente" }, { status: 403 });
+  }
 
-  const { data, error } = await db()
+  const { data, error } = await serviceDb()
     .from("client_folders")
     .insert({
       client_id: clientId,
@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
       name: clean,
       folder_type: "custom",
       is_system: false,
+      created_by: auth.userId,
     })
     .select("id")
     .single();

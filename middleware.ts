@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
-const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite']
+const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar']
+
+// APIs acessíveis sem login (prospects precisam agendar antes de ter conta).
+// Todas as demais /api/ agora exigem sessão válida.
+const API_PUBLIC = ['/api/invite', '/api/agenda/slots', '/api/agenda/bookings']
+
 const FIRM_ONLY = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
 const CLIENT_ONLY = ['/portal', '/organizer', '/messages', '/payments']
 
@@ -10,7 +15,7 @@ export async function middleware(request: NextRequest) {
   const response = NextResponse.next({ request })
 
   if (PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))) return response
-  if (pathname.startsWith('/api/') || pathname.startsWith('/_next/') || pathname.includes('.')) return response
+  if (pathname.startsWith('/_next/') || pathname.includes('.')) return response
 
   const sb = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -25,6 +30,14 @@ export async function middleware(request: NextRequest) {
       },
     }
   )
+
+  // ---- APIs: públicas explícitas passam; o resto exige sessão (401, sem redirect) ----
+  if (pathname.startsWith('/api/')) {
+    if (API_PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))) return response
+    const { data: { user } } = await sb.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+    return response
+  }
 
   const { data: { user } } = await sb.auth.getUser()
   if (!user) {
