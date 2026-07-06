@@ -106,7 +106,7 @@ export default function ClientDocumentsPage() {
   }
 
   const upload = async (file: File, cls: Classification|null, folderId?: string|null) => {
-    if (!cat && !cls) { alert(t.selectCat); return }
+    if (!cat && !cls?.doc_type) { alert(t.selectCat); return }
     setUploading(true)
     const fd = new FormData()
     fd.append('file', file)
@@ -316,3 +316,4 @@ export default function ClientDocumentsPage() {
     </div>
   )
 }
+
