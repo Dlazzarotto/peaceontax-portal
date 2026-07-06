@@ -21,7 +21,7 @@ const MODE_LABEL: Record<string, string> = {
 };
 
 export default function BookingWidget({ meetingTypes, clientId, defaultName = "", defaultEmail = "" }: Props) {
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tz = "America/New_York";
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [type, setType] = useState<MeetingType | null>(null);
   const [date, setDate] = useState("");
@@ -190,3 +190,4 @@ export default function BookingWidget({ meetingTypes, clientId, defaultName = ""
     </div>
   );
 }
+

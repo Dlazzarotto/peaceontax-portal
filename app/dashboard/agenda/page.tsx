@@ -41,7 +41,7 @@ export default function AgendaStaffPage() {
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [loadingBookings, setLoadingBookings] = useState(true);
 
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tz = "America/New_York";
 
   useEffect(() => {
     (async () => {
@@ -169,3 +169,4 @@ export default function AgendaStaffPage() {
     </main>
   );
 }
+
