@@ -8,7 +8,7 @@ import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2026-06-24.dahlia',
+  apiVersion: '2025-05-28.basil',
 })
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
@@ -41,17 +41,14 @@ export async function POST(req: NextRequest) {
 
     // Linha de itens para o Stripe
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = quote.items
-      .filter((item: any) => item.amount > 0)
+      .filter((item: any) => item.amount * (item.qty || 1) > 0)
       .map((item: any) => ({
         price_data: {
           currency: 'usd',
-          product_data: {
-            name: item.label,
-            metadata: { qty: String(item.qty || 1) },
-          },
+          product_data: { name: item.label },
           unit_amount: Math.round(item.amount * 100),
         },
-        quantity: 1,
+        quantity: item.qty || 1,
       }))
 
     // Adiciona item de 1095-A se incluído (sem custo) — omite do Stripe
@@ -62,6 +59,22 @@ export async function POST(req: NextRequest) {
       es: `Declaración de Impuestos ${quote.fiscal_year} — Peace on Tax Corp`,
       zh: `${quote.fiscal_year}年报税 — Peace on Tax Corp`,
       fr: `Déclaration fiscale ${quote.fiscal_year} — Peace on Tax Corp`,
+    }
+
+    // Desconto: soma dos itens negativos vira coupon (Stripe não aceita line item negativo)
+    const discountTotal = quote.items
+      .filter((item: any) => item.amount * (item.qty || 1) < 0)
+      .reduce((s: number, item: any) => s + Math.abs(item.amount * (item.qty || 1)), 0)
+
+    let discounts: Stripe.Checkout.SessionCreateParams.Discount[] | undefined
+    if (discountTotal > 0) {
+      const coupon = await stripe.coupons.create({
+        amount_off: Math.round(discountTotal * 100),
+        currency: 'usd',
+        duration: 'once',
+        name: 'Desconto Peace on Tax',
+      })
+      discounts = [{ coupon: coupon.id }]
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -81,6 +94,7 @@ export async function POST(req: NextRequest) {
       success_url: `${BASE_URL}/portal?payment=success&quoteId=${quoteId}`,
       cancel_url:  `${BASE_URL}/portal?payment=cancelled`,
       locale: lang === 'pt' ? 'pt-BR' : lang === 'es' ? 'es' : lang === 'zh' ? 'zh' : lang === 'fr' ? 'fr' : 'en',
+      ...(discounts ? { discounts } : {}),
     })
 
     // Atualiza cotação com o ID da sessão e muda status para 'sent'
@@ -99,4 +113,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }
-

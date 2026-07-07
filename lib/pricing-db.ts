@@ -33,12 +33,12 @@ export async function calculateQuoteFromDb(p: ClientDocProfile): Promise<QuoteRe
   const base = get(isMarried ? 'base_married' : 'base_single')
   if (!base) return { items: [], total: 0, needsManualReview: true, reviewReason: 'Item base inativo no catálogo — verifique a Tabela de Preços.' }
 
-  items.push({ label: base.label, amount: base.amount })
+  items.push({ label: base.label, amount: base.amount, qty: 1 })
 
   const includedW2s = isMarried ? 4 : 2
   const push = (code: string, qty = 1) => {
     const item = get(code)
-    if (item && qty > 0) items.push({ label: item.label, amount: item.amount * qty, qty: qty > 1 ? qty : undefined })
+    if (item && qty > 0) items.push({ label: item.label, amount: item.amount, qty })
   }
 
   push('extra_w2', Math.max(0, p.w2Count - includedW2s))
@@ -51,6 +51,6 @@ export async function calculateQuoteFromDb(p: ClientDocProfile): Promise<QuoteRe
   if (p.has1099B) push('brokerage_1099b')
   if (p.has1095A) push('health_1095a')
 
-  const total = items.reduce((s, i) => s + i.amount, 0)
+  const total = items.reduce((s, i) => s + i.amount * (i.qty || 1), 0)
   return { items, total, needsManualReview: false }
 }

@@ -41,7 +41,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: 'items obrigatório' }, { status: 400 })
   }
   for (const it of items) {
-    if (!it.label?.trim() || typeof it.amount !== 'number' || it.amount < -50000 || it.amount > 50000) {
+    const q = it.qty ?? 1
+    if (!it.label?.trim() || typeof it.amount !== 'number' || it.amount < -50000 || it.amount > 50000 || q < 1 || q > 999) {
       return NextResponse.json({ error: 'Item inválido (label e amount entre -50000 e 50000)' }, { status: 400 })
     }
   }
@@ -57,7 +58,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ error: 'Cotação paga não pode ser alterada' }, { status: 409 })
   }
 
-  const total = items.reduce((s, i) => s + i.amount, 0)
+  const total = items.reduce((s, i) => s + i.amount * (i.qty || 1), 0)
   if (total < 0) return NextResponse.json({ error: 'Total não pode ser negativo' }, { status: 400 })
 
   const { data: updated, error } = await db.from('quotes')
