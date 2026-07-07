@@ -18,7 +18,7 @@ function adminDb() {
 
 export async function POST(req: NextRequest) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-    apiVersion: '2025-05-28.basil',
+    apiVersion: '2026-06-24.dahlia',
   })
 
   const body = await req.text()
@@ -95,3 +95,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 })
   }
 }
+
