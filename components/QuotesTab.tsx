@@ -108,7 +108,7 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
   const addDiscount = () =>
     setEditItems(items => [...items, { label: 'Desconto', amount: 0 }])
 
-  const editTotal = editItems.reduce((s, i) => s + (Number(i.amount) || 0), 0)
+  const editTotal = editItems.reduce((s, i) => s + (Number(i.amount) || 0) * (Number(i.qty) || 1), 0)
   const hasDiscount = editItems.some(i => Number(i.amount) < 0)
 
   const trySave = () => {
@@ -257,7 +257,7 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                         onChange={e => {
                           if (e.target.value === '__custom__') { updateItem(i, { label: '' }); return }
                           const c = catalog.find(x => x.id === e.target.value)
-                          if (c) updateItem(i, { label: c.label, amount: c.kind === 'discount' ? -Math.abs(c.amount || 25) : c.amount })
+                          if (c) updateItem(i, { label: c.label, amount: c.kind === 'discount' ? -Math.abs(c.amount || 25) : c.amount, qty: item.qty || 1 })
                         }}
                         style={{ ...input, flex:1, minWidth:180, fontWeight:600, color:'#0f2340' }}>
                         {catalog.filter(c => c.active).map(c => (
@@ -270,12 +270,19 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                           onChange={e => updateItem(i, { label: e.target.value })}
                           style={{ ...input, flex:1, minWidth:160 }} />
                       )}
-                      <span style={{ color:'#6a7a9a' }}>$</span>
+                      <span style={{ fontSize:12, color:'#6a7a9a' }}>Qtd</span>
+                      <input type="number" value={item.qty ?? 1} min={1} max={999} step={1}
+                        onChange={e => updateItem(i, { qty: Math.max(1, Number(e.target.value) || 1) })}
+                        style={{ ...input, width:60, textAlign:'center' as const }} />
+                      <span style={{ color:'#6a7a9a' }}>× $</span>
                       <input type="number" value={item.amount} min={-50000} max={50000} step={5}
                         onChange={e => updateItem(i, { amount: Number(e.target.value) })}
                         style={{ ...input, width:90, textAlign:'right' as const,
                           color: Number(item.amount) < 0 ? '#b02020' : undefined,
                           fontWeight: Number(item.amount) < 0 ? 700 : undefined }} />
+                      <span style={{ fontSize:13, fontWeight:700, color:'#0f2340', minWidth:76, textAlign:'right' }}>
+                        = ${((Number(item.amount)||0) * (Number(item.qty)||1)).toFixed(2)}
+                      </span>
                       <button onClick={() => removeItem(i)} aria-label="Remover item"
                         style={{ ...btn('#b02020'), padding:'6px 10px' }}>×</button>
                     </div>
@@ -288,7 +295,7 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                         <option key={c.id} value={c.id}>{c.label} — ${c.amount.toFixed(2)}</option>
                       ))}
                     </select>
-                    <button onClick={() => setEditItems(items => [...items, { label: 'Desconto', amount: -25 }])}
+                    <button onClick={() => setEditItems(items => [...items, { label: 'Desconto', amount: -25, qty: 1 }])}
                       style={{ ...btn('#fff'), color:'#b02020', border:'1.5px solid #b02020' }}>
                       🏷️ Desconto (exige PIN)
                     </button>
@@ -315,8 +322,8 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                   {q.items.map((item, i) => (
                     <div key={i} style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'#3a4a5a',
                       padding:'4px 0', borderBottom: i < q.items.length-1 ? '1px solid #e2e8f4' : 'none' }}>
-                      <span>{item.label}{item.qty && item.qty > 1 ? ` ×${item.qty}` : ''}</span>
-                      <span style={{ fontWeight:600 }}>{item.amount === 0 ? 'Incluído' : `$${item.amount.toFixed(2)}`}</span>
+                      <span>{item.label}{item.qty && item.qty > 1 ? ` — ${item.qty} × $${item.amount.toFixed(2)}` : ''}</span>
+                      <span style={{ fontWeight:600 }}>{item.amount === 0 ? 'Incluído' : `$${(item.amount * (item.qty || 1)).toFixed(2)}`}</span>
                     </div>
                   ))}
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:15, fontWeight:800,
@@ -331,6 +338,10 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                 <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                   {(q.status === 'draft' || q.status === 'sent') && (
                     <>
+                      <button onClick={() => window.open(`/api/quotes/${q.id}/document`, '_blank')}
+                        style={{ ...btn('#fff'), color:'#2D3278', border:'1.5px solid #2D3278' }}>
+                        📄 Estimate
+                      </button>
                       <button onClick={() => startEdit(q)} style={{ ...btn('#fff'), color:'#2D3278', border:'1.5px solid #2D3278' }}>
                         ✏️ Editar
                       </button>
@@ -342,6 +353,12 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                         🚫 Cancelar cotação
                       </button>
                     </>
+                  )}
+                  {q.status === 'paid' && (
+                    <button onClick={() => window.open(`/api/quotes/${q.id}/document`, '_blank')}
+                      style={{ ...btn('#1a6b4a') }}>
+                      📄 Invoice
+                    </button>
                   )}
                   {q.status === 'paid' && (
                     <span style={{ fontSize:13, color:'#1a6b4a', fontWeight:600 }}>

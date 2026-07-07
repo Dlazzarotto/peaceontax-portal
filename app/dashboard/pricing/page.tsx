@@ -19,7 +19,7 @@ export default function PricingPage() {
   const [loading, setLoading] = useState(true)
   const [denied,  setDenied]  = useState(false)
   const [msg,     setMsg]     = useState('')
-  const [editing, setEditing] = useState<Record<string, { label: string; amount: string }>>({})
+  const [editing, setEditing] = useState<Record<string, { label: string; amount: string; kind: string }>>({})
 
   // Novo item
   const [newLabel,  setNewLabel]  = useState('')
@@ -38,7 +38,7 @@ export default function PricingPage() {
   useEffect(() => { load() }, [])
 
   const startEdit = (it: Item) =>
-    setEditing(e => ({ ...e, [it.id]: { label: it.label, amount: String(it.amount) } }))
+    setEditing(e => ({ ...e, [it.id]: { label: it.label, amount: String(it.amount), kind: it.kind } }))
 
   const save = async (id: string) => {
     const e = editing[id]
@@ -46,7 +46,7 @@ export default function PricingPage() {
     setMsg('')
     const r = await fetch('/api/pricing', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, label: e.label, amount: Number(e.amount) }),
+      body: JSON.stringify({ id, label: e.label, amount: Number(e.amount), kind: e.kind }),
     })
     const d = await r.json()
     if (d.ok) {
@@ -152,7 +152,17 @@ export default function PricingPage() {
                         </span>
                       )}
                     </td>
-                    <td style={{ padding:'10px 14px', fontSize:12, color:'#6a7a9a' }}>{KIND_LABEL[it.kind] || it.kind}</td>
+                    <td style={{ padding:'10px 14px', fontSize:12, color:'#6a7a9a' }}>
+                      {ed && !['base_single','base_married'].includes(it.kind) ? (
+                        <select value={ed.kind}
+                          onChange={e => setEditing(x => ({ ...x, [it.id]: { ...ed, kind: e.target.value } }))}
+                          style={{ ...input, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                          <option value="fixed">Fixo</option>
+                          <option value="per_unit">Por unidade</option>
+                          <option value="discount">Desconto</option>
+                        </select>
+                      ) : (KIND_LABEL[it.kind] || it.kind)}
+                    </td>
                     <td style={{ padding:'10px 14px' }}>
                       {ed ? (
                         <input type="number" value={ed.amount} min={0} step={5}
