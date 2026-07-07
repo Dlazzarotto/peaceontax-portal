@@ -1,6 +1,7 @@
 'use client'
 import QuotesTab from '@/components/QuotesTab'
 import ProfileEditor from '@/components/ProfileEditor'
+import PlansTab from '@/components/PlansTab'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { getCategories, getCategoryIcon, TAX_YEARS } from '@/lib/documentCategories'
@@ -15,7 +16,7 @@ export default function ClientDetailPage() {
   const [docs,      setDocs]      = useState<any[]>([])
   const [messages,  setMessages]  = useState<any[]>([])
   const [loading,   setLoading]   = useState(true)
-  const [tab,       setTab]       = useState<'documents'|'messages'|'profile'|'quotes'>('documents')
+  const [tab,       setTab]       = useState<'documents'|'messages'|'profile'|'quotes'|'plans'>('documents')
   const [year,      setYear]      = useState(new Date().getFullYear())
   const [cat,       setCat]       = useState<string|null>(null)
   const [uploading, setUploading] = useState(false)
@@ -116,6 +117,7 @@ export default function ClientDetailPage() {
           ['documents', `📁 Documents (${docs.length})`],
           ['messages',  `💬 Messages (${messages.length})`],
           ['quotes',    '💰 Quotes'],
+          ['plans',     '📆 Planos'],
           ['profile',   '👤 Profile'],
         ] as const).map(([t, label]) => (
           <button key={t} onClick={() => setTab(t)}
@@ -246,6 +248,11 @@ export default function ClientDetailPage() {
       {/* QUOTES TAB */}
       {tab==='quotes' && (
         <QuotesTab clientId={id as string} clientName={client.name} clientType={client.type} />
+      )}
+
+      {/* PLANS TAB */}
+      {tab==='plans' && (
+        <PlansTab clientId={id as string} clientName={client.name} />
       )}
 
       {/* PROFILE TAB — editável pela equipe */}
