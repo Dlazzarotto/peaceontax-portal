@@ -96,11 +96,21 @@ export default function ChatWidget({ clientId, clientName, lang }: Props) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
-  // Formata markdown básico (bold, links)
+  // Formata markdown básico: bold, itálico, links clicáveis, quebras de linha
   function formatContent(text: string): string {
     return text
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\*(.*?)\*/g,   '<em>$1</em>')
+      .replace(/\*(.*?)\*/g, '<em>$1</em>')
+      // Links markdown [texto](url) → <a> clicável
+      .replace(
+        /\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:#F47B20;font-weight:700;text-decoration:underline;">$1</a>'
+      )
+      // URLs soltas (sem markdown)
+      .replace(
+        /(?<!\])\(?(https?:\/\/[^\s\)]+)\)?(?!\))/g,
+        '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:#F47B20;font-weight:700;text-decoration:underline;">$1</a>'
+      )
       .replace(/\n/g, '<br/>')
   }
 
