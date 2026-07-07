@@ -248,22 +248,52 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
               {/* ---- Modo edição ---- */}
               {editingId === q.id ? (
                 <div style={{ background:'#f8faff', borderRadius:10, padding:'12px 14px', marginBottom:12 }}>
-                  {editItems.map((item, i) => (
-                    <div key={i} style={{ display:'flex', gap:8, marginBottom:8, alignItems:'center' }}>
-                      <input value={item.label} placeholder="Descrição do serviço"
-                        onChange={e => updateItem(i, { label: e.target.value })}
-                        style={{ ...input, flex:1 }} />
+                  {editItems.map((item, i) => {
+                    const matched = catalog.find(c => c.label === item.label)
+                    const isCustom = !matched
+                    return (
+                    <div key={i} style={{ display:'flex', gap:8, marginBottom:8, alignItems:'center', flexWrap:'wrap' }}>
+                      <select value={matched?.id ?? '__custom__'}
+                        onChange={e => {
+                          if (e.target.value === '__custom__') { updateItem(i, { label: '' }); return }
+                          const c = catalog.find(x => x.id === e.target.value)
+                          if (c) updateItem(i, { label: c.label, amount: c.kind === 'discount' ? -Math.abs(c.amount || 25) : c.amount })
+                        }}
+                        style={{ ...input, flex:1, minWidth:180, fontWeight:600, color:'#0f2340' }}>
+                        {catalog.filter(c => c.active).map(c => (
+                          <option key={c.id} value={c.id}>{c.kind === 'discount' ? '🏷️ ' : ''}{c.label}</option>
+                        ))}
+                        <option value="__custom__">✏️ Item personalizado…</option>
+                      </select>
+                      {isCustom && (
+                        <input value={item.label} placeholder="Descreva o serviço"
+                          onChange={e => updateItem(i, { label: e.target.value })}
+                          style={{ ...input, flex:1, minWidth:160 }} />
+                      )}
                       <span style={{ color:'#6a7a9a' }}>$</span>
-                      <input type="number" value={item.amount} min={0} step={5}
+                      <input type="number" value={item.amount} min={-50000} max={50000} step={5}
                         onChange={e => updateItem(i, { amount: Number(e.target.value) })}
-                        style={{ ...input, width:90, textAlign:'right' as const }} />
+                        style={{ ...input, width:90, textAlign:'right' as const,
+                          color: Number(item.amount) < 0 ? '#b02020' : undefined,
+                          fontWeight: Number(item.amount) < 0 ? 700 : undefined }} />
                       <button onClick={() => removeItem(i)} aria-label="Remover item"
                         style={{ ...btn('#b02020'), padding:'6px 10px' }}>×</button>
                     </div>
-                  ))}
-                  <div style={{ display:'flex', gap:8, marginTop:10 }}>
+                  )})}
+                  <div style={{ display:'flex', gap:8, marginTop:10, flexWrap:'wrap', alignItems:'center' }}>
+                    <select defaultValue="" onChange={e => { if (e.target.value) { addFromCatalog(e.target.value); e.target.value = '' } }}
+                      style={{ padding:'8px 10px', border:'1.5px solid #2D3278', borderRadius:8, fontSize:13, fontWeight:700, color:'#2D3278', outline:'none', cursor:'pointer', background:'#fff' }}>
+                      <option value="" disabled>📋 Adicionar do catálogo…</option>
+                      {catalog.filter(c => c.active && c.kind !== 'discount').map(c => (
+                        <option key={c.id} value={c.id}>{c.label} — ${c.amount.toFixed(2)}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => setEditItems(items => [...items, { label: 'Desconto', amount: -25 }])}
+                      style={{ ...btn('#fff'), color:'#b02020', border:'1.5px solid #b02020' }}>
+                      🏷️ Desconto (exige PIN)
+                    </button>
                     <button onClick={addItem} style={{ ...btn('#fff'), color:'#2D3278', border:'1.5px solid #2D3278' }}>
-                      + Adicionar item
+                      + Item avulso
                     </button>
                     <button onClick={trySave} disabled={saving} style={btn('#1a6b4a', saving)}>
                       {saving ? 'Salvando…' : '✓ Salvar alterações'}
@@ -273,6 +303,11 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                       Cancelar edição
                     </button>
                   </div>
+                  {hasDiscount && (
+                    <p style={{ fontSize:12, color:'#b02020', fontWeight:600, marginTop:8 }}>
+                      🏷️ Esta cotação contém desconto — salvar exigirá PIN de manager/owner + motivo.
+                    </p>
+                  )}
                 </div>
               ) : (
                 /* ---- Visualização ---- */
