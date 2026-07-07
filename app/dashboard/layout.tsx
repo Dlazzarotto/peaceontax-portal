@@ -20,6 +20,7 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
           ['Invitations','/invitations'],
           ['Agenda',     '/dashboard/agenda'],
           ['Settings',   '/settings/users'],
+          ['Conta',      '/dashboard/account'],
         ].map(([l,h]) => (
           <Link key={h} href={h} style={{ padding:'8px 12px', borderRadius:8, textDecoration:'none', fontSize:13, color:'rgba(255,255,255,0.7)' }}>{l}</Link>
         ))}
@@ -34,3 +35,4 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
     </div>
   )
 }
+
