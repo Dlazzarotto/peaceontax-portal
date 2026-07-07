@@ -41,14 +41,18 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
   const isBusiness = clientType === 'business'
   const needsApproval = level === 'junior'
 
+  const [catalog, setCatalog] = useState<{ id:string; label:string; amount:number; kind:string; active:boolean }[]>([])
+
   const load = async () => {
     setLoading(true)
-    const [q, p] = await Promise.all([
+    const [q, p, c] = await Promise.all([
       fetch(`/api/quotes?clientId=${clientId}`).then(r => r.json()),
       fetch('/api/quotes/perms').then(r => r.json()),
+      fetch('/api/pricing').then(r => r.json()).catch(() => ({ items: [] })),
     ])
     setQuotes(q.quotes || [])
     setLevel(p.level || 'junior')
+    setCatalog((c.items || []).filter((i: any) => i.active))
     setLoading(false)
   }
 
@@ -94,13 +98,26 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
   const addItem = () => setEditItems(items => [...items, { label: '', amount: 0 }])
   const removeItem = (i: number) => setEditItems(items => items.filter((_, idx) => idx !== i))
 
+  const addFromCatalog = (catalogId: string) => {
+    const c = catalog.find(x => x.id === catalogId)
+    if (!c) return
+    const amount = c.kind === 'discount' ? -Math.abs(Number(c.amount) || 0) : Number(c.amount)
+    setEditItems(items => [...items, { label: c.label, amount }])
+  }
+
+  const addDiscount = () =>
+    setEditItems(items => [...items, { label: 'Desconto', amount: 0 }])
+
   const editTotal = editItems.reduce((s, i) => s + (Number(i.amount) || 0), 0)
+  const hasDiscount = editItems.some(i => Number(i.amount) < 0)
 
   const trySave = () => {
     for (const it of editItems) {
       if (!it.label.trim()) { setMsg('Todos os itens precisam de descrição.'); return }
     }
-    if (needsApproval) {
+    if (editTotal < 0) { setMsg('O total não pode ser negativo.'); return }
+    // Desconto: PIN + motivo SEMPRE, para qualquer nível (regra do owner)
+    if (needsApproval || hasDiscount) {
       setModalAction({ type:'save', quoteId: editingId! })
       setPin(''); setReason('')
     } else {

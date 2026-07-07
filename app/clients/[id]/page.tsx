@@ -1,5 +1,6 @@
 'use client'
 import QuotesTab from '@/components/QuotesTab'
+import ProfileEditor from '@/components/ProfileEditor'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { getCategories, getCategoryIcon, TAX_YEARS } from '@/lib/documentCategories'
@@ -87,7 +88,12 @@ export default function ClientDetailPage() {
             {client.type==='business' ? '🏢' : '👤'}
           </div>
           <div>
-            <h1 style={{ fontFamily:'Georgia,serif', fontSize:22, color:'#0f2340', margin:'0 0 3px' }}>{client.name}</h1>
+            <h1 style={{ fontFamily:'Georgia,serif', fontSize:22, color:'#0f2340', margin:'0 0 3px', display:'flex', alignItems:'center', gap:10 }}>
+              {client.name}
+              {client.active === false && (
+                <span style={{ fontSize:11, padding:'3px 10px', borderRadius:20, fontWeight:700, background:'#fee2e2', color:'#b02020' }}>INATIVO</span>
+              )}
+            </h1>
             <div style={{ fontSize:13, color:'#6a7a9a' }}>{client.email}{client.phone ? ` · ${client.phone}` : ''}</div>
           </div>
         </div>
@@ -239,45 +245,12 @@ export default function ClientDetailPage() {
 
       {/* QUOTES TAB */}
       {tab==='quotes' && (
-        <QuotesTab clientId={id as string} clientName={client.name} />
+        <QuotesTab clientId={id as string} clientName={client.name} clientType={client.type} />
       )}
 
-      {/* PROFILE TAB */}
+      {/* PROFILE TAB — editável pela equipe */}
       {tab==='profile' && (
-        <div style={{ background:'#fff', borderRadius:14, padding:24, border:'1px solid #e2e8f4', maxWidth:640 }}>
-          <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', marginBottom:20 }}>Client Profile</h2>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-            {[
-              ['Name',     client.name],
-              ['Email',    client.email],
-              ['Phone',    client.phone||'—'],
-              ['Type',     client.type],
-              ['Assignee', client.assignee||'—'],
-              ['Stage',    client.stage],
-              ['Language', client.language||'en'],
-              ...(client.type==='business'?[
-                ['Business Name', client.business_name||'—'],
-                ['EIN',           client.ein||'—'],
-                ['Entity Type',   client.business_type||'—'],
-                ['Industry',      client.industry||'—'],
-              ]:[
-                ['Filing Status', client.filing_status||'—'],
-              ]),
-              ['Address', [client.address_line1,client.city,client.state,client.zip].filter(Boolean).join(', ')||'—'],
-            ].map(([label,value]) => (
-              <div key={label}>
-                <div style={{ fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, letterSpacing:0.5 }}>{label}</div>
-                <div style={{ fontSize:14, color:'#1a2a3a', marginTop:3 }}>{value}</div>
-              </div>
-            ))}
-          </div>
-          {client.notes && (
-            <div style={{ marginTop:20, padding:14, background:'#f8faff', borderRadius:10, border:'1px solid #e2e8f4' }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, letterSpacing:0.5, marginBottom:6 }}>Notes</div>
-              <div style={{ fontSize:13, color:'#3a4a5a', lineHeight:1.6 }}>{client.notes}</div>
-            </div>
-          )}
-        </div>
+        <ProfileEditor client={client} onSaved={load} />
       )}
     </div>
   )

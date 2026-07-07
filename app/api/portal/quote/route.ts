@@ -4,7 +4,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
-import { calculateQuote, type ClientDocProfile } from '@/lib/pricing'
+import { type ClientDocProfile } from '@/lib/pricing'
+import { calculateQuoteFromDb } from '@/lib/pricing-db'
 import { auditQuote } from '@/lib/staff-perms'
 
 export async function POST(req: NextRequest) {
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
       hasCryptoNoReport: false,
     }
 
-    const result = calculateQuote(profile)
+    const result = await calculateQuoteFromDb(profile)
 
     let savedQuoteId: string | null = null
     if (!result.needsManualReview && auth.isStaff) {
