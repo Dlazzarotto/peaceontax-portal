@@ -144,6 +144,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   body { font-family: Georgia, 'Times New Roman', serif; color:#1a2a3a; background:#f0f4fa; padding:24px; font-size:18px; }
   .sheet { max-width:820px; margin:0 auto; background:#fff; padding:48px 56px; border-radius:8px; box-shadow:0 2px 24px rgba(45,50,120,0.12); }
   .top { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:4px solid #2D3278; padding-bottom:24px; margin-bottom:28px; }
+  .firm img { height:56px; width:auto; margin-bottom:10px; display:block; }
   .firm h1 { font-size:26px; color:#2D3278; margin-bottom:6px; }
   .firm p { font-size:14px; color:#5a6a7a; line-height:1.6; }
   .docmeta { text-align:right; }
@@ -183,6 +184,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 <div class="sheet">
   <div class="top">
     <div class="firm">
+      <img src="/logo.png" alt="${FIRM.name}" onerror="this.style.display='none'">
       <h1>${FIRM.name}</h1>
       <p>${FIRM.address}<br>${FIRM.phone} · ${FIRM.email}<br>${FIRM.site}</p>
     </div>
