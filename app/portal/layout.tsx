@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
-import { getUser, getRole, supabaseServer } from '@/lib/supabase-server'
+import { getUser, getRole } from '@/lib/supabase-server'
+import { createClient } from '@supabase/supabase-js'
 import PortalNav from '@/components/PortalNav'
 import ChatWidget from '@/components/portal/ChatWidget'
 
@@ -8,8 +9,12 @@ export default async function PortalLayout({ children }: { children: React.React
   if (!user) redirect('/login')
   if (getRole(user) !== 'client') redirect('/dashboard')
 
-  const sb = await supabaseServer()
-  const { data: client } = await sb
+  // Service role para buscar dados do cliente (contorna RLS da tabela clients)
+  const sbAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY!
+  )
+  const { data: client } = await sbAdmin
     .from('clients')
     .select('id, name, type, language')
     .eq('user_id', user.id)
@@ -27,7 +32,6 @@ export default async function PortalLayout({ children }: { children: React.React
         {children}
       </main>
 
-      {/* Chat flutuante — só renderiza se tivermos o clientId */}
       {clientId && (
         <ChatWidget
           clientId={clientId}
