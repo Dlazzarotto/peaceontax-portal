@@ -3,11 +3,15 @@ import { createServerClient } from '@supabase/ssr'
 
 const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar']
 
-// APIs acessíveis sem login (prospects precisam agendar antes de ter conta).
-// Todas as demais /api/ agora exigem sessão válida.
-const API_PUBLIC = ['/api/invite', '/api/agenda/slots', '/api/agenda/bookings']
+// APIs públicas: sem sessão necessária
+const API_PUBLIC = [
+  '/api/invite',
+  '/api/agenda/slots',
+  '/api/agenda/bookings',
+  '/api/stripe/webhook',   // Stripe chama diretamente — sem sessão de usuário
+]
 
-const FIRM_ONLY = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
+const FIRM_ONLY   = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
 const CLIENT_ONLY = ['/portal', '/organizer', '/messages', '/payments']
 
 export async function middleware(request: NextRequest) {
@@ -31,7 +35,7 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // ---- APIs: públicas explícitas passam; o resto exige sessão (401, sem redirect) ----
+  // APIs: públicas explícitas passam; demais exigem sessão
   if (pathname.startsWith('/api/')) {
     if (API_PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))) return response
     const { data: { user } } = await sb.auth.getUser()
