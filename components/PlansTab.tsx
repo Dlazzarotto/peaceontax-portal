@@ -18,11 +18,11 @@ interface Props { clientId: string; clientName: string }
 
 const STATUS_LABEL: Record<string,string> = {
   draft:'Rascunho', awaiting_entry:'Aguardando entrada', awaiting_setup:'Aguardando assinatura',
-  active:'Ativo ✓', payment_failed:'⚠️ Débito falhou', completed:'Concluído ✓', cancelled:'Cancelado',
+  active:'Ativo ✓', paused:'⏸️ Pausado', payment_failed:'⚠️ Débito falhou', completed:'Concluído ✓', cancelled:'Cancelado',
 }
 const STATUS_COLOR: Record<string,string> = {
   draft:'#6a7a9a', awaiting_entry:'#c06010', awaiting_setup:'#c06010',
-  active:'#1a6b4a', payment_failed:'#b02020', completed:'#2D3278', cancelled:'#9aaab0',
+  active:'#1a6b4a', paused:'#c06010', payment_failed:'#b02020', completed:'#2D3278', cancelled:'#9aaab0',
 }
 const FREQ_LABEL: Record<string,string> = { weekly:'Semanal', biweekly:'Quinzenal', monthly:'Mensal' }
 
@@ -46,6 +46,10 @@ export default function PlansTab({ clientId, clientName }: Props) {
   // Cancelamento
   const [cancelId, setCancelId] = useState<string|null>(null)
   const [cancelReason, setCancelReason] = useState('')
+
+  // Pausa/retomada (só bookkeeping)
+  const [pauseTarget, setPauseTarget] = useState<{ id:string; action:'pause'|'resume' }|null>(null)
+  const [pauseReason, setPauseReason] = useState('')
 
   const canManage = level === 'owner' || level === 'manager'
 
@@ -100,6 +104,19 @@ export default function PlansTab({ clientId, clientName }: Props) {
     })
     const d = await r.json()
     if (d.url) { window.open(d.url, '_blank'); setMsg('✓ Link aberto em nova aba — copie e envie ao cliente.'); load() }
+    else setMsg(`Erro: ${d.error}`)
+    setBusy(false)
+  }
+
+  const doPause = async () => {
+    if (!pauseReason.trim()) { setMsg('Motivo é obrigatório.'); return }
+    setBusy(true)
+    const r = await fetch('/api/plans/pause', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ planId: pauseTarget!.id, action: pauseTarget!.action, reason: pauseReason }),
+    })
+    const d = await r.json()
+    if (d.ok) { setMsg(pauseTarget!.action === 'pause' ? '✓ Contrato pausado — cobranças suspensas.' : '✓ Contrato retomado — cobranças reativadas.'); setPauseTarget(null); setPauseReason(''); load() }
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }
@@ -278,6 +295,16 @@ export default function PlansTab({ clientId, clientName }: Props) {
                       {p.kind === 'installment' ? '💳 Link da entrada' : '💳 Link de assinatura'}
                     </button>
                   )}
+                  {p.kind === 'bookkeeping' && ['active','payment_failed'].includes(p.status) && (
+                    <button onClick={() => { setPauseTarget({ id: p.id, action:'pause' }); setPauseReason('') }} style={outlineBtn('#c06010')}>
+                      ⏸️ Pausar
+                    </button>
+                  )}
+                  {p.kind === 'bookkeeping' && p.status === 'paused' && (
+                    <button onClick={() => { setPauseTarget({ id: p.id, action:'resume' }); setPauseReason('') }} style={btn('#1a6b4a')}>
+                      ▶️ Retomar
+                    </button>
+                  )}
                   {!['completed','cancelled'].includes(p.status) && (
                     <button onClick={() => { setCancelId(p.id); setCancelReason('') }} style={outlineBtn('#b02020')}>
                       🚫 Cancelar plano
@@ -290,6 +317,33 @@ export default function PlansTab({ clientId, clientName }: Props) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal pausa/retomada */}
+      {pauseTarget && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:400, maxWidth:'90vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>
+              {pauseTarget.action === 'pause' ? '⏸️ Pausar contrato' : '▶️ Retomar contrato'}
+            </h3>
+            <p style={{ fontSize:13, color:'#6a7a9a', margin:'0 0 14px' }}>
+              {pauseTarget.action === 'pause'
+                ? 'As cobranças do dia 5 ficam suspensas até retomar. O contrato é preservado.'
+                : 'As cobranças mensais do dia 5 voltam a ocorrer normalmente.'}
+            </p>
+            <label style={label}>Motivo *</label>
+            <textarea value={pauseReason} onChange={e => setPauseReason(e.target.value)} rows={2}
+              style={{ ...input, width:'100%', resize:'vertical' as const, marginBottom:12 }} />
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setPauseTarget(null)} style={outlineBtn('#6a7a9a')}>Voltar</button>
+              <button onClick={doPause} disabled={busy}
+                style={btn(pauseTarget.action === 'pause' ? '#c06010' : '#1a6b4a', busy)}>
+                {busy ? 'Processando…' : 'Confirmar'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
