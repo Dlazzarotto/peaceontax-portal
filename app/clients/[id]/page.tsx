@@ -1,4 +1,5 @@
 'use client'
+import QuotesTab from '@/components/QuotesTab'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { getCategories, getCategoryIcon, TAX_YEARS } from '@/lib/documentCategories'
@@ -13,19 +14,20 @@ export default function ClientDetailPage() {
   const [docs,      setDocs]      = useState<any[]>([])
   const [messages,  setMessages]  = useState<any[]>([])
   const [loading,   setLoading]   = useState(true)
-  const [tab,       setTab]       = useState<'documents'|'messages'|'profile'>('documents')
+  const [tab,       setTab]       = useState<'documents'|'messages'|'profile'|'quotes'>('documents')
   const [year,      setYear]      = useState(new Date().getFullYear())
   const [cat,       setCat]       = useState<string|null>(null)
   const [uploading, setUploading] = useState(false)
   const [newMsg,    setNewMsg]    = useState('')
   const [sending,   setSending]   = useState(false)
-  const [saving,    setSaving]    = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const msgRef  = useRef<HTMLDivElement>(null)
 
   const load = () => {
     setLoading(true)
-    fetch(`/api/clients/${id}`).then(r => r.json()).then(d => { setClient(d.client); setDocs(d.documents||[]); setMessages(d.messages||[]); setLoading(false) })
+    fetch(`/api/clients/${id}`).then(r => r.json()).then(d => {
+      setClient(d.client); setDocs(d.documents||[]); setMessages(d.messages||[]); setLoading(false)
+    })
   }
 
   useEffect(() => { load() }, [id])
@@ -40,7 +42,8 @@ export default function ClientDetailPage() {
     if (!cat) { alert('Select a category first'); return }
     setUploading(true)
     const fd = new FormData()
-    fd.append('file', file); fd.append('clientId', id as string); fd.append('taxYear', String(year)); fd.append('category', cat)
+    fd.append('file', file); fd.append('clientId', id as string)
+    fd.append('taxYear', String(year)); fd.append('category', cat)
     const res = await fetch('/api/documents', { method:'POST', body:fd })
     const d = await res.json()
     setUploading(false)
@@ -81,11 +84,11 @@ export default function ClientDetailPage() {
         <button onClick={() => router.push('/clients')} style={{ background:'#f0f4fa', border:'1px solid #e2e8f4', color:'#6a7a9a', padding:'7px 14px', borderRadius:8, cursor:'pointer', fontSize:13 }}>← Back</button>
         <div style={{ flex:1, display:'flex', alignItems:'center', gap:14 }}>
           <div style={{ width:46, height:46, borderRadius:12, background:client.type==='business'?'#2D327815':'#5a1a8a15', display:'flex', alignItems:'center', justifyContent:'center', fontSize:24 }}>
-            {client.type==='business'?'🏢':'👤'}
+            {client.type==='business' ? '🏢' : '👤'}
           </div>
           <div>
             <h1 style={{ fontFamily:'Georgia,serif', fontSize:22, color:'#0f2340', margin:'0 0 3px' }}>{client.name}</h1>
-            <div style={{ fontSize:13, color:'#6a7a9a' }}>{client.email}{client.phone?` · ${client.phone}`:''}</div>
+            <div style={{ fontSize:13, color:'#6a7a9a' }}>{client.email}{client.phone ? ` · ${client.phone}` : ''}</div>
           </div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
@@ -103,9 +106,17 @@ export default function ClientDetailPage() {
 
       {/* Tabs */}
       <div style={{ display:'flex', gap:4, marginBottom:20, borderBottom:'2px solid #e2e8f4' }}>
-        {(['documents','messages','profile'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{ padding:'10px 20px', border:'none', background:'none', cursor:'pointer', fontSize:14, fontWeight:tab===t?700:400, color:tab===t?'#2D3278':'#6a7a9a', borderBottom:tab===t?'2px solid #2D3278':'2px solid transparent', marginBottom:-2, textTransform:'capitalize' as const }}>
-            {t==='documents'?`📁 Documents (${docs.length})`:t==='messages'?`💬 Messages (${messages.length})`:'👤 Profile'}
+        {([
+          ['documents', `📁 Documents (${docs.length})`],
+          ['messages',  `💬 Messages (${messages.length})`],
+          ['quotes',    '💰 Quotes'],
+          ['profile',   '👤 Profile'],
+        ] as const).map(([t, label]) => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{ padding:'10px 20px', border:'none', background:'none', cursor:'pointer', fontSize:14,
+              fontWeight:tab===t?700:400, color:tab===t?'#2D3278':'#6a7a9a',
+              borderBottom:tab===t?'2px solid #2D3278':'2px solid transparent', marginBottom:-2 }}>
+            {label}
           </button>
         ))}
       </div>
@@ -116,7 +127,8 @@ export default function ClientDetailPage() {
           <div>
             <div style={{ background:'#fff', borderRadius:10, padding:12, border:'1px solid #e2e8f4', marginBottom:10 }}>
               <div style={{ fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, letterSpacing:0.5, marginBottom:6 }}>Tax Year</div>
-              <select value={year} onChange={e => setYear(parseInt(e.target.value))} style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:14, fontWeight:700, color:'#0f2340', outline:'none' }}>
+              <select value={year} onChange={e => setYear(parseInt(e.target.value))}
+                style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:14, fontWeight:700, color:'#0f2340', outline:'none' }}>
                 {TAX_YEARS.map(y => <option key={y}>{y}</option>)}
               </select>
             </div>
@@ -136,16 +148,16 @@ export default function ClientDetailPage() {
             </div>
           </div>
           <div>
-            {/* Upload */}
             <div
-              onDragOver={e => { e.preventDefault() }}
+              onDragOver={e => e.preventDefault()}
               onDrop={e => { e.preventDefault(); const f=e.dataTransfer.files[0]; if(f) uploadFile(f) }}
               onClick={() => fileRef.current?.click()}
-              style={{ border:'2px dashed #e2e8f4', borderRadius:10, padding:'16px', textAlign:'center', cursor:'pointer', background:'#fafbff', marginBottom:14 }}
-            >
+              style={{ border:'2px dashed #e2e8f4', borderRadius:10, padding:'16px', textAlign:'center', cursor:'pointer', background:'#fafbff', marginBottom:14 }}>
               <input ref={fileRef} type="file" onChange={e => { const f=e.target.files?.[0]; if(f) uploadFile(f) }} style={{ display:'none' }} />
               <div style={{ fontSize:24, marginBottom:4 }}>📂</div>
-              <div style={{ fontSize:13, color:uploading?'#1a6b4a':'#6a7a9a', fontWeight:uploading?700:400 }}>{uploading?'Uploading…':`Drop file here${cat?` → ${cat}`:' (select category first)'}`}</div>
+              <div style={{ fontSize:13, color:uploading?'#1a6b4a':'#6a7a9a', fontWeight:uploading?700:400 }}>
+                {uploading ? 'Uploading…' : `Drop file here${cat?` → ${cat}`:' (select category first)'}`}
+              </div>
             </div>
             {catDocs.length===0 ? (
               <div style={{ background:'#fff', borderRadius:12, padding:40, textAlign:'center', border:'1px solid #e2e8f4', color:'#9aaab0' }}>
@@ -214,13 +226,20 @@ export default function ClientDetailPage() {
             <div ref={msgRef} />
           </div>
           <div style={{ padding:'12px 16px', borderTop:'1px solid #e2e8f4', display:'flex', gap:10 }}>
-            <input value={newMsg} onChange={e => setNewMsg(e.target.value)} onKeyDown={e => e.key==='Enter' && sendMsg()} placeholder={`Message ${client.name}…`}
-              style={{ flex:1, padding:'10px 14px', border:'1.5px solid #e2e8f4', borderRadius:10, fontSize:14, outline:'none', fontFamily:'Georgia,serif' }} />
-            <button onClick={sendMsg} disabled={!newMsg.trim()||sending} style={{ background:newMsg.trim()&&!sending?'linear-gradient(135deg,#2D3278,#1a1f5e)':'#e2e8f4', color:newMsg.trim()&&!sending?'#fff':'#9aaab0', border:'none', padding:'10px 18px', borderRadius:10, fontSize:14, fontWeight:700, cursor:newMsg.trim()&&!sending?'pointer':'not-allowed' }}>
+            <input value={newMsg} onChange={e => setNewMsg(e.target.value)} onKeyDown={e => e.key==='Enter' && sendMsg()}
+              placeholder={`Message ${client.name}…`}
+              style={{ flex:1, padding:'10px 14px', border:'1.5px solid #e2e8f4', borderRadius:10, fontSize:14, outline:'none' }} />
+            <button onClick={sendMsg} disabled={!newMsg.trim()||sending}
+              style={{ background:newMsg.trim()&&!sending?'linear-gradient(135deg,#2D3278,#1a1f5e)':'#e2e8f4', color:newMsg.trim()&&!sending?'#fff':'#9aaab0', border:'none', padding:'10px 18px', borderRadius:10, fontSize:14, fontWeight:700, cursor:newMsg.trim()&&!sending?'pointer':'not-allowed' }}>
               {sending?'…':'Send'}
             </button>
           </div>
         </div>
+      )}
+
+      {/* QUOTES TAB */}
+      {tab==='quotes' && (
+        <QuotesTab clientId={id as string} clientName={client.name} />
       )}
 
       {/* PROFILE TAB */}
@@ -229,13 +248,13 @@ export default function ClientDetailPage() {
           <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', marginBottom:20 }}>Client Profile</h2>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
             {[
-              ['Name',         client.name],
-              ['Email',        client.email],
-              ['Phone',        client.phone||'—'],
-              ['Type',         client.type],
-              ['Assignee',     client.assignee||'—'],
-              ['Stage',        client.stage],
-              ['Language',     client.language||'en'],
+              ['Name',     client.name],
+              ['Email',    client.email],
+              ['Phone',    client.phone||'—'],
+              ['Type',     client.type],
+              ['Assignee', client.assignee||'—'],
+              ['Stage',    client.stage],
+              ['Language', client.language||'en'],
               ...(client.type==='business'?[
                 ['Business Name', client.business_name||'—'],
                 ['EIN',           client.ein||'—'],
