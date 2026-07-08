@@ -53,14 +53,58 @@ export async function POST(req: NextRequest) {
   }
   if (!global && !b.clientId) return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
 
-  const { error } = await serviceDb().from('bookkeeping_rules').insert({
+  const db = serviceDb()
+  const { error } = await db.from('bookkeeping_rules').insert({
     client_id: global ? null : b.clientId,
     name, pattern, category, direction,
     match_type: matchType, amount_op: amountOp, amount_value: amountValue,
     payee, priority: 30, created_by: 'staff',
   })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
+
+  // Cadastra o payee da regra (vendor p/ saídas, customer p/ entradas)
+  if (payee && b.clientId) {
+    await db.from('payees').upsert(
+      { client_id: b.clientId, name: payee, type: direction === 'in' ? 'customer' : 'vendor' },
+      { onConflict: 'client_id,name' }
+    ).then(() => null, () => null)
+  }
+
+  // RETROATIVO: aplica a regra às transações existentes do cliente
+  // (pending + auto — preserva as revisadas manualmente pela equipe)
+  let applied = 0
+  if (b.clientId) {
+    const { data: txs } = await db.from('bank_transactions')
+      .select('id, description, amount')
+      .eq('client_id', b.clientId)
+      .in('status', ['pending', 'auto'])
+      .limit(5000)
+
+    for (const tx of (txs || [])) {
+      const desc = tx.description.toLowerCase()
+      const amount = Number(tx.amount)
+      if (direction === 'in' && amount <= 0) continue
+      if (direction === 'out' && amount >= 0) continue
+      if (pattern) {
+        if (matchType === 'starts_with' ? !desc.startsWith(pattern) : !desc.includes(pattern)) continue
+      }
+      if (amountOp) {
+        const abs = Math.abs(amount)
+        if (amountOp === 'gt' && !(abs > amountValue!)) continue
+        if (amountOp === 'lt' && !(abs < amountValue!)) continue
+        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
+      }
+      const upd: Record<string, unknown> = {
+        category, category_confidence: 100, categorized_by: 'rule',
+        status: 'auto', updated_at: new Date().toISOString(),
+      }
+      if (payee) upd.payee = payee
+      await db.from('bank_transactions').update(upd).eq('id', tx.id)
+      applied++
+    }
+  }
+
+  return NextResponse.json({ ok: true, applied })
 }
 
 export async function DELETE(req: NextRequest) {

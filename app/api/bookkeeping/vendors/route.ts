@@ -33,20 +33,32 @@ export async function GET(req: NextRequest) {
     .eq('client_id', clientId)
     .eq('fiscal_year', year)
     .in('status', ['auto', 'reviewed'])
-    .lt('amount', 0)          // pagamentos (saídas)
     .limit(10000)
 
-  // Agrega por payee
+  // Agrega por payee — saídas (vendors) e entradas (customers) separadas
   const byPayee: Record<string, { total: number; count: number; cats: Set<string> }> = {}
+  const byCustomer: Record<string, { total: number; count: number }> = {}
   let noPayeeTotal = 0, noPayeeCount = 0
   for (const t of (txs || [])) {
-    const amt = Math.abs(Number(t.amount))
+    const val = Number(t.amount)
+    const amt = Math.abs(val)
+    if (val > 0) {
+      if (t.payee) {
+        if (!byCustomer[t.payee]) byCustomer[t.payee] = { total: 0, count: 0 }
+        byCustomer[t.payee].total += amt
+        byCustomer[t.payee].count++
+      }
+      continue
+    }
     if (!t.payee) { noPayeeTotal += amt; noPayeeCount++; continue }
     if (!byPayee[t.payee]) byPayee[t.payee] = { total: 0, count: 0, cats: new Set() }
     byPayee[t.payee].total += amt
     byPayee[t.payee].count++
     if (t.category) byPayee[t.payee].cats.add(t.category)
   }
+  const customers = Object.entries(byCustomer)
+    .map(([payee, v]) => ({ payee, total: v.total, count: v.count }))
+    .sort((a, b) => b.total - a.total)
 
   const vendors = Object.entries(byPayee)
     .map(([payee, v]) => ({ payee, total: v.total, count: v.count, cats: Array.from(v.cats) }))
@@ -107,6 +119,13 @@ export async function GET(req: NextRequest) {
       <td class="r">${money(v.total)}</td><td class="r" style="font-weight:400">${v.count}</td>
     </tr>`).join('') || '<tr><td colspan="4" style="color:#9aaab0">No categorized payments with payee yet.</td></tr>'}
   </table>
+
+  ${customers.length ? `
+  <h3>💰 Customers by Total Received (money in)</h3>
+  <table>
+    <tr><th>Customer</th><th style="text-align:right">Total Received</th><th style="text-align:right">Payments</th></tr>
+    ${customers.map(c => `<tr><td>${c.payee}</td><td class="r">${money(c.total)}</td><td class="r" style="font-weight:400">${c.count}</td></tr>`).join('')}
+  </table>` : ''}
 
   ${noPayeeCount > 0 ? `<div class="warn">📌 ${noPayeeCount} payment(s) totaling ${money(noPayeeTotal)} have no payee identified — run "Categorizar pendentes" to extract payees, or fill manually.</div>` : ''}
 

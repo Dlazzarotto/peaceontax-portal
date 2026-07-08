@@ -58,27 +58,21 @@ export async function PATCH(req: NextRequest) {
     update.category = category
     update.categorized_by = 'staff'
     update.status = 'reviewed'
-
-    // Aprendizado: cria regra do cliente com o "merchant" da descrição
-    const { data: full } = await db.from('bank_transactions').select('description').eq('id', id).single()
-    if (full?.description && category) {
-      const merchant = full.description
-        .replace(/\d{2}\/\d{2}/g, '')            // datas
-        .replace(/#?\d{4,}/g, '')                  // números longos/conf
-        .replace(/x{4,}/gi, '')                    // máscaras de cartão
-        .replace(/\s+/g, ' ').trim().toLowerCase()
-        .split(' ').slice(0, 3).join(' ')          // 3 primeiras palavras significativas
-      if (merchant.length >= 4) {
-        await db.from('bookkeeping_rules').insert({
-          client_id: tx.client_id, pattern: merchant, category,
-          priority: 40, created_by: 'system',
-        }).then(() => null, () => null)
-      }
-    }
+    // Criação de regra agora é decisão explícita do usuário (modal estilo QuickBooks)
   }
   if (status && ['pending','auto','reviewed','excluded'].includes(status)) update.status = status
   if (notes !== undefined) update.notes = notes
-  if (payee !== undefined) update.payee = String(payee).trim().slice(0, 120) || null
+  if (payee !== undefined) {
+    const cleanPayee = String(payee).trim().slice(0, 120) || null
+    update.payee = cleanPayee
+    if (cleanPayee) {
+      const { data: txFull } = await db.from('bank_transactions').select('amount').eq('id', id).single()
+      await db.from('payees').upsert(
+        { client_id: tx.client_id, name: cleanPayee, type: Number(txFull?.amount ?? -1) > 0 ? 'customer' : 'vendor' },
+        { onConflict: 'client_id,name' }
+      ).then(() => null, () => null)
+    }
+  }
 
   const { error } = await db.from('bank_transactions').update(update).eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

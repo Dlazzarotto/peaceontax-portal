@@ -46,6 +46,15 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rPayee, setRPayee] = useState('')
   const [rCategory, setRCategory] = useState('')
   const [rScope, setRScope] = useState('client')
+  const [rPayeeType, setRPayeeType] = useState('vendor')
+  const [payeeRegistry, setPayeeRegistry] = useState<{name:string; type:string}[]>([])
+
+  // Modal QuickBooks: aplicar só ao lançamento ou criar regra
+  const [catDecision, setCatDecision] = useState<{ tx: Tx; category: string }|null>(null)
+  const [mPattern, setMPattern] = useState('')
+  const [mPayee, setMPayee] = useState('')
+  const [mPayeeType, setMPayeeType] = useState('vendor')
+  const [mScope, setMScope] = useState('client')
   const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovMonth, setOvMonth] = useState('')
@@ -132,6 +141,11 @@ export default function BookkeepingTab({ clientId }: Props) {
     setCategorizing(false); load()
   }
 
+  const loadPayees = async () => {
+    const r = await fetch(`/api/bookkeeping/payees?clientId=${clientId}`).then(x => x.json())
+    setPayeeRegistry(r.payees || [])
+  }
+
   const loadRules = async () => {
     const r = await fetch(`/api/bookkeeping/rules?clientId=${clientId}`).then(x => x.json())
     setRules(r.rules || [])
@@ -150,9 +164,15 @@ export default function BookkeepingTab({ clientId }: Props) {
       }),
     }).then(x => x.json())
     if (r.ok) {
-      setMsg('✓ Regra criada — clique em 🤖 Categorizar para aplicá-la aos pendentes.')
+      if (rPayee.trim()) {
+        await fetch('/api/bookkeeping/payees', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
+        })
+      }
+      setMsg(`✓ Regra criada e aplicada retroativamente a ${r.applied ?? 0} transações. Relatórios já refletem a mudança.`)
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee('')
-      loadRules()
+      loadRules(); loadPayees(); load()
     } else setMsg(`Erro: ${r.error}`)
   }
 
@@ -161,6 +181,10 @@ export default function BookkeepingTab({ clientId }: Props) {
     loadRules()
   }
 
+  const suggestPattern = (desc: string) => desc
+    .replace(/\d{2}\/\d{2}/g, '').replace(/#?\d{4,}/g, '').replace(/x{4,}/gi, '')
+    .replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 3).join(' ')
+
   const setTxPayee = async (id: string, payee: string) => {
     await fetch('/api/bookkeeping/transactions', {
       method:'PATCH', headers:{'content-type':'application/json'},
@@ -168,13 +192,54 @@ export default function BookkeepingTab({ clientId }: Props) {
     })
   }
 
-  const setTxCategory = async (id: string, category: string) => {
+  const setTxCategory = (tx: Tx, category: string) => {
+    setCatDecision({ tx, category })
+    setMPattern(suggestPattern(tx.description))
+    setMPayee(tx.payee || '')
+    setMPayeeType(Number(tx.amount) > 0 ? 'customer' : 'vendor')
+    setMScope('client')
+  }
+
+  const applyOnlyThis = async () => {
+    if (!catDecision) return
     await fetch('/api/bookkeeping/transactions', {
       method:'PATCH', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id, category }),
+      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee || undefined }),
     })
-    setMsg(`✓ Categorizada — regra criada para próximas transações parecidas.`)
-    load()
+    setMsg('✓ Categorizada — somente este lançamento.')
+    setCatDecision(null); load()
+  }
+
+  const applyAsRule = async () => {
+    if (!catDecision) return
+    if (!mPattern.trim()) { setMsg('Defina o texto da regra.'); return }
+    // 1. Marca este lançamento como revisado
+    await fetch('/api/bookkeeping/transactions', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee || undefined }),
+    })
+    // 2. Cria a regra (aplicação retroativa automática a todos que casam)
+    const r = await fetch('/api/bookkeeping/rules', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        clientId, scope: mScope,
+        name: mPattern.trim().slice(0, 40),
+        direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
+        pattern: mPattern.trim(), matchType: 'contains',
+        payee: mPayee.trim() || undefined,
+        category: catDecision.category,
+      }),
+    }).then(x => x.json())
+    if (r.ok && mPayee.trim()) {
+      await fetch('/api/bookkeeping/payees', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ clientId, name: mPayee.trim(), type: mPayeeType }),
+      })
+    }
+    setMsg(r.ok
+      ? `✓ Regra criada e aplicada a ${(r.applied ?? 0) + 1} lançamento(s) com a mesma informação.`
+      : `Erro: ${r.error}`)
+    setCatDecision(null); load(); loadRules()
   }
 
   const openPnl = () => {
@@ -372,8 +437,18 @@ export default function BookkeepingTab({ clientId }: Props) {
                 <input value={rPayee} onChange={e => setRPayee(e.target.value)} list="payee-list" placeholder="Escolher ou criar"
                   style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
                 <datalist id="payee-list">
-                  {Array.from(new Set(txs.map(t => t.payee).filter(Boolean))).map(p2 => <option key={p2 as string} value={p2 as string} />)}
+                  {payeeRegistry.map(p2 => <option key={p2.name} value={p2.name}>{p2.type === 'customer' ? '💰 Customer' : '🏪 Vendor'}</option>)}
+                  {Array.from(new Set(txs.map(t => t.payee).filter(Boolean)))
+                    .filter(n => !payeeRegistry.some(p2 => p2.name === n))
+                    .map(p2 => <option key={p2 as string} value={p2 as string} />)}
                 </datalist>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Tipo do payee</label>
+                <select value={rPayeeType} onChange={e => setRPayeeType(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="vendor">🏪 Vendor (fornecedor)</option>
+                  <option value="customer">💰 Customer (cliente)</option>
+                </select>
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Categoria *</label>
@@ -417,6 +492,61 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
+      {/* Modal QuickBooks: só este lançamento ou regra */}
+      {catDecision && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:480, maxWidth:'94vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 4px' }}>
+              Categorizar como "{catDecision.category}"
+            </h3>
+            <p style={{ fontSize:12, color:'#6a7a9a', margin:'0 0 14px' }}>
+              {catDecision.tx.description.slice(0, 90)}
+            </p>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Payee (Vendor/Customer)</label>
+                <input value={mPayee} onChange={e => setMPayee(e.target.value)} list="payee-list" placeholder="Opcional"
+                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Tipo</label>
+                <select value={mPayeeType} onChange={e => setMPayeeType(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="vendor">🏪 Vendor</option>
+                  <option value="customer">💰 Customer</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ background:'#f0f9f4', border:'1.5px solid #1a6b4a40', borderRadius:10, padding:12, marginBottom:14 }}>
+              <div style={{ fontSize:12.5, fontWeight:700, color:'#1a6b4a', marginBottom:6 }}>
+                📐 Se criar regra: aplica a TODOS os lançamentos cuja descrição contém…
+              </div>
+              <input value={mPattern} onChange={e => setMPattern(e.target.value)}
+                style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', marginBottom:8 }} />
+              <select value={mScope} onChange={e => setMScope(e.target.value)} style={{ ...sel, width:'100%' }}>
+                <option value="client">Só este cliente</option>
+                <option value="global">Todos os clientes</option>
+              </select>
+            </div>
+
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', flexWrap:'wrap' }}>
+              <button onClick={() => setCatDecision(null)}
+                style={{ padding:'9px 14px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                Cancelar
+              </button>
+              <button onClick={applyOnlyThis} style={btn('#6a7a9a')}>
+                Só este lançamento
+              </button>
+              <button onClick={applyAsRule} style={btn('#1a6b4a')}>
+                📐 Criar regra (aplica a todos)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
         <button onClick={categorize} disabled={categorizing || !summary || summary.pending === 0}
@@ -426,7 +556,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
           + Nova categoria
         </button>
-        <button onClick={() => { setRulesOpen(o => !o); if (!rulesOpen) loadRules() }} style={btn('#1a6b4a')}>
+        <button onClick={() => { setRulesOpen(o => !o); if (!rulesOpen) { loadRules(); loadPayees() } }} style={btn('#1a6b4a')}>
           ⚙️ Regras
         </button>
         {newCatOpen && (
@@ -494,7 +624,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                     {money(Number(t.amount))}
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:12 }}>
-                    <select value={t.category || ''} onChange={e => setTxCategory(t.id, e.target.value)}
+                    <select value={t.category || ''} onChange={e => setTxCategory(t, e.target.value)}
                       style={{ padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:11.5,
                         fontWeight:600, color: t.category ? '#2D3278' : '#9aaab0', outline:'none', cursor:'pointer',
                         background: t.status === 'pending' && t.category ? '#fff7e0' : '#fff', maxWidth:180 }}>
