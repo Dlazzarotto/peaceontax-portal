@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
     .select('payee, category, amount')
     .eq('client_id', clientId)
     .eq('fiscal_year', year)
-    .in('status', ['auto', 'reviewed'])
+    .in('status', ['approved', 'reviewed'])
     .limit(10000)
 
   // Agrega por payee — saídas (vendors) e entradas (customers) separadas

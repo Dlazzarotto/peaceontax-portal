@@ -1,6 +1,6 @@
-﻿// POST /api/bookkeeping/extract â€” extrai transaÃ§Ãµes de um extrato bancÃ¡rio (PDF)
+// POST /api/bookkeeping/extract — extrai transações de um extrato bancário (PDF)
 // Body: { documentId }
-// Baixa o PDF do storage â†’ Claude lÃª e extrai â†’ insere em bank_transactions (com dedupe).
+// Baixa o PDF do storage → Claude lê e extrai → insere em bank_transactions (com dedupe).
 // Equipe apenas. Custo: ~1 chamada de IA por extrato.
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -36,10 +36,10 @@ RULES:
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito Ã  equipe' }, { status: 403 })
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito à equipe' }, { status: 403 })
 
   const { documentId } = await req.json()
-  if (!documentId) return NextResponse.json({ error: 'documentId obrigatÃ³rio' }, { status: 400 })
+  if (!documentId) return NextResponse.json({ error: 'documentId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
 
@@ -50,21 +50,21 @@ export async function POST(req: NextRequest) {
     .eq('id', documentId)
     .single()
 
-  if (!doc) return NextResponse.json({ error: 'Documento nÃ£o encontrado' }, { status: 404 })
+  if (!doc) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
   if (!(await canAccessClient(auth, doc.client_id))) {
     return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
   }
   if (!doc.file_type?.includes('pdf')) {
-    return NextResponse.json({ error: 'Apenas PDFs de extrato bancÃ¡rio' }, { status: 400 })
+    return NextResponse.json({ error: 'Apenas PDFs de extrato bancário' }, { status: 400 })
   }
 
-  // JÃ¡ extraÃ­do?
+  // Já extraído?
   const { count: existing } = await db
     .from('bank_transactions')
     .select('id', { count: 'exact', head: true })
     .eq('statement_document_id', documentId)
   if ((existing ?? 0) > 0) {
-    return NextResponse.json({ error: `Este extrato jÃ¡ foi processado (${existing} transaÃ§Ãµes). Exclua-as antes de reprocessar.`, alreadyExtracted: true }, { status: 409 })
+    return NextResponse.json({ error: `Este extrato já foi processado (${existing} transações). Exclua-as antes de reprocessar.`, alreadyExtracted: true }, { status: 409 })
   }
 
   // Baixa o PDF do storage
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
     if (!response.ok) {
       const err = await response.text()
       console.error('Anthropic error:', err)
-      return NextResponse.json({ error: 'IA temporariamente indisponÃ­vel' }, { status: 503 })
+      return NextResponse.json({ error: 'IA temporariamente indisponível' }, { status: 503 })
     }
 
     const data = await response.json()
@@ -115,7 +115,7 @@ export async function POST(req: NextRequest) {
       parsed = JSON.parse(text)
     } catch {
       console.error('Parse fail:', text.slice(0, 500))
-      return NextResponse.json({ error: 'A IA nÃ£o retornou JSON vÃ¡lido â€” tente novamente' }, { status: 502 })
+      return NextResponse.json({ error: 'A IA não retornou JSON válido — tente novamente' }, { status: 502 })
     }
 
     const txs = (parsed.transactions || []).filter(t =>
@@ -123,11 +123,25 @@ export async function POST(req: NextRequest) {
       t.description && typeof t.amount === 'number' && Math.abs(t.amount) < 10_000_000
     )
     if (txs.length === 0) {
-      return NextResponse.json({ error: 'Nenhuma transaÃ§Ã£o identificada no PDF' }, { status: 422 })
+      return NextResponse.json({ error: 'Nenhuma transação identificada no PDF' }, { status: 422 })
+    }
+
+    // Conta bancária: upsert a partir do account_hint do extrato
+    let accountId: string | null = null
+    const hint = parsed.account_hint?.trim()
+    if (hint) {
+      const isCC = /credit|card/i.test(hint)
+      const { data: acc } = await db.from('bank_accounts')
+        .upsert(
+          { client_id: doc.client_id, name: hint, account_hint: hint, type: isCC ? 'credit_card' : 'checking' },
+          { onConflict: 'client_id,name' }
+        ).select('id').single()
+      accountId = acc?.id ?? null
     }
 
     // Insere com dedupe (upsert ignora duplicadas)
     const rows = txs.map(t => ({
+      account_id: accountId,
       client_id: doc.client_id,
       source: 'pdf',
       statement_document_id: documentId,
@@ -161,4 +175,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }
-

@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     .select('tx_date, category, amount, status')
     .eq('client_id', clientId)
     .eq('fiscal_year', year)
-    .in('status', ['auto', 'reviewed'])
+    .in('status', ['approved', 'reviewed'])
     .limit(10000)
   const { data: txs } = await q
 

@@ -28,6 +28,10 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [msg, setMsg] = useState('')
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [accounts, setAccounts] = useState<any[]>([])
+  const [accountFilter, setAccountFilter] = useState<string>('all')
+  const [tab, setTab] = useState<'recognized'|'unrecognized'|'register'|'excluded'>('recognized')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [categorizing, setCategorizing] = useState(false)
   const [categories, setCategories] = useState<{name:string; kind:string}[]>([])
   const [newCatOpen, setNewCatOpen] = useState(false)
@@ -65,7 +69,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     setLoading(true)
     const params = new URLSearchParams({ clientId })
     if (year !== 'all') params.set('year', String(year))
-    if (statusFilter !== 'all') params.set('status', statusFilter)
+    if (accountFilter !== 'all') params.set('accountId', accountFilter)
 
     const [t, d] = await Promise.all([
       fetch(`/api/bookkeeping/transactions?${params}`).then(r => r.json()),
@@ -73,11 +77,13 @@ export default function BookkeepingTab({ clientId }: Props) {
     ])
     setTxs(t.transactions || [])
     setSummary(t.summary || null)
+    setAccounts(t.accounts || [])
+    setSelected(new Set())
     setStatements((d.documents || []).filter((x: Doc) =>
       (x.category || '').toLowerCase().includes('bank')))
     setLoading(false)
   }
-  useEffect(() => { load() }, [clientId, year, statusFilter])
+  useEffect(() => { load() }, [clientId, year, accountFilter])
 
   useEffect(() => {
     fetch('/api/bookkeeping/categories').then(r => r.json())
@@ -181,6 +187,23 @@ export default function BookkeepingTab({ clientId }: Props) {
     loadRules()
   }
 
+  const bulkAction = async (ids: string[], action: 'approve'|'unmatch'|'exclude'|'restore') => {
+    if (ids.length === 0) return
+    const r = await fetch('/api/bookkeeping/transactions', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ ids, action }),
+    }).then(x => x.json())
+    if (r.ok) {
+      const verb = action === 'approve' ? 'aprovadas → registro' : action === 'exclude' ? 'excluídas' : action === 'unmatch' ? 'devolvidas para revisão' : 'restauradas'
+      setMsg(`✓ ${r.affected} transação(ões) ${verb}.`)
+    } else setMsg(`Erro: ${r.error}`)
+    load()
+  }
+
+  const toggleSel = (id: string) => setSelected(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
+  })
+
   const suggestPattern = (desc: string) => desc
     .replace(/\d{2}\/\d{2}/g, '').replace(/#?\d{4,}/g, '').replace(/x{4,}/gi, '')
     .replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 3).join(' ')
@@ -268,6 +291,20 @@ export default function BookkeepingTab({ clientId }: Props) {
     setOvBusy(false); if (d.ok) setOvData(null)
   }
 
+  const TAB_FILTER: Record<string, (t: Tx) => boolean> = {
+    recognized:   t => t.status === 'auto',
+    unrecognized: t => t.status === 'pending',
+    register:     t => t.status === 'approved' || t.status === 'reviewed',
+    excluded:     t => t.status === 'excluded',
+  }
+  const tabTxs = txs.filter(TAB_FILTER[tab])
+  const counts = {
+    recognized: txs.filter(TAB_FILTER.recognized).length,
+    unrecognized: txs.filter(TAB_FILTER.unrecognized).length,
+    register: txs.filter(TAB_FILTER.register).length,
+    excluded: txs.filter(TAB_FILTER.excluded).length,
+  }
+
   const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
   const years = Array.from(new Set(txs.map(t => t.fiscal_year))).sort((a,b) => b-a)
   const money = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toFixed(2)}`
@@ -328,6 +365,29 @@ export default function BookkeepingTab({ clientId }: Props) {
             <div key={label} style={{ background:'#fff', borderRadius:12, padding:'12px 16px', border:'1px solid #e2e8f4' }}>
               <div style={{ fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const }}>{label}</div>
               <div style={{ fontSize:20, fontWeight:800, color: color as string, marginTop:2 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Contas bancárias (estilo QuickBooks) */}
+      {accounts.length > 0 && (
+        <div style={{ display:'flex', gap:12, marginBottom:14, flexWrap:'wrap' }}>
+          <div onClick={() => setAccountFilter('all')}
+            style={{ cursor:'pointer', background: accountFilter==='all' ? '#2D3278' : '#fff', color: accountFilter==='all' ? '#fff' : '#0f2340',
+              borderRadius:12, padding:'12px 16px', border:'1.5px solid #2D3278', minWidth:140 }}>
+            <div style={{ fontSize:13, fontWeight:800 }}>Todas as contas</div>
+            <div style={{ fontSize:11, opacity:0.8, marginTop:2 }}>{txs.length} transações</div>
+          </div>
+          {accounts.map(a => (
+            <div key={a.id} onClick={() => setAccountFilter(a.id)}
+              style={{ cursor:'pointer', background: accountFilter===a.id ? '#2D3278' : '#fff', color: accountFilter===a.id ? '#fff' : '#0f2340',
+                borderRadius:12, padding:'12px 16px', border:'1.5px solid #e2e8f4', minWidth:190 }}>
+              <div style={{ fontSize:12.5, fontWeight:800 }}>{a.type === 'credit_card' ? '💳' : '🏦'} {a.name}</div>
+              <div style={{ fontSize:11, opacity:0.85, marginTop:4, lineHeight:1.6 }}>
+                {a.lastBalance != null && <>Saldo (último extrato): <b>${Number(a.lastBalance).toFixed(2)}</b><br/></>}
+                Para revisar: <b style={{ color: accountFilter===a.id ? '#ffd9b0' : '#c06010' }}>{a.forReview}</b> · No registro: <b>{a.inRegister}</b>
+              </div>
             </div>
           ))}
         </div>
@@ -580,32 +640,72 @@ export default function BookkeepingTab({ clientId }: Props) {
           <option value="all">Todos os anos</option>
           {years.map(y => <option key={y} value={y}>{y}</option>)}
         </select>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={sel}>
-          <option value="all">Todos os status</option>
-          <option value="pending">⏳ Em aberto</option>
-          <option value="auto">🤖 Auto</option>
-          <option value="reviewed">✅ Revisadas</option>
-          <option value="excluded">🚫 Excluídas</option>
-        </select>
+
       </div>
+
+      {/* Abas estilo QuickBooks */}
+      <div style={{ display:'flex', gap:4, marginBottom:0, borderBottom:'2px solid #e2e8f4', flexWrap:'wrap' }}>
+        {([
+          ['recognized', `🔵 Reconhecidas (${counts.recognized})`],
+          ['unrecognized', `🟠 Não reconhecidas (${counts.unrecognized})`],
+          ['register', `✅ No registro (${counts.register})`],
+          ['excluded', `🚫 Excluídas (${counts.excluded})`],
+        ] as const).map(([k, label]) => (
+          <button key={k} onClick={() => { setTab(k); setSelected(new Set()) }}
+            style={{ padding:'10px 16px', background:'none', border:'none', cursor:'pointer',
+              fontSize:13, fontWeight:700, color: tab===k ? '#2D3278' : '#8a9ab0',
+              borderBottom: tab===k ? '3px solid #F47B20' : '3px solid transparent', marginBottom:-2 }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Ações em massa */}
+      {selected.size > 0 && (
+        <div style={{ display:'flex', gap:8, alignItems:'center', padding:'10px 14px', background:'#f0f4ff', borderRadius:'0 0 10px 10px', marginBottom:10, flexWrap:'wrap' }}>
+          <span style={{ fontSize:13, fontWeight:700, color:'#2D3278' }}>{selected.size} selecionada(s):</span>
+          {(tab === 'recognized' || tab === 'unrecognized') && (
+            <button onClick={() => bulkAction(Array.from(selected), 'approve')} style={btn('#1a6b4a')}>✓ Aprovar → registro</button>
+          )}
+          {tab === 'recognized' && (
+            <button onClick={() => bulkAction(Array.from(selected), 'unmatch')} style={btn('#c06010')}>↩️ Não aceitar</button>
+          )}
+          {tab !== 'excluded' && (
+            <button onClick={() => bulkAction(Array.from(selected), 'exclude')} style={btn('#b02020')}>🚫 Excluir</button>
+          )}
+          {tab === 'excluded' && (
+            <button onClick={() => bulkAction(Array.from(selected), 'restore')} style={btn('#6a7a9a')}>♻️ Restaurar</button>
+          )}
+        </div>
+      )}
 
       {/* Lista */}
       {loading ? <p style={{ color:'#6a7a9a', fontSize:13 }}>Carregando…</p> :
-       txs.length === 0 ? (
+       tabTxs.length === 0 ? (
         <div style={{ background:'#fff', borderRadius:14, padding:40, border:'1px solid #e2e8f4', textAlign:'center', color:'#9aaab0' }}>
           <div style={{ fontSize:32, marginBottom:8 }}>📊</div>
-          <div style={{ fontSize:13 }}>Nenhuma transação ainda — extraia um extrato acima.</div>
+          <div style={{ fontSize:13 }}>Nada nesta aba.</div>
         </div>
       ) : (
         <div style={{ background:'#fff', borderRadius:14, border:'1px solid #e2e8f4', overflow:'auto' }}>
           <table style={{ width:'100%', borderCollapse:'collapse', minWidth:760 }}>
             <thead><tr style={{ background:'#f8faff' }}>
-              {['Data','Descrição','Payee','Valor','Categoria','Status'].map(h =>
+              <th style={{ padding:'9px 8px', borderBottom:'1px solid #e2e8f4', width:34 }}>
+                <input type="checkbox"
+                  checked={tabTxs.length > 0 && tabTxs.every(t => selected.has(t.id))}
+                  onChange={e => setSelected(e.target.checked ? new Set(tabTxs.map(t => t.id)) : new Set())}
+                  style={{ width:17, height:17, cursor:'pointer' }} />
+              </th>
+              {['Data','Descrição','Payee','Valor','Categoria','Ação'].map(h =>
                 <th key={h} style={{ padding:'9px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4' }}>{h}</th>)}
             </tr></thead>
             <tbody>
-              {txs.map(t => (
-                <tr key={t.id} style={{ borderBottom:'1px solid #f0f4fa' }}>
+              {tabTxs.map(t => (
+                <tr key={t.id} style={{ borderBottom:'1px solid #f0f4fa', background: selected.has(t.id) ? '#f0f4ff' : undefined }}>
+                  <td style={{ padding:'8px 8px' }}>
+                    <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSel(t.id)}
+                      style={{ width:17, height:17, cursor:'pointer' }} />
+                  </td>
                   <td style={{ padding:'8px 14px', fontSize:12.5, color:'#3a4a5a', whiteSpace:'nowrap' as const }}>
                     {new Date(t.tx_date + 'T12:00:00Z').toLocaleDateString('pt-BR')}
                   </td>
@@ -642,12 +742,22 @@ export default function BookkeepingTab({ clientId }: Props) {
                       </div>
                     )}
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:11.5 }}>
-                    <span style={{ padding:'2px 8px', borderRadius:20, fontWeight:700,
-                      background: t.status === 'pending' ? '#fff7e0' : t.status === 'reviewed' ? '#e8f5ee' : '#f0f4fa',
-                      color: t.status === 'pending' ? '#c06010' : t.status === 'reviewed' ? '#1a6b4a' : '#6a7a9a' }}>
-                      {STATUS_LABEL[t.status] || t.status}
-                    </span>
+                  <td style={{ padding:'8px 10px', whiteSpace:'nowrap' as const }}>
+                    {(t.status === 'auto' || t.status === 'pending') && (
+                      <button onClick={() => bulkAction([t.id], 'approve')} title="Aprovar → registro"
+                        style={{ background:'#e8f5ee', color:'#1a6b4a', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>✓</button>
+                    )}
+                    {t.status === 'auto' && (
+                      <button onClick={() => bulkAction([t.id], 'unmatch')} title="Não aceitar (volta p/ não reconhecidas)"
+                        style={{ background:'#fff7e0', color:'#c06010', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>↩</button>
+                    )}
+                    {t.status !== 'excluded' ? (
+                      <button onClick={() => bulkAction([t.id], 'exclude')} title="Excluir dos livros"
+                        style={{ background:'#fee2e2', color:'#b02020', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer' }}>🚫</button>
+                    ) : (
+                      <button onClick={() => bulkAction([t.id], 'restore')} title="Restaurar"
+                        style={{ background:'#f0f4fa', color:'#6a7a9a', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer' }}>♻️</button>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -21,7 +21,9 @@ export async function GET(req: NextRequest) {
     .order('tx_date', { ascending: false })
     .limit(1000)
 
+  const accountId = sp.get('accountId')
   const year = sp.get('year')
+  if (accountId) q = q.eq('account_id', accountId)
   if (year) q = q.eq('fiscal_year', parseInt(year))
   const status = sp.get('status')
   if (status) q = q.eq('status', status)
@@ -38,7 +40,62 @@ export async function GET(req: NextRequest) {
     debits: txs.filter(t => Number(t.amount) < 0).reduce((s, t) => s + Number(t.amount), 0),
   }
 
-  return NextResponse.json({ transactions: txs, summary })
+  // Resumo por conta (cards estilo QuickBooks)
+  const { data: accounts } = await serviceDb().from('bank_accounts')
+    .select('id, name, type').eq('client_id', clientId).eq('active', true).order('name')
+  const { data: allTx } = await serviceDb().from('bank_transactions')
+    .select('account_id, status, tx_date, balance')
+    .eq('client_id', clientId).limit(10000)
+  const accountCards = (accounts || []).map(a => {
+    const list = (allTx || []).filter(t => t.account_id === a.id)
+    const latest = list.filter(t => t.balance != null)
+      .sort((x, y) => (y.tx_date as string).localeCompare(x.tx_date as string))[0]
+    return {
+      id: a.id, name: a.name, type: a.type,
+      total: list.length,
+      forReview: list.filter(t => ['pending','auto'].includes(t.status)).length,
+      inRegister: list.filter(t => ['approved','reviewed'].includes(t.status)).length,
+      lastBalance: latest?.balance ?? null,
+      lastDate: latest?.tx_date ?? null,
+    }
+  })
+
+  return NextResponse.json({ transactions: txs, summary, accounts: accountCards })
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
+  const { ids, action } = await req.json()
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 1000) {
+    return NextResponse.json({ error: 'ids (1-1000) obrigatório' }, { status: 400 })
+  }
+  if (!['approve','unmatch','exclude','restore'].includes(action)) {
+    return NextResponse.json({ error: 'action inválida' }, { status: 400 })
+  }
+
+  const db = serviceDb()
+  const { data: sample } = await db.from('bank_transactions').select('client_id').eq('id', ids[0]).single()
+  if (!sample || !(await canAccessClient(auth, sample.client_id))) {
+    return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  }
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (action === 'approve') update.status = 'approved'                      // → registro
+  if (action === 'exclude') update.status = 'excluded'                      // fora dos livros
+  if (action === 'restore') update.status = 'pending'                       // volta p/ revisão
+  if (action === 'unmatch') {                                               // não aceitar sugestão
+    update.status = 'pending'
+    update.category = null; update.category_confidence = null; update.categorized_by = null
+  }
+
+  let q = db.from('bank_transactions').update(update).in('id', ids).eq('client_id', sample.client_id)
+  if (action === 'approve') q = q.not('category', 'is', null)   // só aprova o que tem categoria
+  const { error, count } = await q.select('id', { count: 'exact' }) as any
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ ok: true, affected: count ?? ids.length })
 }
 
 export async function PATCH(req: NextRequest) {
