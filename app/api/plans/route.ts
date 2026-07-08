@@ -74,8 +74,13 @@ export async function POST(req: NextRequest) {
     if (!monthlyAmount || monthlyAmount <= 0 || monthlyAmount > 100000) {
       return NextResponse.json({ error: 'Valor mensal inválido' }, { status: 400 })
     }
+    const includedTx = Number(body.includedTransactions)
+    if (!includedTx || includedTx < 1 || includedTx > 100000) {
+      return NextResponse.json({ error: 'Informe a quantidade de transações incluídas no contrato' }, { status: 400 })
+    }
     payload = {
       client_id: clientId, kind, monthly_amount: monthlyAmount, due_day: 5,
+      included_transactions: includedTx, overage_rate: 1.25,
       description: description || 'Bookkeeping mensal',
       status: 'draft', created_by: auth.userId,
     }

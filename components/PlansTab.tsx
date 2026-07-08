@@ -42,6 +42,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
   // Form bookkeeping
   const [showBk, setShowBk] = useState(false)
   const [monthly, setMonthly] = useState(''); const [descBk, setDescBk] = useState('Bookkeeping mensal')
+  const [includedTx, setIncludedTx] = useState('100')
 
   // Cancelamento
   const [cancelId, setCancelId] = useState<string|null>(null)
@@ -88,10 +89,30 @@ export default function PlansTab({ clientId, clientName }: Props) {
     setBusy(true); setMsg('')
     const r = await fetch('/api/plans', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, kind:'bookkeeping', monthlyAmount: Number(monthly), description: descBk }),
+      body: JSON.stringify({ clientId, kind:'bookkeeping', monthlyAmount: Number(monthly), includedTransactions: Number(includedTx), description: descBk }),
     })
     const d = await r.json()
     if (d.ok) { setMsg('✓ Contrato criado — gere o link de assinatura.'); setShowBk(false); load() }
+    else setMsg(`Erro: ${d.error}`)
+    setBusy(false)
+  }
+
+  const sendContract = async (planId: string) => {
+    let signerTitle: string | undefined
+    // Business: pedir cargo do assinante
+    const needTitle = confirm('O cliente é business? OK = sim (vou pedir o cargo), Cancelar = pessoa física.')
+    if (needTitle) {
+      const t = prompt('Cargo do assinante (ex.: President, Member):')
+      if (!t?.trim()) { setMsg('Cargo é obrigatório para business.'); return }
+      signerTitle = t.trim()
+    }
+    setBusy(true); setMsg('')
+    const r = await fetch('/api/signatures/contract', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ planId, signerTitle }),
+    })
+    const d = await r.json()
+    if (d.ok) setMsg('✓ Contrato enviado por e-mail via DocuSign. Acompanhe na aba ✍️ Assinaturas.')
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }
@@ -215,10 +236,14 @@ export default function PlansTab({ clientId, clientName }: Props) {
           <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 14px' }}>
             📚 Contrato bookkeeping mensal — {clientName}
           </h3>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 2fr', gap:12, marginBottom:12 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:12, marginBottom:12 }}>
             <div>
               <label style={label}>Valor mensal ($)</label>
               <input type="number" value={monthly} onChange={e => setMonthly(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+            </div>
+            <div>
+              <label style={label}>Transações incluídas/mês</label>
+              <input type="number" value={includedTx} onChange={e => setIncludedTx(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
             </div>
             <div>
               <label style={label}>Descrição</label>
@@ -226,7 +251,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
             </div>
           </div>
           <p style={{ fontSize:13, color:'#1a6b4a', background:'#e8f5ee', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
-            📅 Cobrança automática <strong>todo dia 5</strong>. O cliente autoriza o débito (cartão ou conta bancária) no link de assinatura. Sem prazo final — até cancelamento.
+            📅 Cobrança automática <strong>todo dia 5</strong>. Escopo: bookkeeping + P&L. Transações acima do limite: <strong>$1.25/transação</strong> (cobradas à parte). Impostos e outros serviços NÃO incluídos.
           </p>
           <button onClick={createBookkeeping} disabled={busy || !monthly} style={btn('#1a6b4a', busy || !monthly)}>
             {busy ? 'Criando…' : 'Criar contrato'}
@@ -279,7 +304,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
                   </>
                 ) : (
                   <>
-                    Vencimento: <strong>todo dia {p.due_day}</strong> · Mensalidades pagas: <strong>{p.paid_installments}</strong>
+                    Vencimento: <strong>todo dia {p.due_day}</strong> · Mensalidades pagas: <strong>{p.paid_installments}</strong>{(p as any).included_transactions ? <> · Transações incluídas: <strong>{(p as any).included_transactions}/mês</strong> (excedente $1.25)</> : null}
                     {p.next_charge_date && <><br/>Primeira cobrança: <strong>{new Date(p.next_charge_date+'T12:00:00Z').toLocaleDateString('pt-BR')}</strong></>}
                   </>
                 )}
@@ -291,9 +316,14 @@ export default function PlansTab({ clientId, clientName }: Props) {
               {canManage && (
                 <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                   {['draft','awaiting_entry','awaiting_setup'].includes(p.status) && (
-                    <button onClick={() => genLink(p.id)} disabled={busy} style={btn('#F47B20', busy)}>
-                      {p.kind === 'installment' ? '💳 Link da entrada' : '💳 Link de assinatura'}
-                    </button>
+                    <>
+                      <button onClick={() => sendContract(p.id)} disabled={busy} style={outlineBtn('#5a1a8a')}>
+                        📝 Enviar contrato
+                      </button>
+                      <button onClick={() => genLink(p.id)} disabled={busy} style={btn('#F47B20', busy)}>
+                        {p.kind === 'installment' ? '💳 Link da entrada' : '💳 Link de assinatura'}
+                      </button>
+                    </>
                   )}
                   {p.kind === 'bookkeeping' && ['active','payment_failed'].includes(p.status) && (
                     <button onClick={() => { setPauseTarget({ id: p.id, action:'pause' }); setPauseReason('') }} style={outlineBtn('#c06010')}>
