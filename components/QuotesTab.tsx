@@ -32,6 +32,13 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
   const [editItems,  setEditItems]  = useState<QuoteItem[]>([])
   const [saving,     setSaving]     = useState(false)
 
+  // Parcelamento vinculado à cotação
+  const [plansByQuote, setPlansByQuote] = useState<Record<string, any>>({})
+  const [parcelQuote, setParcelQuote] = useState<Quote|null>(null)
+  const [pEntryPct, setPEntryPct] = useState('30')
+  const [pFreq, setPFreq] = useState('monthly')
+  const [pN, setPN] = useState('6')
+
   // Modal de aprovação (junior) / cancelamento
   const [modalAction, setModalAction] = useState<null | { type:'save'|'cancel'; quoteId: string }>(null)
   const [pin,        setPin]        = useState('')
@@ -53,6 +60,12 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
     setQuotes(q.quotes || [])
     setLevel(p.level || 'junior')
     setCatalog((c.items || []).filter((i: any) => i.active))
+    try {
+      const pl = await fetch(`/api/plans?clientId=${clientId}`).then(r => r.json())
+      const map: Record<string, any> = {}
+      for (const plan of (pl.plans || [])) if (plan.quote_id) map[plan.quote_id] = plan
+      setPlansByQuote(map)
+    } catch {}
     setLoading(false)
   }
 
@@ -163,6 +176,30 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
     if (needsApproval && !pin.trim()) { setMsg('PIN do manager é obrigatório.'); return }
     if (modalAction?.type === 'save')   doSave(modalAction.quoteId, pin || undefined, reason)
     if (modalAction?.type === 'cancel') doCancel(modalAction.quoteId, pin || undefined, reason)
+  }
+
+  // ---- Parcelamento da cotação ----
+  const createParcel = async () => {
+    if (!parcelQuote) return
+    setSaving(true); setMsg('')
+    const r = await fetch('/api/plans', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        clientId, kind:'installment', quoteId: parcelQuote.id,
+        entryPct: Number(pEntryPct), frequency: pFreq, installments: Number(pN),
+      }),
+    })
+    const d = await r.json()
+    if (d.ok) {
+      const c = await fetch('/api/plans/checkout', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ planId: d.plan.id }),
+      }).then(x => x.json())
+      if (c.url) { window.open(c.url, '_blank'); setMsg('✓ Parcelamento criado e link da entrada aberto — envie ao cliente.') }
+      else setMsg(`Parcelamento criado, mas o link falhou: ${c.error}`)
+      setParcelQuote(null); load()
+    } else setMsg(`Erro: ${d.error}`)
+    setSaving(false)
   }
 
   // ---- Pagamento ----
@@ -345,10 +382,22 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                       <button onClick={() => startEdit(q)} style={{ ...btn('#fff'), color:'#2D3278', border:'1.5px solid #2D3278' }}>
                         ✏️ Editar
                       </button>
+                      {!plansByQuote[q.id] && (<>
                       <button onClick={() => sendPayment(q.id)} disabled={sendingId === q.id || q.total <= 0}
                         style={btn('#F47B20', sendingId === q.id || q.total <= 0)}>
-                        {sendingId === q.id ? 'Gerando…' : '💳 Link de pagamento'}
+                        {sendingId === q.id ? 'Gerando…' : '💳 À vista (card/ACH/Klarna)'}
                       </button>
+                      <button onClick={() => { setParcelQuote(q); setPEntryPct('30'); setPFreq('monthly'); setPN('6') }}
+                        disabled={q.total <= 0}
+                        style={btn('#2D3278', q.total <= 0)}>
+                        📆 Parcelar (entrada + débito)
+                      </button>
+                      </>)}
+                      {plansByQuote[q.id] && (
+                        <span style={{ fontSize:13, fontWeight:600, color:'#2D3278', alignSelf:'center' }}>
+                          📆 Parcelado: entrada {plansByQuote[q.id].entry_paid_at ? '✓ paga' : 'pendente'} · {plansByQuote[q.id].paid_installments}/{plansByQuote[q.id].installments} parcelas — ver aba Planos
+                        </span>
+                      )}
                       <button onClick={() => tryCancel(q.id)} style={{ ...btn('#fff'), color:'#b02020', border:'1.5px solid #fdd' }}>
                         🚫 Cancelar cotação
                       </button>
@@ -377,6 +426,55 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ---- Modal de parcelamento da cotação ---- */}
+      {parcelQuote && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:440, maxWidth:'92vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>
+              📆 Parcelar cotação — ${parcelQuote.total.toFixed(2)}
+            </h3>
+            <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px' }}>
+              O cliente paga a entrada agora (autorizando o débito automático) e as parcelas são debitadas na frequência escolhida. O Invoice fecha na quitação.
+            </p>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginBottom:12 }}>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>Entrada (%)</label>
+                <input type="number" value={pEntryPct} onChange={e => setPEntryPct(e.target.value)} min={1} max={90}
+                  style={{ ...input, width:'100%' }} />
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>Frequência</label>
+                <select value={pFreq} onChange={e => setPFreq(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                  <option value="weekly">Semanal</option>
+                  <option value="biweekly">Quinzenal</option>
+                  <option value="monthly">Mensal</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>Parcelas</label>
+                <input type="number" value={pN} onChange={e => setPN(e.target.value)} min={1} max={60}
+                  style={{ ...input, width:'100%' }} />
+              </div>
+            </div>
+            {Number(pEntryPct) > 0 && Number(pN) > 0 && (
+              <div style={{ background:'#f0f4ff', borderRadius:10, padding:'10px 14px', marginBottom:12, fontSize:13, color:'#2D3278' }}>
+                Entrada: <strong>${(parcelQuote.total * Number(pEntryPct) / 100).toFixed(2)}</strong>
+                {' '}· Depois: <strong>{pN}× de ${((parcelQuote.total * (1 - Number(pEntryPct)/100)) / Number(pN)).toFixed(2)}</strong>
+                <br/><span style={{ fontSize:12, color:'#6a7a9a' }}>⚠️ Entrega do serviço somente após 75% quitado (cláusula contratual).</span>
+              </div>
+            )}
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setParcelQuote(null)}
+                style={{ ...btn('#fff'), color:'#6a7a9a', border:'1.5px solid #e2e8f4' }}>Voltar</button>
+              <button onClick={createParcel} disabled={saving} style={btn('#2D3278', saving)}>
+                {saving ? 'Criando…' : 'Criar e gerar link da entrada'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -49,7 +49,30 @@ export async function POST(req: NextRequest) {
   let payload: Record<string, unknown>
 
   if (kind === 'installment') {
-    const total = Number(body.total)
+    // Vinculado a uma cotação (Estimate)? Usa o total dela.
+    let quoteId: string | null = null
+    let quoteTotal: number | null = null
+    let quoteDesc: string | null = null
+    if (body.quoteId) {
+      const { data: quote } = await db.from('quotes')
+        .select('id, total, status, est_number, fiscal_year')
+        .eq('id', body.quoteId).eq('client_id', clientId).single()
+      if (!quote) return NextResponse.json({ error: 'Cotação não encontrada' }, { status: 404 })
+      if (!['draft','sent'].includes(quote.status)) {
+        return NextResponse.json({ error: `Cotação em status '${quote.status}' não pode ser parcelada` }, { status: 409 })
+      }
+      if (Number(quote.total) <= 0) return NextResponse.json({ error: 'Cotação sem valor' }, { status: 400 })
+      // Já existe plano ativo vinculado?
+      const { data: existingPlan } = await db.from('payment_plans')
+        .select('id, status').eq('quote_id', quote.id)
+        .not('status', 'in', '(cancelled,completed)').maybeSingle()
+      if (existingPlan) return NextResponse.json({ error: 'Já existe parcelamento ativo para esta cotação' }, { status: 409 })
+      quoteId = quote.id
+      quoteTotal = Number(quote.total)
+      quoteDesc = `Estimate ${quote.est_number || ''} — Ano fiscal ${quote.fiscal_year}`.trim()
+    }
+
+    const total = quoteTotal ?? Number(body.total)
     const entryPct = Number(body.entryPct)
     const installments = Number(body.installments)
     const frequency = body.frequency
@@ -66,7 +89,8 @@ export async function POST(req: NextRequest) {
       client_id: clientId, kind, total,
       entry_pct: entryPct, entry_amount: calc.entry,
       frequency, installments, installment_amount: calc.perInstallment,
-      description: description || null,
+      description: description || quoteDesc || null,
+      quote_id: quoteId,
       status: 'draft', created_by: auth.userId,
     }
   } else if (kind === 'bookkeeping') {

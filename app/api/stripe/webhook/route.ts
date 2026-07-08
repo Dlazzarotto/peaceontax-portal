@@ -100,6 +100,14 @@ export async function POST(req: NextRequest) {
           plan_id: plan.id, client_id: plan.client_id, type: 'completed',
           message: `Parcelamento concluído: ${paid}/${plan.installments} parcelas pagas.`,
         })
+        // Cotação vinculada → vira Invoice paga
+        if (plan.quote_id) {
+          await db.from('quotes').update({
+            status: 'paid',
+            paid_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).eq('id', plan.quote_id)
+        }
         await notifyClient(db, plan.client_id, '🎉 Todas as parcelas do seu plano foram quitadas. Obrigado!')
       }
       return NextResponse.json({ received: true })
