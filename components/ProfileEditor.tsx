@@ -28,6 +28,8 @@ export default function ProfileEditor({ client, onSaved }: Props) {
   const [statusModal, setStatusModal] = useState(false)   // ativar/desativar
   const [accessModal, setAccessModal] = useState(false)   // reenviar acesso
   const [tempPw, setTempPw] = useState<{ password: string; email: string }|null>(null)
+  const [tempModal, setTempModal] = useState(false)
+  const [tempInput, setTempInput] = useState('')
   const [tempBusy, setTempBusy] = useState(false)
   const [reason, setReason]           = useState('')
   const [newEmail, setNewEmail]       = useState(client.email || '')
@@ -60,16 +62,33 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     setProcessing(false)
   }
 
+  const suggestTempPassword = () => {
+    const words = ['Tax','Peace','Boston','Malden','Maple','River','Summit','Harbor']
+    const w = words[Math.floor(Math.random() * words.length)]
+    return `${w}${Math.floor(1000 + Math.random() * 9000)}!`
+  }
+
+  const openTempModal = () => {
+    setTempInput(suggestTempPassword())
+    setTempModal(true)
+  }
+
   const issueTempPassword = async () => {
-    if (!confirm('Gerar senha provisória? A senha atual do cliente deixa de funcionar e ele deverá trocar no primeiro acesso.')) return
+    if (tempInput.trim().length < 8) { alert('A senha provisória precisa de pelo menos 8 caracteres.'); return }
     setTempBusy(true)
-    const r = await fetch('/api/clients/temp-password', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId }),
-    }).then(x => x.json())
-    if (r.ok) setTempPw({ password: r.tempPassword, email: r.loginEmail })
-    else alert(`Erro: ${r.error}`)
-    setTempBusy(false)
+    try {
+      const res = await fetch('/api/clients/temp-password', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ clientId, password: tempInput.trim() }),
+      })
+      const r = await res.json()
+      if (r.ok) { setTempPw({ password: r.tempPassword, email: r.loginEmail }); setTempModal(false) }
+      else alert(`Erro: ${r.error || res.status}`)
+    } catch (e) {
+      alert(`Falha na requisição: ${(e as Error).message}`)
+    } finally {
+      setTempBusy(false)
+    }
   }
 
   const resendAccess = async () => {
@@ -108,6 +127,39 @@ export default function ProfileEditor({ client, onSaved }: Props) {
 
   return (
     <div style={{ maxWidth:680 }}>
+      {tempModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:3000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:26, width:420, maxWidth:'92vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:17, color:'#0f2340', margin:'0 0 6px' }}>
+              🔑 Definir senha provisória
+            </h3>
+            <p style={{ fontSize:13, color:'#5a6a7a', margin:'0 0 14px', lineHeight:1.6 }}>
+              Digite a senha que será enviada ao cliente (ou use a sugestão). A senha atual dele deixa de funcionar, e ele será obrigado a trocá-la no primeiro acesso.
+            </p>
+            <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>Senha provisória (mín. 8) *</label>
+            <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+              <input value={tempInput} onChange={e => setTempInput(e.target.value)}
+                style={{ flex:1, padding:'11px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:16, fontFamily:'monospace', fontWeight:700, color:'#2D3278', outline:'none' }} />
+              <button onClick={() => setTempInput(suggestTempPassword())}
+                style={{ padding:'9px 12px', background:'#f0f4ff', color:'#2D3278', border:'none', borderRadius:8, fontSize:12.5, fontWeight:700, cursor:'pointer' }}>
+                🎲 Sugerir
+              </button>
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setTempModal(false)}
+                style={{ padding:'9px 16px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                Cancelar
+              </button>
+              <button onClick={issueTempPassword} disabled={tempBusy}
+                style={{ padding:'9px 16px', background: tempBusy ? '#e2e8f4' : '#5a1a8a', color: tempBusy ? '#9aaab0' : '#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:700, cursor: tempBusy ? 'not-allowed' : 'pointer' }}>
+                {tempBusy ? 'Aplicando…' : '✓ Aplicar senha'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {tempPw && (
         <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
           alignItems:'center', justifyContent:'center', zIndex:3000 }}>
@@ -201,7 +253,7 @@ export default function ProfileEditor({ client, onSaved }: Props) {
             style={{ ...btn('#fff'), color:'#F47B20', border:'1.5px solid #F47B20' }}>
             📧 Reenviar acesso ao portal
           </button>
-          <button onClick={issueTempPassword} disabled={tempBusy}
+          <button onClick={openTempModal} disabled={tempBusy}
             style={{ ...btn('#fff'), color:'#5a1a8a', border:'1.5px solid #5a1a8a' }}>
             {tempBusy ? 'Gerando…' : '🔑 Senha provisória'}
           </button>

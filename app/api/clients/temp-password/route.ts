@@ -22,8 +22,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Somente manager/owner geram senha provisória' }, { status: 403 })
   }
 
-  const { clientId } = await req.json()
+  const { clientId, password } = await req.json()
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
+  if (password !== undefined) {
+    const p = String(password)
+    if (p.length < 8) return NextResponse.json({ error: 'Senha provisória: mínimo 8 caracteres' }, { status: 400 })
+    if (p.length > 72) return NextResponse.json({ error: 'Senha muito longa' }, { status: 400 })
+  }
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
@@ -34,7 +39,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Cliente ainda não criou o acesso — use "Reenviar acesso" para o convite inicial' }, { status: 409 })
   }
 
-  const tempPassword = generateTempPassword()
+  const tempPassword = password ? String(password) : generateTempPassword()
 
   // Service role: define a senha + flag de troca obrigatória
   const { error } = await db.auth.admin.updateUserById(client.user_id, {
