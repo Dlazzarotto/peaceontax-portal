@@ -172,9 +172,11 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
     setSaving(false)
   }
 
+  const pinRequired = needsApproval || (modalAction?.type === 'save' && hasDiscount)
+
   const confirmModal = () => {
     if (!reason.trim()) { setMsg('Motivo é obrigatório.'); return }
-    if (needsApproval && !pin.trim()) { setMsg('PIN do manager é obrigatório.'); return }
+    if (pinRequired && !pin.trim()) { setMsg('PIN de aprovação é obrigatório.'); return }
     if (modalAction?.type === 'save')   doSave(modalAction.quoteId, pin || undefined, reason)
     if (modalAction?.type === 'cancel') doCancel(modalAction.quoteId, pin || undefined, reason)
   }
@@ -537,7 +539,9 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
             <p style={{ fontSize:13, color:'#6a7a9a', margin:'0 0 14px' }}>
               {modalAction.type === 'cancel'
                 ? 'O motivo do cancelamento fica registrado na auditoria.'
-                : 'Alterações de nível junior exigem aprovação de um manager.'}
+                : hasDiscount
+                  ? 'Desconto exige PIN de aprovação + motivo — para qualquer nível, incluindo owner (política da firma).'
+                  : 'Alterações de nível junior exigem aprovação de um manager.'}
             </p>
 
             <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>
@@ -547,10 +551,10 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
               placeholder="Descreva o motivo…"
               style={{ ...input, width:'100%', resize:'vertical' as const, marginBottom:12 }} />
 
-            {needsApproval && (
+            {pinRequired && (
               <>
                 <label style={{ display:'block', fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:4 }}>
-                  PIN do manager *
+                  PIN de aprovação (manager/owner) *
                 </label>
                 <input type="password" inputMode="numeric" value={pin} onChange={e => setPin(e.target.value)}
                   placeholder="4–8 dígitos" maxLength={8}
