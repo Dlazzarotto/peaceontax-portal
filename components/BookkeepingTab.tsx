@@ -33,6 +33,19 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatOpen, setNewCatOpen] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [newCatKind, setNewCatKind] = useState('expense')
+
+  // Painel de regras (estilo QuickBooks)
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [rules, setRules] = useState<any[]>([])
+  const [rName, setRName] = useState('')
+  const [rDirection, setRDirection] = useState('out')
+  const [rPattern, setRPattern] = useState('')
+  const [rMatchType, setRMatchType] = useState('contains')
+  const [rAmountOp, setRAmountOp] = useState('')
+  const [rAmountVal, setRAmountVal] = useState('')
+  const [rPayee, setRPayee] = useState('')
+  const [rCategory, setRCategory] = useState('')
+  const [rScope, setRScope] = useState('client')
   const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovMonth, setOvMonth] = useState('')
@@ -117,6 +130,35 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (d.ok) setMsg(`✓ Categorização: ${d.ruled} por regra · ${d.ai} pela IA (≥95%) · ${d.review} para revisão${d.payeesFilled ? ` · ${d.payeesFilled} payees extraídos` : ''}`)
     else setMsg(`Erro: ${d.error}`)
     setCategorizing(false); load()
+  }
+
+  const loadRules = async () => {
+    const r = await fetch(`/api/bookkeeping/rules?clientId=${clientId}`).then(x => x.json())
+    setRules(r.rules || [])
+  }
+
+  const createRule = async () => {
+    if (!rName.trim() || !rCategory) { setMsg('Regra precisa de nome e categoria.'); return }
+    if (!rPattern.trim() && !rAmountOp) { setMsg('Defina ao menos uma condição (descrição ou valor).'); return }
+    const r = await fetch('/api/bookkeeping/rules', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        clientId, scope: rScope, name: rName.trim(), direction: rDirection,
+        pattern: rPattern.trim(), matchType: rMatchType,
+        amountOp: rAmountOp || undefined, amountValue: rAmountVal ? Number(rAmountVal) : undefined,
+        payee: rPayee.trim(), category: rCategory,
+      }),
+    }).then(x => x.json())
+    if (r.ok) {
+      setMsg('✓ Regra criada — clique em 🤖 Categorizar para aplicá-la aos pendentes.')
+      setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee('')
+      loadRules()
+    } else setMsg(`Erro: ${r.error}`)
+  }
+
+  const deleteRule = async (id: string) => {
+    await fetch(`/api/bookkeeping/rules?id=${id}`, { method:'DELETE' })
+    loadRules()
   }
 
   const setTxPayee = async (id: string, payee: string) => {
@@ -264,6 +306,117 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       </div>
 
+      {/* Painel de regras */}
+      {rulesOpen && (
+        <div style={{ background:'#fff', borderRadius:14, padding:20, border:'2px solid #1a6b4a', marginBottom:14 }}>
+          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>⚙️ Regras de categorização</h3>
+          <p style={{ fontSize:12, color:'#6a7a9a', margin:'0 0 14px' }}>
+            Regras têm prioridade sobre a IA. Formato QuickBooks: nome + direção + condições (descrição e/ou valor) + payee + categoria.
+          </p>
+
+          {/* Form nova regra */}
+          <div style={{ background:'#f8faff', borderRadius:10, padding:14, marginBottom:14 }}>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:10, marginBottom:10 }}>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Nome da regra *</label>
+                <input value={rName} onChange={e => setRName(e.target.value)} placeholder="Ex.: Pagamentos Paulo"
+                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Aplica a</label>
+                <select value={rDirection} onChange={e => setRDirection(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="out">💸 Money Out (saídas)</option>
+                  <option value="in">💰 Money In (entradas)</option>
+                  <option value="both">↔️ Ambos</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Escopo</label>
+                <select value={rScope} onChange={e => setRScope(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="client">Só este cliente</option>
+                  <option value="global">Todos os clientes</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:10, marginBottom:10 }}>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Se descrição…</label>
+                <select value={rMatchType} onChange={e => setRMatchType(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="contains">contém</option>
+                  <option value="starts_with">começa com</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Texto</label>
+                <input value={rPattern} onChange={e => setRPattern(e.target.value)} placeholder="Ex.: zelle paulo"
+                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>E valor… (opcional)</label>
+                <select value={rAmountOp} onChange={e => setRAmountOp(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="">— sem condição —</option>
+                  <option value="gt">maior que</option>
+                  <option value="lt">menor que</option>
+                  <option value="eq">igual a</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Valor ($)</label>
+                <input type="number" value={rAmountVal} onChange={e => setRAmountVal(e.target.value)} disabled={!rAmountOp}
+                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', background: rAmountOp ? '#fff' : '#f0f4fa' }} />
+              </div>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(170px, 1fr))', gap:10, marginBottom:12 }}>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Então: Payee (opcional)</label>
+                <input value={rPayee} onChange={e => setRPayee(e.target.value)} list="payee-list" placeholder="Escolher ou criar"
+                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+                <datalist id="payee-list">
+                  {Array.from(new Set(txs.map(t => t.payee).filter(Boolean))).map(p2 => <option key={p2 as string} value={p2 as string} />)}
+                </datalist>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Categoria *</label>
+                <select value={rCategory} onChange={e => setRCategory(e.target.value)} style={{ ...sel, width:'100%' }}>
+                  <option value="">— escolher —</option>
+                  {GROUP_ORDER.filter(g => categories.some(c => c.kind === g)).map(g => (
+                    <optgroup key={g} label={GROUP_LABEL[g]}>
+                      {categories.filter(c => c.kind === g).map(c =>
+                        <option key={c.name} value={c.name}>{c.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display:'flex', alignItems:'flex-end' }}>
+                <button onClick={createRule} style={btn('#1a6b4a')}>✓ Criar regra</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Lista de regras */}
+          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:260, overflow:'auto' }}>
+            {rules.map(r => (
+              <div key={r.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#f8faff', borderRadius:8, fontSize:12.5, flexWrap:'wrap' }}>
+                <span style={{ fontWeight:700, color:'#0f2340' }}>{r.name || r.pattern}</span>
+                <span style={{ color:'#6a7a9a' }}>
+                  {r.direction === 'in' ? '💰 In' : r.direction === 'out' ? '💸 Out' : '↔️'}
+                  {r.pattern && ` · "${r.pattern}"`}
+                  {r.amount_op && ` · ${r.amount_op === 'gt' ? '>' : r.amount_op === 'lt' ? '<' : '='} $${Number(r.amount_value).toFixed(2)}`}
+                  {r.payee && ` · → ${r.payee}`}
+                  {` · ${r.category}`}
+                </span>
+                <span style={{ fontSize:10.5, padding:'1px 8px', borderRadius:12, background: r.client_id ? '#2D327815' : '#5a1a8a15', color: r.client_id ? '#2D3278' : '#5a1a8a', fontWeight:700 }}>
+                  {r.client_id ? 'Cliente' : 'Global'}
+                </span>
+                <button onClick={() => deleteRule(r.id)}
+                  style={{ marginLeft:'auto', background:'none', border:'none', color:'#b02020', cursor:'pointer', fontSize:13, fontWeight:700 }}>✕</button>
+              </div>
+            ))}
+            {rules.length === 0 && <p style={{ fontSize:12.5, color:'#9aaab0' }}>Nenhuma regra ainda.</p>}
+          </div>
+        </div>
+      )}
+
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
         <button onClick={categorize} disabled={categorizing || !summary || summary.pending === 0}
@@ -272,6 +425,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         </button>
         <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
           + Nova categoria
+        </button>
+        <button onClick={() => { setRulesOpen(o => !o); if (!rulesOpen) loadRules() }} style={btn('#1a6b4a')}>
+          ⚙️ Regras
         </button>
         {newCatOpen && (
           <span style={{ display:'inline-flex', gap:6, alignItems:'center' }}>

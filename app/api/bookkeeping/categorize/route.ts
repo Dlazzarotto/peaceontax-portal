@@ -62,22 +62,43 @@ export async function POST(req: NextRequest) {
 
   // Regras: do cliente + globais, por prioridade
   const { data: rules } = await db.from('bookkeeping_rules')
-    .select('pattern, category, priority, client_id')
+    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee')
     .or(`client_id.eq.${clientId},client_id.is.null`)
     .order('priority', { ascending: true })
+
+  const ruleMatches = (r: any, desc: string, amount: number): boolean => {
+    // Direção
+    if (r.direction === 'in' && amount <= 0) return false
+    if (r.direction === 'out' && amount >= 0) return false
+    // Descrição
+    if (r.pattern) {
+      const pat = r.pattern.toLowerCase()
+      if (r.match_type === 'starts_with' ? !desc.startsWith(pat) : !desc.includes(pat)) return false
+    }
+    // Valor (comparação pelo valor absoluto)
+    if (r.amount_op) {
+      const abs = Math.abs(amount), v = Number(r.amount_value)
+      if (r.amount_op === 'gt' && !(abs > v)) return false
+      if (r.amount_op === 'lt' && !(abs < v)) return false
+      if (r.amount_op === 'eq' && Math.abs(abs - v) > 0.005) return false
+    }
+    return true
+  }
 
   let ruled = 0
   const unresolved: typeof txs = []
 
   for (const tx of txs) {
     const desc = tx.description.toLowerCase()
-    const rule = (rules || []).find(r => desc.includes(r.pattern.toLowerCase()))
+    const rule = (rules || []).find(r => ruleMatches(r, desc, Number(tx.amount)))
     if (rule) {
-      await db.from('bank_transactions').update({
+      const upd: Record<string, unknown> = {
         category: rule.category, category_confidence: 100,
         categorized_by: 'rule', status: 'auto',
         updated_at: new Date().toISOString(),
-      }).eq('id', tx.id)
+      }
+      if (rule.payee) upd.payee = rule.payee
+      await db.from('bank_transactions').update(upd).eq('id', tx.id)
       ruled++
     } else {
       unresolved.push(tx)
