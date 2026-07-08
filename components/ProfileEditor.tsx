@@ -79,7 +79,7 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     try {
       const res = await fetch('/api/clients/temp-password', {
         method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ clientId, password: tempInput.trim() }),
+        body: JSON.stringify({ clientId: client.id, password: tempInput.trim() }),
       })
       const r = await res.json()
       if (r.ok) { setTempPw({ password: r.tempPassword, email: r.loginEmail }); setTempModal(false) }
