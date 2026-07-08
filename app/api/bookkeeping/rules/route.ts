@@ -36,7 +36,9 @@ export async function POST(req: NextRequest) {
 
   const b = await req.json()
   const name = String(b.name || '').trim()
-  const pattern = String(b.pattern || '').trim().toLowerCase() || null
+  const pattern = String(b.pattern || '')
+    .split('|').map((x: string) => x.trim().toLowerCase()).filter((x: string) => x.length >= 2)
+    .join('|') || null
   const category = String(b.category || '').trim()
   const direction = ['in','out','both'].includes(b.direction) ? b.direction : 'both'
   const matchType = ['contains','starts_with'].includes(b.matchType) ? b.matchType : 'contains'
@@ -86,7 +88,9 @@ export async function POST(req: NextRequest) {
       if (direction === 'in' && amount <= 0) continue
       if (direction === 'out' && amount >= 0) continue
       if (pattern) {
-        if (matchType === 'starts_with' ? !desc.startsWith(pattern) : !desc.includes(pattern)) continue
+        const variants = pattern.split('|')
+        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        if (!hit) continue
       }
       if (amountOp) {
         const abs = Math.abs(amount)

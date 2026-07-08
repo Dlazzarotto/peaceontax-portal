@@ -472,9 +472,10 @@ export default function BookkeepingTab({ clientId }: Props) {
                 </select>
               </div>
               <div>
-                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Texto</label>
-                <input value={rPattern} onChange={e => setRPattern(e.target.value)} placeholder="Ex.: zelle paulo"
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Texto — variações com | </label>
+                <input value={rPattern} onChange={e => setRPattern(e.target.value)} placeholder="walmart | wal mart | wm"
                   style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+                <div style={{ fontSize:10.5, color:'#9aaab0', marginTop:2 }}>Qualquer variação ativa a regra (OU)</div>
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>E valor… (opcional)</label>
@@ -581,9 +582,9 @@ export default function BookkeepingTab({ clientId }: Props) {
 
             <div style={{ background:'#f0f9f4', border:'1.5px solid #1a6b4a40', borderRadius:10, padding:12, marginBottom:14 }}>
               <div style={{ fontSize:12.5, fontWeight:700, color:'#1a6b4a', marginBottom:6 }}>
-                📐 Se criar regra: aplica a TODOS os lançamentos cuja descrição contém…
+                📐 Se criar regra: aplica a TODOS cuja descrição contém… (variações com |)
               </div>
-              <input value={mPattern} onChange={e => setMPattern(e.target.value)}
+              <input value={mPattern} onChange={e => setMPattern(e.target.value)} placeholder="walmart | wal mart | wm"
                 style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', marginBottom:8 }} />
               <select value={mScope} onChange={e => setMScope(e.target.value)} style={{ ...sel, width:'100%' }}>
                 <option value="client">Só este cliente</option>

@@ -70,10 +70,11 @@ export async function POST(req: NextRequest) {
     // Direção
     if (r.direction === 'in' && amount <= 0) return false
     if (r.direction === 'out' && amount >= 0) return false
-    // Descrição
+    // Descrição — múltiplas variações separadas por | (OR)
     if (r.pattern) {
-      const pat = r.pattern.toLowerCase()
-      if (r.match_type === 'starts_with' ? !desc.startsWith(pat) : !desc.includes(pat)) return false
+      const variants = r.pattern.toLowerCase().split('|').map((v: string) => v.trim()).filter(Boolean)
+      const hit = variants.some((v: string) => r.match_type === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+      if (!hit) return false
     }
     // Valor (comparação pelo valor absoluto)
     if (r.amount_op) {
