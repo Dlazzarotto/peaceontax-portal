@@ -31,6 +31,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [categorizing, setCategorizing] = useState(false)
+  const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
+  const [pnlMonth, setPnlMonth] = useState<string>('all')
+  const [ovMonth, setOvMonth] = useState('')
+  const [ovData, setOvData] = useState<any>(null)
+  const [ovBusy, setOvBusy] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -92,6 +97,32 @@ export default function BookkeepingTab({ clientId }: Props) {
     })
     setMsg(`✓ Categorizada — regra criada para próximas transações parecidas.`)
     load()
+  }
+
+  const openPnl = () => {
+    const params = new URLSearchParams({ clientId, year: String(pnlYear) })
+    if (pnlMonth !== 'all') params.set('month', pnlMonth)
+    window.open(`/api/bookkeeping/pnl?${params}`, '_blank')
+  }
+
+  const checkOverage = async () => {
+    if (!/^\d{4}-\d{2}$/.test(ovMonth)) { setMsg('Informe o mês no formato AAAA-MM (ex.: 2026-06)'); return }
+    setOvBusy(true); setOvData(null); setMsg('')
+    const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&month=${ovMonth}`)
+    const d = await r.json()
+    if (d.error) setMsg(d.error); else setOvData(d)
+    setOvBusy(false)
+  }
+
+  const chargeOverage = async () => {
+    setOvBusy(true); setMsg('')
+    const r = await fetch('/api/bookkeeping/overage', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ clientId, month: ovMonth }),
+    })
+    const d = await r.json()
+    setMsg(d.ok ? `✓ ${d.message}` : `Erro: ${d.error}`)
+    setOvBusy(false); if (d.ok) setOvData(null)
   }
 
   const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
@@ -158,6 +189,42 @@ export default function BookkeepingTab({ clientId }: Props) {
           ))}
         </div>
       )}
+
+      {/* P&L + Excedente */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom:14 }}>
+        <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>📈 P&L (cash basis)</div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <select value={pnlYear} onChange={e => setPnlYear(Number(e.target.value))} style={sel}>
+              {Array.from({length:7},(_,i)=>new Date().getFullYear()-i).map(y => <option key={y}>{y}</option>)}
+            </select>
+            <select value={pnlMonth} onChange={e => setPnlMonth(e.target.value)} style={sel}>
+              <option value="all">Ano inteiro</option>
+              {Array.from({length:12},(_,i)=>i+1).map(m => <option key={m} value={m}>{String(m).padStart(2,'0')}</option>)}
+            </select>
+            <button onClick={openPnl} style={btn('#2D3278')}>📄 Gerar P&L</button>
+          </div>
+        </div>
+        <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>💵 Excedente de transações ($1.25/tx)</div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+            <input value={ovMonth} onChange={e => setOvMonth(e.target.value)} placeholder="AAAA-MM"
+              style={{ padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, width:100, outline:'none' }} />
+            <button onClick={checkOverage} disabled={ovBusy} style={btn('#6a7a9a', ovBusy)}>Verificar</button>
+            {ovData && (
+              <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
+                {ovData.total}/{ovData.included} transações
+                {ovData.overage > 0 ? ` → ${ovData.overage} excedentes = $${ovData.charge.toFixed(2)}` : ' — dentro do limite ✓'}
+              </span>
+            )}
+            {ovData && ovData.overage > 0 && (
+              <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
+                💳 Cobrar na fatura do dia 5
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>

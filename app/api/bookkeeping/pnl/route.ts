@@ -1,0 +1,130 @@
+// GET /api/bookkeeping/pnl?clientId=...&year=2020[&month=9]
+// Gera o P&L (cash-basis) em HTML pronto para imprimir/salvar PDF.
+// Baseado nas transações categorizadas (status auto/reviewed).
+
+import { NextRequest, NextResponse } from 'next/server'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+
+const FIRM = {
+  name: 'Peace on Tax Corp',
+  address: '75 Pleasant St Suite 119, Malden, MA 02148',
+  phone: '(833) 732-2327', email: 'info@peaceontax.com',
+}
+
+const INCOME_CATS = ['Income', 'Refunds']
+const NON_PNL     = ['Transfer', 'Owner Draw', 'Owner Contribution', 'Personal', 'Uncategorized Check']
+
+export async function GET(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
+  const sp = req.nextUrl.searchParams
+  const clientId = sp.get('clientId')
+  const year = parseInt(sp.get('year') || '')
+  const month = sp.get('month') ? parseInt(sp.get('month')!) : null
+  if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
+  if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+
+  const db = serviceDb()
+  const { data: client } = await db.from('clients')
+    .select('name, business_name').eq('id', clientId).single()
+
+  let q = db.from('bank_transactions')
+    .select('tx_date, category, amount, status')
+    .eq('client_id', clientId)
+    .eq('fiscal_year', year)
+    .in('status', ['auto', 'reviewed'])
+    .limit(10000)
+  const { data: txs } = await q
+
+  const filtered = (txs || []).filter(t =>
+    month ? new Date(t.tx_date + 'T12:00:00Z').getUTCMonth() + 1 === month : true
+  )
+
+  // Pendentes (aviso de P&L incompleto)
+  let pq = db.from('bank_transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', clientId).eq('fiscal_year', year).eq('status', 'pending')
+  const { count: pendingCount } = await pq
+
+  // Agrega por categoria
+  const byCat: Record<string, number> = {}
+  for (const t of filtered) {
+    const cat = t.category || 'Other'
+    byCat[cat] = (byCat[cat] || 0) + Number(t.amount)
+  }
+
+  const income = Object.entries(byCat)
+    .filter(([c]) => INCOME_CATS.includes(c))
+    .map(([c, v]) => ({ cat: c, val: v }))
+    .sort((a, b) => b.val - a.val)
+  const expenses = Object.entries(byCat)
+    .filter(([c]) => !INCOME_CATS.includes(c) && !NON_PNL.includes(c))
+    .map(([c, v]) => ({ cat: c, val: v }))
+    .sort((a, b) => a.val - b.val)
+  const nonPnl = Object.entries(byCat)
+    .filter(([c]) => NON_PNL.includes(c))
+    .map(([c, v]) => ({ cat: c, val: v }))
+
+  const totalIncome  = income.reduce((s, i) => s + i.val, 0)
+  const totalExpense = expenses.reduce((s, i) => s + i.val, 0)  // negativo
+  const netProfit    = totalIncome + totalExpense
+
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
+  const period = month ? `${MONTHS[month-1]} ${year}` : `Year ${year}`
+  const displayName = client?.business_name || client?.name || ''
+  const money = (n: number) => `${n < 0 ? '(' : ''}$${Math.abs(n).toFixed(2)}${n < 0 ? ')' : ''}`
+
+  const row = (label: string, val: number, indent = true) =>
+    `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${label}</td><td class="r">${money(val)}</td></tr>`
+
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>P&L ${period} — ${displayName}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: Georgia, serif; color:#1a2a3a; background:#f0f4fa; padding:24px; font-size:15px; }
+  .sheet { max-width:760px; margin:0 auto; background:#fff; padding:44px 52px; border-radius:8px; box-shadow:0 2px 24px rgba(45,50,120,0.12); }
+  h1 { font-size:22px; color:#2D3278; text-align:center; }
+  h2 { font-size:15px; text-align:center; color:#5a6a7a; font-weight:400; margin:4px 0 24px; }
+  .firm { text-align:center; font-size:12px; color:#8a9ab0; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; }
+  td.r { text-align:right; padding-right:14px; font-variant-numeric: tabular-nums; }
+  tr.section td { background:#2D3278; color:#fff; font-weight:700; padding:8px 14px; font-size:13px; text-transform:uppercase; letter-spacing:0.5px; }
+  tr.subtotal td { border-top:1.5px solid #2D3278; font-weight:700; padding:8px 14px; }
+  tr.net td { background:${netProfit >= 0 ? '#e8f5ee' : '#fee2e2'}; color:${netProfit >= 0 ? '#1a6b4a' : '#b02020'}; font-weight:800; font-size:17px; padding:12px 14px; }
+  tr.nonpnl td { color:#8a9ab0; font-size:13px; }
+  .warn { margin-top:18px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
+  .foot { margin-top:26px; text-align:center; font-size:11px; color:#9aaab0; }
+  .printbtn { position:fixed; top:18px; right:18px; background:#F47B20; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:10px; cursor:pointer; min-height:48px; }
+  @media print { body { background:#fff; padding:0; } .sheet { box-shadow:none; } .printbtn { display:none; } }
+</style></head><body>
+<button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
+<div class="sheet">
+  <div class="firm">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
+  <h1>${displayName}</h1>
+  <h2>Profit &amp; Loss (Cash Basis) — ${period}</h2>
+
+  <table>
+    <tr class="section"><td colspan="2">Income</td></tr>
+    ${income.map(i => row(i.cat, i.val)).join('') || row('No income recorded', 0)}
+    <tr class="subtotal"><td>Total Income</td><td class="r">${money(totalIncome)}</td></tr>
+
+    <tr class="section"><td colspan="2">Expenses</td></tr>
+    ${expenses.map(e => row(e.cat, e.val)).join('') || row('No expenses recorded', 0)}
+    <tr class="subtotal"><td>Total Expenses</td><td class="r">${money(totalExpense)}</td></tr>
+
+    <tr class="net"><td>NET ${netProfit >= 0 ? 'PROFIT' : 'LOSS'}</td><td class="r">${money(netProfit)}</td></tr>
+
+    ${nonPnl.length ? `
+    <tr class="section"><td colspan="2" style="background:#8a9ab0">Non-P&amp;L Items (informational)</td></tr>
+    ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val).slice(4)}`).join('')}` : ''}
+  </table>
+
+  ${(pendingCount ?? 0) > 0 ? `<div class="warn">⚠️ ${pendingCount} transactions are still uncategorized for ${year} — this P&amp;L is preliminary.</div>` : ''}
+
+  <div class="foot">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US', { timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })} · Cash basis — reflects bank activity only</div>
+</div>
+</body></html>`
+
+  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+}
