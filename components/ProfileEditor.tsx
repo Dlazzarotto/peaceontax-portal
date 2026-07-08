@@ -27,6 +27,8 @@ export default function ProfileEditor({ client, onSaved }: Props) {
   // Modais
   const [statusModal, setStatusModal] = useState(false)   // ativar/desativar
   const [accessModal, setAccessModal] = useState(false)   // reenviar acesso
+  const [tempPw, setTempPw] = useState<{ password: string; email: string }|null>(null)
+  const [tempBusy, setTempBusy] = useState(false)
   const [reason, setReason]           = useState('')
   const [newEmail, setNewEmail]       = useState(client.email || '')
   const [processing, setProcessing]   = useState(false)
@@ -56,6 +58,18 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     setMsg(d.ok ? `✓ Cliente ${client.active ? 'desativado' : 'reativado'}.` : `Erro: ${d.error}`)
     if (d.ok) { setStatusModal(false); setReason(''); onSaved() }
     setProcessing(false)
+  }
+
+  const issueTempPassword = async () => {
+    if (!confirm('Gerar senha provisória? A senha atual do cliente deixa de funcionar e ele deverá trocar no primeiro acesso.')) return
+    setTempBusy(true)
+    const r = await fetch('/api/clients/temp-password', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ clientId }),
+    }).then(x => x.json())
+    if (r.ok) setTempPw({ password: r.tempPassword, email: r.loginEmail })
+    else alert(`Erro: ${r.error}`)
+    setTempBusy(false)
   }
 
   const resendAccess = async () => {
@@ -94,6 +108,35 @@ export default function ProfileEditor({ client, onSaved }: Props) {
 
   return (
     <div style={{ maxWidth:680 }}>
+      {tempPw && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:3000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:26, width:420, maxWidth:'92vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:17, color:'#0f2340', margin:'0 0 10px' }}>
+              🔑 Senha provisória gerada
+            </h3>
+            <p style={{ fontSize:13, color:'#5a6a7a', margin:'0 0 14px', lineHeight:1.6 }}>
+              Envie ao cliente por WhatsApp ou telefone. Ao entrar, ele será obrigado a criar a senha definitiva.
+            </p>
+            <div style={{ background:'#f0f4ff', borderRadius:10, padding:'14px 16px', marginBottom:14 }}>
+              <div style={{ fontSize:12, color:'#6a7a9a' }}>Login: <b style={{ color:'#0f2340' }}>{tempPw.email}</b></div>
+              <div style={{ fontSize:22, fontWeight:800, color:'#2D3278', fontFamily:'monospace', marginTop:6 }}>
+                {tempPw.password}
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => { navigator.clipboard?.writeText(`Login: ${tempPw.email}\nSenha provisória: ${tempPw.password}`) }}
+                style={{ padding:'9px 16px', background:'#2D3278', color:'#fff', border:'none', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                📋 Copiar
+              </button>
+              <button onClick={() => setTempPw(null)}
+                style={{ padding:'9px 16px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Status do cliente */}
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:18, padding:'12px 16px',
         background: client.active ? '#e8f5ee' : '#fee2e2', borderRadius:10 }}>
@@ -157,6 +200,10 @@ export default function ProfileEditor({ client, onSaved }: Props) {
           <button onClick={() => { setAccessModal(true); setNewEmail(f.email); setReason(''); setMsg('') }}
             style={{ ...btn('#fff'), color:'#F47B20', border:'1.5px solid #F47B20' }}>
             📧 Reenviar acesso ao portal
+          </button>
+          <button onClick={issueTempPassword} disabled={tempBusy}
+            style={{ ...btn('#fff'), color:'#5a1a8a', border:'1.5px solid #5a1a8a' }}>
+            {tempBusy ? 'Gerando…' : '🔑 Senha provisória'}
           </button>
         </div>
         {msg && <p style={{ fontSize:13, fontWeight:600, marginTop:10, color: msg.startsWith('✓') ? '#1a6b4a' : '#b02020' }}>{msg}</p>}

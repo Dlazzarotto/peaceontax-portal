@@ -1,8 +1,9 @@
-import { redirect } from 'next/navigation'
+﻿import { redirect } from 'next/navigation'
 import { getUser, getRole } from '@/lib/supabase-server'
 import { createClient } from '@supabase/supabase-js'
 import PortalNav from '@/components/PortalNav'
 import ChatWidget from '@/components/portal/ChatWidget'
+import ForcePasswordChange from '@/components/ForcePasswordChange'
 
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
   const user = await getUser()
@@ -28,6 +29,7 @@ export default async function PortalLayout({ children }: { children: React.React
   return (
     <div style={{ minHeight:'100vh', background:'#f0f4fa' }}>
       <PortalNav userName={userName} clientType={clientType} />
+      <ForcePasswordChange />
       <main style={{ padding:'24px 28px', maxWidth:1200, margin:'0 auto' }}>
         {children}
       </main>
@@ -42,3 +44,5 @@ export default async function PortalLayout({ children }: { children: React.React
     </div>
   )
 }
+
+
