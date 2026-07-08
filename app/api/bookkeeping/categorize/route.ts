@@ -22,7 +22,9 @@ Guidelines:
 - Positive amounts are deposits/credits; negative are payments/debits
 - "Income": customer payments, sales deposits. "Owner Contribution": owner putting personal money in
 - "Owner Draw": ATM withdrawals, transfers to owner. "Personal": clearly personal spending (groceries for home, personal shopping) in a business account
-- "Transfer": movements between own accounts, Zelle to self
+- "Transfer": movements between the client's own accounts, Zelle to self — transfers are NEITHER income NOR expense
+- Payments FROM checking TO a credit card ("payment to chase card", "crcardpmt", "online payment thank you") = "Credit Card Payment" (liability payment, NOT an expense — the expenses live on the credit card statement itself)
+- On CREDIT CARD statements: purchases are the actual expenses (categorize normally); payments received on the card = "Credit Card Payment"
 - Restaurants/food during business = "Meals". Supermarkets are usually "Personal" unless clearly supplies
 - Liquor stores, entertainment = "Personal" unless the business is hospitality
 - confidence: 0-100, your certainty. Be conservative: ambiguous merchant = lower confidence

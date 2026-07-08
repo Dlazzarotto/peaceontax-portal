@@ -1,14 +1,14 @@
-// GET  /api/bookkeeping/overage?clientId=...&month=YYYY-MM — calcula o excedente do mês
-// POST /api/bookkeeping/overage { clientId, month } — cobra o excedente na PRÓXIMA fatura
-//   do contrato de bookkeeping (InvoiceItem no Stripe, entra no débito do dia 5).
-//   SÓ manager/owner cobram.
+// GET  /api/bookkeeping/overage?clientId=...&year=YYYY — contador ANUAL de transações
+//   (soma de TODAS as contas/bancos do cliente) vs limite anual do contrato
+// POST /api/bookkeeping/overage { clientId, year } — cobra o excedente do ano na
+//   PRÓXIMA fatura do contrato (débito do dia 5). Idempotente por ano. SÓ manager/owner.
 
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 
-async function calcOverage(db: any, clientId: string, month: string) {
+async function calcOverage(db: any, clientId: string, year: number) {
   // Plano de bookkeeping ativo
   const { data: plan } = await db.from('payment_plans')
     .select('id, included_transactions, overage_rate, stripe_customer_id, stripe_subscription_id, status')
@@ -17,18 +17,15 @@ async function calcOverage(db: any, clientId: string, month: string) {
     .order('created_at', { ascending: false })
     .limit(1).maybeSingle()
 
-  if (!plan) return { error: 'Sem contrato de bookkeeping ativo para este cliente' }
-  if (!plan.included_transactions) return { error: 'Contrato sem limite de transações definido' }
-
-  const [y, m] = month.split('-').map(Number)
-  const start = `${month}-01`
-  const end = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10) // 1º do mês seguinte
-
+  // Contador anual: TODAS as contas (checking, savings, cartões), ano fiscal inteiro
   const { count } = await db.from('bank_transactions')
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId)
-    .gte('tx_date', start).lt('tx_date', end)
+    .eq('fiscal_year', year)
     .neq('status', 'excluded')
+
+  if (!plan) return { total: count ?? 0, included: null, overage: 0, rate: null, charge: 0, plan: null }
+  if (!plan.included_transactions) return { total: count ?? 0, included: null, overage: 0, rate: null, charge: 0, plan }
 
   const total = count ?? 0
   const included = plan.included_transactions
@@ -44,16 +41,16 @@ export async function GET(req: NextRequest) {
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const clientId = req.nextUrl.searchParams.get('clientId')
-  const month = req.nextUrl.searchParams.get('month')   // YYYY-MM
-  if (!clientId || !month || !/^\d{4}-\d{2}$/.test(month)) {
-    return NextResponse.json({ error: 'clientId e month (YYYY-MM) obrigatórios' }, { status: 400 })
+  const year = parseInt(req.nextUrl.searchParams.get('year') || '')
+  if (!clientId || !year) {
+    return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
   }
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
-  const result = await calcOverage(serviceDb(), clientId, month)
+  const result = await calcOverage(serviceDb(), clientId, year)
   if ('error' in result) return NextResponse.json(result, { status: 404 })
   const { plan, ...rest } = result as any
-  return NextResponse.json(rest)
+  return NextResponse.json({ ...rest, hasPlan: !!plan })
 }
 
 export async function POST(req: NextRequest) {
@@ -64,18 +61,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Somente manager/owner' }, { status: 403 })
   }
 
-  const { clientId, month } = await req.json()
-  if (!clientId || !month || !/^\d{4}-\d{2}$/.test(month)) {
-    return NextResponse.json({ error: 'clientId e month (YYYY-MM) obrigatórios' }, { status: 400 })
+  const { clientId, year } = await req.json()
+  if (!clientId || !year) {
+    return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
   }
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
-  const result = await calcOverage(db, clientId, month)
+  const result = await calcOverage(db, clientId, year)
   if ('error' in result) return NextResponse.json(result, { status: 404 })
   const { plan, overage, rate, charge, total, included } = result as any
 
-  if (overage <= 0) return NextResponse.json({ error: 'Sem excedente neste mês' }, { status: 409 })
+  if (!plan) return NextResponse.json({ error: 'Sem contrato de bookkeeping ativo' }, { status: 409 })
+  if (!included) return NextResponse.json({ error: 'Contrato sem limite anual definido' }, { status: 409 })
+  if (overage <= 0) return NextResponse.json({ error: 'Sem excedente neste ano' }, { status: 409 })
   if (!plan.stripe_customer_id || !plan.stripe_subscription_id) {
     return NextResponse.json({ error: 'Contrato sem assinatura Stripe ativa' }, { status: 409 })
   }
@@ -83,8 +82,8 @@ export async function POST(req: NextRequest) {
   // Idempotência: já cobrado este mês?
   const { data: prior } = await db.from('plan_audit')
     .select('id').eq('plan_id', plan.id)
-    .eq('action', `overage_charged_${month}`).maybeSingle()
-  if (prior) return NextResponse.json({ error: `Excedente de ${month} já foi cobrado` }, { status: 409 })
+    .eq('action', `overage_charged_${year}`).maybeSingle()
+  if (prior) return NextResponse.json({ error: `Excedente de ${year} já foi cobrado` }, { status: 409 })
 
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
     apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion,
@@ -97,13 +96,13 @@ export async function POST(req: NextRequest) {
       subscription: plan.stripe_subscription_id,
       amount: Math.round(charge * 100),
       currency: 'usd',
-      description: `Transaction overage ${month}: ${overage} × $${rate.toFixed(2)} (${total} of ${included} included)`,
+      description: `Annual transaction overage ${year}: ${overage} × $${rate.toFixed(2)} (${total} of ${included} included, all accounts)`,
     })
 
     await db.from('plan_audit').insert({
-      plan_id: plan.id, action: `overage_charged_${month}`,
+      plan_id: plan.id, action: `overage_charged_${year}`,
       performed_by: auth.userId,
-      snapshot: { month, total, included, overage, rate, charge },
+      snapshot: { year, total, included, overage, rate, charge },
     })
 
     return NextResponse.json({ ok: true, overage, charge, message: `$${charge.toFixed(2)} adicionado à próxima fatura (dia 5)` })

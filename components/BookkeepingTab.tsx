@@ -61,7 +61,6 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [mScope, setMScope] = useState('client')
   const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
   const [pnlMonth, setPnlMonth] = useState<string>('all')
-  const [ovMonth, setOvMonth] = useState('')
   const [ovData, setOvData] = useState<any>(null)
   const [ovBusy, setOvBusy] = useState(false)
 
@@ -271,24 +270,24 @@ export default function BookkeepingTab({ clientId }: Props) {
     window.open(`/api/bookkeeping/pnl?${params}`, '_blank')
   }
 
-  const checkOverage = async () => {
-    if (!/^\d{4}-\d{2}$/.test(ovMonth)) { setMsg('Informe o mês no formato AAAA-MM (ex.: 2026-06)'); return }
-    setOvBusy(true); setOvData(null); setMsg('')
-    const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&month=${ovMonth}`)
+  const loadCounter = async () => {
+    setOvBusy(true)
+    const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&year=${pnlYear}`)
     const d = await r.json()
-    if (d.error) setMsg(d.error); else setOvData(d)
+    if (!d.error) setOvData(d)
     setOvBusy(false)
   }
+  useEffect(() => { loadCounter() }, [clientId, pnlYear])
 
   const chargeOverage = async () => {
     setOvBusy(true); setMsg('')
     const r = await fetch('/api/bookkeeping/overage', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, month: ovMonth }),
+      body: JSON.stringify({ clientId, year: pnlYear }),
     })
     const d = await r.json()
     setMsg(d.ok ? `✓ ${d.message}` : `Erro: ${d.error}`)
-    setOvBusy(false); if (d.ok) setOvData(null)
+    setOvBusy(false); loadCounter()
   }
 
   const TAB_FILTER: Record<string, (t: Tx) => boolean> = {
@@ -385,7 +384,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                 borderRadius:12, padding:'12px 16px', border:'1.5px solid #e2e8f4', minWidth:190 }}>
               <div style={{ fontSize:12.5, fontWeight:800 }}>{a.type === 'credit_card' ? '💳' : '🏦'} {a.name}</div>
               <div style={{ fontSize:11, opacity:0.85, marginTop:4, lineHeight:1.6 }}>
-                {a.lastBalance != null && <>Saldo (último extrato): <b>${Number(a.lastBalance).toFixed(2)}</b><br/></>}
+                {a.lastBalance != null && <>{a.type === 'credit_card' ? 'Saldo devedor' : 'Saldo'} (último extrato): <b>${Number(a.lastBalance).toFixed(2)}</b><br/></>}
                 Para revisar: <b style={{ color: accountFilter===a.id ? '#ffd9b0' : '#c06010' }}>{a.forReview}</b> · No registro: <b>{a.inRegister}</b>
               </div>
             </div>
@@ -411,23 +410,33 @@ export default function BookkeepingTab({ clientId }: Props) {
           </div>
         </div>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>💵 Excedente de transações ($1.25/tx)</div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-            <input value={ovMonth} onChange={e => setOvMonth(e.target.value)} placeholder="AAAA-MM"
-              style={{ padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, width:100, outline:'none' }} />
-            <button onClick={checkOverage} disabled={ovBusy} style={btn('#6a7a9a', ovBusy)}>Verificar</button>
-            {ovData && (
-              <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
-                {ovData.total}/{ovData.included} transações
-                {ovData.overage > 0 ? ` → ${ovData.overage} excedentes = $${ovData.charge.toFixed(2)}` : ' — dentro do limite ✓'}
-              </span>
-            )}
-            {ovData && ovData.overage > 0 && (
-              <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
-                💳 Cobrar na fatura do dia 5
-              </button>
-            )}
+          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>
+            🧮 Contador anual de transações — {pnlYear} (todos os bancos)
           </div>
+          {!ovData ? (
+            <span style={{ fontSize:12.5, color:'#9aaab0' }}>{ovBusy ? 'Contando…' : '—'}</span>
+          ) : (
+            <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
+              <span style={{ fontSize:22, fontWeight:800, color:'#2D3278' }}>{ovData.total}</span>
+              {ovData.included ? (
+                <>
+                  <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
+                    de {ovData.included} incluídas no contrato/ano
+                    {ovData.overage > 0
+                      ? ` → ${ovData.overage} excedentes = $${Number(ovData.charge).toFixed(2)}`
+                      : ' — dentro do limite ✓'}
+                  </span>
+                  {ovData.overage > 0 && (
+                    <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
+                      💳 Cobrar excedente do ano (fatura dia 5)
+                    </button>
+                  )}
+                </>
+              ) : (
+                <span style={{ fontSize:12, color:'#9aaab0' }}>transações no ano (sem contrato de bookkeeping ativo — só contagem)</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
