@@ -162,3 +162,59 @@ export async function DELETE(req: NextRequest) {
 
   return NextResponse.json({ ok: true })
 }
+
+export async function PATCH(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const level = await requireManagerOrOwner(auth.userId)
+  if (!level) return NextResponse.json({ error: 'Somente manager/owner' }, { status: 403 })
+
+  const body = await req.json()
+  const { planId } = body
+  if (!planId) return NextResponse.json({ error: 'planId obrigatório' }, { status: 400 })
+
+  const db = serviceDb()
+  const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
+  if (!plan) return NextResponse.json({ error: 'Plano não encontrado' }, { status: 404 })
+  if (!['draft','awaiting_entry','awaiting_setup'].includes(plan.status) || plan.entry_paid_at) {
+    return NextResponse.json({ error: 'Plano já ativado não pode ser editado — cancele e crie outro' }, { status: 409 })
+  }
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+
+  if (plan.kind === 'installment') {
+    const entryPct = body.entryPct !== undefined ? Number(body.entryPct) : Number(plan.entry_pct)
+    const installments = body.installments !== undefined ? Number(body.installments) : plan.installments
+    const frequency = body.frequency ?? plan.frequency
+    if (isNaN(entryPct) || entryPct < 1 || entryPct > 90) return NextResponse.json({ error: 'Entrada 1–90%' }, { status: 400 })
+    if (!installments || installments < 1 || installments > 60) return NextResponse.json({ error: 'Parcelas 1–60' }, { status: 400 })
+    if (!['weekly','biweekly','monthly'].includes(frequency)) return NextResponse.json({ error: 'Frequência inválida' }, { status: 400 })
+    const calc = calcInstallmentPlan(Number(plan.total), entryPct, installments)
+    Object.assign(update, {
+      entry_pct: entryPct, entry_amount: calc.entry,
+      frequency, installments, installment_amount: calc.perInstallment,
+      status: 'draft', stripe_session_id: null,   // sessão antiga invalida
+    })
+  } else {
+    if (body.monthlyAmount !== undefined) {
+      const m = Number(body.monthlyAmount)
+      if (!m || m <= 0 || m > 100000) return NextResponse.json({ error: 'Valor mensal inválido' }, { status: 400 })
+      update.monthly_amount = m
+    }
+    if (body.includedTransactions !== undefined) {
+      const tx = Number(body.includedTransactions)
+      if (!tx || tx < 1) return NextResponse.json({ error: 'Transações incluídas inválido' }, { status: 400 })
+      update.included_transactions = tx
+    }
+    update.status = 'draft'
+    update.stripe_session_id = null
+  }
+
+  const { error } = await db.from('payment_plans').update(update).eq('id', planId)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  await db.from('plan_audit').insert({
+    plan_id: planId, action: 'edited', performed_by: auth.userId, snapshot: update,
+  })
+  return NextResponse.json({ ok: true })
+}

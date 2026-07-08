@@ -48,6 +48,11 @@ export default function PlansTab({ clientId, clientName }: Props) {
   const [cancelId, setCancelId] = useState<string|null>(null)
   const [cancelReason, setCancelReason] = useState('')
 
+  // Edição de rascunho
+  const [editPlan, setEditPlan] = useState<Plan|null>(null)
+  const [eEntryPct, setEEntryPct] = useState(''); const [eFreq, setEFreq] = useState('monthly')
+  const [eN, setEN] = useState(''); const [eMonthly, setEMonthly] = useState(''); const [eTx, setETx] = useState('')
+
   // Pausa/retomada (só bookkeeping)
   const [pauseTarget, setPauseTarget] = useState<{ id:string; action:'pause'|'resume' }|null>(null)
   const [pauseReason, setPauseReason] = useState('')
@@ -125,6 +130,25 @@ export default function PlansTab({ clientId, clientName }: Props) {
     })
     const d = await r.json()
     if (d.url) { window.open(d.url, '_blank'); setMsg('✓ Link aberto em nova aba — copie e envie ao cliente.'); load() }
+    else setMsg(`Erro: ${d.error}`)
+    setBusy(false)
+  }
+
+  const savePlanEdit = async () => {
+    if (!editPlan) return
+    setBusy(true); setMsg('')
+    const body: any = { planId: editPlan.id }
+    if (editPlan.kind === 'installment') {
+      body.entryPct = Number(eEntryPct); body.frequency = eFreq; body.installments = Number(eN)
+    } else {
+      body.monthlyAmount = Number(eMonthly); body.includedTransactions = Number(eTx)
+    }
+    const r = await fetch('/api/plans', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      body: JSON.stringify(body),
+    })
+    const d = await r.json()
+    if (d.ok) { setMsg('✓ Plano atualizado — gere um novo link se necessário.'); setEditPlan(null); load() }
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }
@@ -317,6 +341,13 @@ export default function PlansTab({ clientId, clientName }: Props) {
                 <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                   {['draft','awaiting_entry','awaiting_setup'].includes(p.status) && (
                     <>
+                      <button onClick={() => {
+                        setEditPlan(p)
+                        setEEntryPct(String(p.entry_pct ?? 30)); setEFreq(p.frequency || 'monthly'); setEN(String(p.installments ?? 6))
+                        setEMonthly(String(p.monthly_amount ?? '')); setETx(String((p as any).included_transactions ?? 100))
+                      }} disabled={busy} style={outlineBtn('#2D3278')}>
+                        ✏️ Editar
+                      </button>
                       <button onClick={() => sendContract(p.id)} disabled={busy} style={outlineBtn('#5a1a8a')}>
                         📝 Enviar contrato
                       </button>
@@ -347,6 +378,64 @@ export default function PlansTab({ clientId, clientName }: Props) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal de edição de rascunho */}
+      {editPlan && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
+          alignItems:'center', justifyContent:'center', zIndex:2000 }}>
+          <div style={{ background:'#fff', borderRadius:16, padding:24, width:440, maxWidth:'92vw' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>
+              ✏️ Editar {editPlan.kind === 'installment' ? 'parcelamento' : 'contrato bookkeeping'}
+            </h3>
+            <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px' }}>
+              Permitido enquanto a entrada não foi paga / contrato não ativado. Links antigos são invalidados.
+            </p>
+            {editPlan.kind === 'installment' ? (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginBottom:12 }}>
+                <div>
+                  <label style={label}>Entrada (%)</label>
+                  <input type="number" value={eEntryPct} onChange={e => setEEntryPct(e.target.value)} min={1} max={90} style={{ ...input, width:'100%' }} />
+                </div>
+                <div>
+                  <label style={label}>Frequência</label>
+                  <select value={eFreq} onChange={e => setEFreq(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                    <option value="weekly">Semanal</option>
+                    <option value="biweekly">Quinzenal</option>
+                    <option value="monthly">Mensal</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={label}>Parcelas</label>
+                  <input type="number" value={eN} onChange={e => setEN(e.target.value)} min={1} max={60} style={{ ...input, width:'100%' }} />
+                </div>
+              </div>
+            ) : (
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
+                <div>
+                  <label style={label}>Valor mensal ($)</label>
+                  <input type="number" value={eMonthly} onChange={e => setEMonthly(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+                </div>
+                <div>
+                  <label style={label}>Transações incluídas</label>
+                  <input type="number" value={eTx} onChange={e => setETx(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+                </div>
+              </div>
+            )}
+            {editPlan.kind === 'installment' && editPlan.total && Number(eEntryPct) > 0 && Number(eN) > 0 && (
+              <div style={{ background:'#f0f4ff', borderRadius:10, padding:'10px 14px', marginBottom:12, fontSize:13, color:'#2D3278' }}>
+                Entrada: <strong>${(Number(editPlan.total) * Number(eEntryPct) / 100).toFixed(2)}</strong>
+                {' '}· Depois: <strong>{eN}× de ${((Number(editPlan.total) * (1 - Number(eEntryPct)/100)) / Number(eN)).toFixed(2)}</strong>
+              </div>
+            )}
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setEditPlan(null)} style={outlineBtn('#6a7a9a')}>Voltar</button>
+              <button onClick={savePlanEdit} disabled={busy} style={btn('#1a6b4a', busy)}>
+                {busy ? 'Salvando…' : '✓ Salvar'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

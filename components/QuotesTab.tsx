@@ -38,6 +38,7 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
   const [pEntryPct, setPEntryPct] = useState('30')
   const [pFreq, setPFreq] = useState('monthly')
   const [pN, setPN] = useState('6')
+  const [createdPlan, setCreatedPlan] = useState<any>(null)
 
   // Modal de aprovação (junior) / cancelamento
   const [modalAction, setModalAction] = useState<null | { type:'save'|'cancel'; quoteId: string }>(null)
@@ -191,14 +192,40 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
     })
     const d = await r.json()
     if (d.ok) {
-      const c = await fetch('/api/plans/checkout', {
-        method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ planId: d.plan.id }),
-      }).then(x => x.json())
-      if (c.url) { window.open(c.url, '_blank'); setMsg('✓ Parcelamento criado e link da entrada aberto — envie ao cliente.') }
-      else setMsg(`Parcelamento criado, mas o link falhou: ${c.error}`)
-      setParcelQuote(null); load()
+      setCreatedPlan(d.plan)   // próximo passo no modal: contrato → pagamento
+      load()
     } else setMsg(`Erro: ${d.error}`)
+    setSaving(false)
+  }
+
+  const sendPlanContract = async () => {
+    if (!createdPlan) return
+    let signerTitle: string | undefined
+    const needTitle = confirm('O cliente é business? OK = sim (vou pedir o cargo), Cancelar = pessoa física.')
+    if (needTitle) {
+      const t = prompt('Cargo do assinante (ex.: President, Member):')
+      if (!t?.trim()) { setMsg('Cargo é obrigatório para business.'); return }
+      signerTitle = t.trim()
+    }
+    setSaving(true); setMsg('')
+    const r = await fetch('/api/signatures/contract', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ planId: createdPlan.id, signerTitle }),
+    })
+    const d = await r.json()
+    setMsg(d.ok ? '✓ Contrato enviado via DocuSign — acompanhe na aba ✍️ Assinaturas.' : `Erro: ${d.error}`)
+    setSaving(false)
+  }
+
+  const openPlanEntryLink = async () => {
+    if (!createdPlan) return
+    setSaving(true); setMsg('')
+    const c = await fetch('/api/plans/checkout', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ planId: createdPlan.id }),
+    }).then(x => x.json())
+    if (c.url) { window.open(c.url, '_blank'); setMsg('✓ Link da entrada aberto — copie e envie ao cliente.') }
+    else setMsg(`Erro: ${c.error}`)
     setSaving(false)
   }
 
@@ -387,7 +414,7 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                         style={btn('#F47B20', sendingId === q.id || q.total <= 0)}>
                         {sendingId === q.id ? 'Gerando…' : '💳 À vista (card/ACH/Klarna)'}
                       </button>
-                      <button onClick={() => { setParcelQuote(q); setPEntryPct('30'); setPFreq('monthly'); setPN('6') }}
+                      <button onClick={() => { setParcelQuote(q); setCreatedPlan(null); setPEntryPct('30'); setPFreq('monthly'); setPN('6') }}
                         disabled={q.total <= 0}
                         style={btn('#2D3278', q.total <= 0)}>
                         📆 Parcelar (entrada + débito)
@@ -467,13 +494,34 @@ export default function QuotesTab({ clientId, clientName, clientType }: Props) {
                 <br/><span style={{ fontSize:12, color:'#6a7a9a' }}>⚠️ Entrega do serviço somente após 75% quitado (cláusula contratual).</span>
               </div>
             )}
-            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-              <button onClick={() => setParcelQuote(null)}
-                style={{ ...btn('#fff'), color:'#6a7a9a', border:'1.5px solid #e2e8f4' }}>Voltar</button>
-              <button onClick={createParcel} disabled={saving} style={btn('#2D3278', saving)}>
-                {saving ? 'Criando…' : 'Criar e gerar link da entrada'}
-              </button>
-            </div>
+            {!createdPlan ? (
+              <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+                <button onClick={() => setParcelQuote(null)}
+                  style={{ ...btn('#fff'), color:'#6a7a9a', border:'1.5px solid #e2e8f4' }}>Voltar</button>
+                <button onClick={createParcel} disabled={saving} style={btn('#2D3278', saving)}>
+                  {saving ? 'Criando…' : 'Criar parcelamento'}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p style={{ fontSize:13, fontWeight:700, color:'#1a6b4a', margin:'0 0 10px' }}>
+                  ✓ Parcelamento criado. Ordem recomendada: 1º contrato, 2º link da entrada.
+                </p>
+                <div style={{ display:'flex', gap:8, justifyContent:'flex-end', flexWrap:'wrap' }}>
+                  <button onClick={sendPlanContract} disabled={saving} style={btn('#5a1a8a', saving)}>
+                    📝 1. Enviar contrato (DocuSign)
+                  </button>
+                  <button onClick={openPlanEntryLink} disabled={saving} style={btn('#F47B20', saving)}>
+                    💳 2. Link da entrada
+                  </button>
+                  <button onClick={() => { setParcelQuote(null); setCreatedPlan(null); setMsg('') }}
+                    style={{ ...btn('#fff'), color:'#6a7a9a', border:'1.5px solid #e2e8f4' }}>Fechar</button>
+                </div>
+                <p style={{ fontSize:11.5, color:'#9aaab0', marginTop:8 }}>
+                  Para alterar entrada/parcelas: aba 📆 Planos → ✏️ Editar (enquanto a entrada não foi paga).
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
