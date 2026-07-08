@@ -35,18 +35,37 @@ export async function POST(req: NextRequest) {
   const { data: client } = await db.from('clients')
     .select('id, name, email, user_id').eq('id', clientId).single()
   if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
-  if (!client.user_id) {
-    return NextResponse.json({ error: 'Cliente ainda não criou o acesso — use "Reenviar acesso" para o convite inicial' }, { status: 409 })
+  if (!client.email || !client.email.includes('@')) {
+    return NextResponse.json({ error: 'Cliente sem e-mail válido — corrija o e-mail primeiro' }, { status: 400 })
   }
 
   const tempPassword = password ? String(password) : generateTempPassword()
 
-  // Service role: define a senha + flag de troca obrigatória
-  const { error } = await db.auth.admin.updateUserById(client.user_id, {
-    password: tempPassword,
-    user_metadata: { must_change_password: true },
-  })
-  if (error) return NextResponse.json({ error: `Auth: ${error.message}` }, { status: 500 })
+  if (client.user_id) {
+    // Já tem login: redefine a senha + flag de troca obrigatória
+    const { error } = await db.auth.admin.updateUserById(client.user_id, {
+      password: tempPassword,
+      user_metadata: { must_change_password: true },
+    })
+    if (error) return NextResponse.json({ error: `Auth: ${error.message}` }, { status: 500 })
+  } else {
+    // SEM login ainda: cria o acesso agora, já confirmado, com a senha provisória
+    const { data: created, error } = await db.auth.admin.createUser({
+      email: client.email,
+      password: tempPassword,
+      email_confirm: true,
+      user_metadata: { role: 'client', name: client.name, must_change_password: true },
+    })
+    if (error) {
+      // E-mail já usado por outro login?
+      if (/already|exists|registered/i.test(error.message)) {
+        return NextResponse.json({ error: `Já existe um login com ${client.email} não vinculado a este cliente — verifique em Authentication → Users` }, { status: 409 })
+      }
+      return NextResponse.json({ error: `Auth: ${error.message}` }, { status: 500 })
+    }
+    // Vincula o login ao cliente
+    await db.from('clients').update({ user_id: created.user.id }).eq('id', clientId)
+  }
 
   await db.from('client_audit').insert({
     client_id: clientId,
