@@ -12,7 +12,7 @@ const FIRM = {
 }
 
 // Categorias tipicamente reportáveis em 1099-NEC/MISC (pagamentos ≥ $600/ano)
-const CATS_1099 = ['Contract Labor', 'Subcontractors (COGS)', 'Rent', 'Legal & Professional']
+const CATS_1099 = ['Contract Labor', 'Subcontractors (COGS)']
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
@@ -108,7 +108,7 @@ export async function GET(req: NextRequest) {
     </tr>`).join('')}
   </table>
   <div class="warn">Collect Form W-9 from these payees and confirm entity type — corporations are generally exempt from 1099-NEC. Verify amounts before filing.</div>
-  ` : `<h3>1099 Candidates</h3><p style="color:#6a7a9a; font-size:13px;">None found (no payee with ≥ $600 in Contract Labor, Rent or Legal &amp; Professional).</p>`}
+  ` : `<h3>1099 Candidates</h3><p style="color:#6a7a9a; font-size:13px;">None found (no payee with ≥ $600 in Contract Labor or Subcontractors).</p>`}
 
   <h3>All Vendors by Total Paid</h3>
   <table>
