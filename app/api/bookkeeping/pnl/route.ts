@@ -11,18 +11,12 @@ const FIRM = {
   phone: '(833) 732-2327', email: 'info@peaceontax.com',
 }
 
-// Kinds carregados do banco (com fallback)
-async function loadKinds(db: any) {
+// Mapa categoria → grupo, carregado do banco
+async function loadKindMap(db: any): Promise<Record<string, string>> {
   const { data } = await db.from('bookkeeping_categories').select('name, kind')
-  const income: string[] = [], nonPnl: string[] = []
-  for (const c of (data || [])) {
-    if (c.kind === 'income') income.push(c.name)
-    if (c.kind === 'non_pnl') nonPnl.push(c.name)
-  }
-  return {
-    INCOME_CATS: income.length ? income : ['Income','Refunds'],
-    NON_PNL: nonPnl.length ? nonPnl : ['Transfer','Owner Draw','Owner Contribution','Personal','Uncategorized Check'],
-  }
+  const map: Record<string, string> = {}
+  for (const c of (data || [])) map[c.name] = c.kind
+  return map
 }
 
 export async function GET(req: NextRequest) {
@@ -37,7 +31,7 @@ export async function GET(req: NextRequest) {
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
-  const { INCOME_CATS, NON_PNL } = await loadKinds(db)
+  const kindMap = await loadKindMap(db)
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
@@ -66,21 +60,29 @@ export async function GET(req: NextRequest) {
     byCat[cat] = (byCat[cat] || 0) + Number(t.amount)
   }
 
-  const income = Object.entries(byCat)
-    .filter(([c]) => INCOME_CATS.includes(c))
+  const group = (kind: string) => Object.entries(byCat)
+    .filter(([c]) => (kindMap[c] || 'expense') === kind)
     .map(([c, v]) => ({ cat: c, val: v }))
-    .sort((a, b) => b.val - a.val)
-  const expenses = Object.entries(byCat)
-    .filter(([c]) => !INCOME_CATS.includes(c) && !NON_PNL.includes(c))
-    .map(([c, v]) => ({ cat: c, val: v }))
-    .sort((a, b) => a.val - b.val)
-  const nonPnl = Object.entries(byCat)
-    .filter(([c]) => NON_PNL.includes(c))
-    .map(([c, v]) => ({ cat: c, val: v }))
+    .sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
 
-  const totalIncome  = income.reduce((s, i) => s + i.val, 0)
-  const totalExpense = expenses.reduce((s, i) => s + i.val, 0)  // negativo
-  const netProfit    = totalIncome + totalExpense
+  const income   = group('income')
+  const cogs     = group('cogs')
+  const expenses = group('expense')
+  const otherInc = group('other_income')
+  const otherExp = group('other_expense')
+  const liab     = group('liability')
+  const assets   = group('asset')
+  const nonPnl   = [...group('non_pnl'), ...liab, ...assets]  // informativos
+
+  const sum = (a: {val:number}[]) => a.reduce((s, i) => s + i.val, 0)
+  const totalIncome   = sum(income)
+  const totalCogs     = sum(cogs)
+  const grossProfit   = totalIncome + totalCogs
+  const totalExpense  = sum(expenses)
+  const operProfit    = grossProfit + totalExpense
+  const totalOtherInc = sum(otherInc)
+  const totalOtherExp = sum(otherExp)
+  const netProfit     = operProfit + totalOtherInc + totalOtherExp
 
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const period = month ? `${MONTHS[month-1]} ${year}` : `Year ${year}`
@@ -121,14 +123,27 @@ export async function GET(req: NextRequest) {
     ${income.map(i => row(i.cat, i.val)).join('') || row('No income recorded', 0)}
     <tr class="subtotal"><td>Total Income</td><td class="r">${money(totalIncome)}</td></tr>
 
+    ${cogs.length ? `
+    <tr class="section"><td colspan="2">Cost of Goods Sold</td></tr>
+    ${cogs.map(i => row(i.cat, i.val)).join('')}
+    <tr class="subtotal"><td>Gross Profit</td><td class="r">${money(grossProfit)}</td></tr>` : ''}
+
     <tr class="section"><td colspan="2">Expenses</td></tr>
     ${expenses.map(e => row(e.cat, e.val)).join('') || row('No expenses recorded', 0)}
     <tr class="subtotal"><td>Total Expenses</td><td class="r">${money(totalExpense)}</td></tr>
+    <tr class="subtotal"><td>Operating ${operProfit >= 0 ? 'Profit' : 'Loss'}</td><td class="r">${money(operProfit)}</td></tr>
+
+    ${otherInc.length ? `
+    <tr class="section"><td colspan="2">Other Income</td></tr>
+    ${otherInc.map(i => row(i.cat, i.val)).join('')}` : ''}
+    ${otherExp.length ? `
+    <tr class="section"><td colspan="2">Other Expenses</td></tr>
+    ${otherExp.map(i => row(i.cat, i.val)).join('')}` : ''}
 
     <tr class="net"><td>NET ${netProfit >= 0 ? 'PROFIT' : 'LOSS'}</td><td class="r">${money(netProfit)}</td></tr>
 
     ${nonPnl.length ? `
-    <tr class="section"><td colspan="2" style="background:#8a9ab0">Non-P&amp;L Items (informational)</td></tr>
+    <tr class="section"><td colspan="2" style="background:#8a9ab0">Balance Sheet / Non-P&amp;L Items (informational)</td></tr>
     ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val).slice(4)}`).join('')}` : ''}
   </table>
 

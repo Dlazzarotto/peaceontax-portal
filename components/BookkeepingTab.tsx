@@ -29,7 +29,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [categorizing, setCategorizing] = useState(false)
-  const [categories, setCategories] = useState<string[]>([])
+  const [categories, setCategories] = useState<{name:string; kind:string}[]>([])
   const [newCatOpen, setNewCatOpen] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [newCatKind, setNewCatKind] = useState('expense')
@@ -59,9 +59,16 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   useEffect(() => {
     fetch('/api/bookkeeping/categories').then(r => r.json())
-      .then(d => setCategories((d.categories || []).map((c: any) => c.name)))
+      .then(d => setCategories(d.categories || []))
       .catch(() => null)
   }, [])
+
+  const GROUP_LABEL: Record<string,string> = {
+    income:'💰 Income', cogs:'📦 Cost of Goods', expense:'💸 Expenses',
+    other_income:'➕ Other Income', other_expense:'➖ Other Expenses',
+    liability:'🏦 Liability', asset:'🏗️ Assets', non_pnl:'👤 Sócio / Fora do P&L',
+  }
+  const GROUP_ORDER = ['income','cogs','expense','other_income','other_expense','liability','asset','non_pnl']
 
   const createCategory = async () => {
     if (newCatName.trim().length < 2) { setMsg('Nome da categoria muito curto.'); return }
@@ -72,7 +79,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     const d = await r.json()
     if (d.ok) {
       setMsg(`✓ Categoria "${newCatName.trim()}" criada.`)
-      setCategories(c => [...c, newCatName.trim()].sort())
+      setCategories(c => [...c, { name: newCatName.trim(), kind: newCatKind }])
       setNewCatOpen(false); setNewCatName('')
     } else setMsg(`Erro: ${d.error}`)
   }
@@ -262,8 +269,13 @@ export default function BookkeepingTab({ clientId }: Props) {
             <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Nome da categoria"
               style={{ padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', width:170 }} />
             <select value={newCatKind} onChange={e => setNewCatKind(e.target.value)} style={sel}>
-              <option value="income">Receita</option>
-              <option value="expense">Despesa</option>
+              <option value="income">Income</option>
+              <option value="cogs">Cost of Goods</option>
+              <option value="expense">Expense</option>
+              <option value="other_income">Other Income</option>
+              <option value="other_expense">Other Expense</option>
+              <option value="liability">Liability</option>
+              <option value="asset">Asset</option>
               <option value="non_pnl">Fora do P&L</option>
             </select>
             <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
@@ -316,7 +328,12 @@ export default function BookkeepingTab({ clientId }: Props) {
                         fontWeight:600, color: t.category ? '#2D3278' : '#9aaab0', outline:'none', cursor:'pointer',
                         background: t.status === 'pending' && t.category ? '#fff7e0' : '#fff', maxWidth:180 }}>
                       <option value="" disabled>— escolher —</option>
-                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                      {GROUP_ORDER.filter(g => categories.some(c => c.kind === g)).map(g => (
+                        <optgroup key={g} label={GROUP_LABEL[g]}>
+                          {categories.filter(c => c.kind === g).map(c =>
+                            <option key={c.name} value={c.name}>{c.name}</option>)}
+                        </optgroup>
+                      ))}
                     </select>
                     {t.category_confidence != null && t.categorized_by !== 'staff' && (
                       <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>

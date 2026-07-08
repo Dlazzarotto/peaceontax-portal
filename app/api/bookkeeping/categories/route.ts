@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
   const { name, kind } = await req.json()
   const clean = String(name || '').trim()
   if (clean.length < 2 || clean.length > 60) return NextResponse.json({ error: 'Nome: 2 a 60 caracteres' }, { status: 400 })
-  if (!['income','expense','non_pnl'].includes(kind)) return NextResponse.json({ error: 'Tipo inválido' }, { status: 400 })
+  if (!['income','cogs','expense','other_income','other_expense','liability','asset','non_pnl'].includes(kind)) return NextResponse.json({ error: 'Tipo inválido' }, { status: 400 })
 
   const { error } = await serviceDb().from('bookkeeping_categories').insert({ name: clean, kind })
   if (error) {
