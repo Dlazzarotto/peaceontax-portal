@@ -8,11 +8,14 @@ import { useState, useEffect } from 'react'
 interface Tx {
   id: string; tx_date: string; description: string; amount: number
   balance: number|null; category: string|null; status: string
+  category_confidence: number|null; categorized_by: string|null
   account_hint: string|null; statement_document_id: string|null; fiscal_year: number
 }
 interface Doc { id: string; file_name: string; category: string; tax_year: number }
 
 interface Props { clientId: string; clientName: string }
+
+const CATEGORIES = ['Income','Refunds','Advertising','Bank Fees','Car & Truck','Contract Labor','Insurance','Interest','Legal & Professional','Meals','Merchant Fees','Office Expense','Rent','Repairs & Maintenance','Software & Subscriptions','Supplies','Taxes & Licenses','Travel','Utilities','Wages','Owner Draw','Owner Contribution','Transfer','Personal','Uncategorized Check','Other']
 
 const STATUS_LABEL: Record<string,string> = {
   pending:'⏳ Em aberto', auto:'🤖 Auto', reviewed:'✅ Revisada', excluded:'🚫 Excluída',
@@ -27,6 +30,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [msg, setMsg] = useState('')
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [categorizing, setCategorizing] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -46,6 +50,17 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
   useEffect(() => { load() }, [clientId, year, statusFilter])
 
+  // Auto-extração: processa extratos pendentes ao abrir a aba (um por vez)
+  const [autoRan, setAutoRan] = useState(false)
+  useEffect(() => {
+    if (loading || autoRan || extracting) return
+    const pendingDoc = statements.find(s => !extractedDocIds.has(s.id))
+    if (pendingDoc) {
+      setAutoRan(true)
+      extract(pendingDoc.id, pendingDoc.file_name).then(() => setAutoRan(false))
+    }
+  }, [loading, statements, extracting])
+
   const extract = async (documentId: string, fileName: string) => {
     setExtracting(documentId); setMsg('')
     const r = await fetch('/api/bookkeeping/extract', {
@@ -56,6 +71,27 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (d.ok) setMsg(`✓ ${fileName}: ${d.inserted} transações extraídas${d.duplicates > 0 ? ` (${d.duplicates} duplicadas ignoradas)` : ''}${d.accountHint ? ` — ${d.accountHint}` : ''}`)
     else setMsg(`${fileName}: ${d.error}`)
     setExtracting(null); load()
+  }
+
+  const categorize = async () => {
+    setCategorizing(true); setMsg('')
+    const r = await fetch('/api/bookkeeping/categorize', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ clientId, year: year === 'all' ? undefined : year }),
+    })
+    const d = await r.json()
+    if (d.ok) setMsg(`✓ Categorização: ${d.ruled} por regra · ${d.ai} pela IA (≥95%) · ${d.review} para revisão manual`)
+    else setMsg(`Erro: ${d.error}`)
+    setCategorizing(false); load()
+  }
+
+  const setTxCategory = async (id: string, category: string) => {
+    await fetch('/api/bookkeeping/transactions', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id, category }),
+    })
+    setMsg(`✓ Categorizada — regra criada para próximas transações parecidas.`)
+    load()
   }
 
   const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
@@ -125,6 +161,10 @@ export default function BookkeepingTab({ clientId }: Props) {
 
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
+        <button onClick={categorize} disabled={categorizing || !summary || summary.pending === 0}
+          style={btn('#5a1a8a', categorizing || !summary || summary.pending === 0)}>
+          {categorizing ? '🤖 Categorizando…' : '🤖 Categorizar pendentes (regras + IA)'}
+        </button>
         <select value={year} onChange={e => setYear(e.target.value === 'all' ? 'all' : Number(e.target.value))} style={sel}>
           <option value="all">Todos os anos</option>
           {years.map(y => <option key={y} value={y}>{y}</option>)}
@@ -166,8 +206,19 @@ export default function BookkeepingTab({ clientId }: Props) {
                     color: t.amount < 0 ? '#b02020' : '#1a6b4a' }}>
                     {money(Number(t.amount))}
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:12, color: t.category ? '#2D3278' : '#c9d2e0' }}>
-                    {t.category || '— (5.2)'}
+                  <td style={{ padding:'8px 14px', fontSize:12 }}>
+                    <select value={t.category || ''} onChange={e => setTxCategory(t.id, e.target.value)}
+                      style={{ padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:11.5,
+                        fontWeight:600, color: t.category ? '#2D3278' : '#9aaab0', outline:'none', cursor:'pointer',
+                        background: t.status === 'pending' && t.category ? '#fff7e0' : '#fff', maxWidth:180 }}>
+                      <option value="" disabled>— escolher —</option>
+                      {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    {t.category_confidence != null && t.categorized_by !== 'staff' && (
+                      <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>
+                        {t.categorized_by === 'rule' ? 'regra' : `IA ${Number(t.category_confidence).toFixed(0)}%`}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:11.5 }}>
                     <span style={{ padding:'2px 8px', borderRadius:20, fontWeight:700,

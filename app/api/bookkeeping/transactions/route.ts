@@ -58,6 +58,23 @@ export async function PATCH(req: NextRequest) {
     update.category = category
     update.categorized_by = 'staff'
     update.status = 'reviewed'
+
+    // Aprendizado: cria regra do cliente com o "merchant" da descrição
+    const { data: full } = await db.from('bank_transactions').select('description').eq('id', id).single()
+    if (full?.description && category) {
+      const merchant = full.description
+        .replace(/\d{2}\/\d{2}/g, '')            // datas
+        .replace(/#?\d{4,}/g, '')                  // números longos/conf
+        .replace(/x{4,}/gi, '')                    // máscaras de cartão
+        .replace(/\s+/g, ' ').trim().toLowerCase()
+        .split(' ').slice(0, 3).join(' ')          // 3 primeiras palavras significativas
+      if (merchant.length >= 4) {
+        await db.from('bookkeeping_rules').insert({
+          client_id: tx.client_id, pattern: merchant, category,
+          priority: 40, created_by: 'system',
+        }).then(() => null, () => null)
+      }
+    }
   }
   if (status && ['pending','auto','reviewed','excluded'].includes(status)) update.status = status
   if (notes !== undefined) update.notes = notes
