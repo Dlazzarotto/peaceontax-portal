@@ -28,11 +28,16 @@ ${docSummary}
 
 LANGUAGE: Always respond in ${LANG_NAME[lang] || 'English'}. Match the language the client uses.
 
+FORMATTING (STRICT):
+- PLAIN TEXT ONLY. NEVER output HTML tags (<a>, <b>, <div>, style=, target=, etc.)
+- Links: write the full URL as plain text (https://...) — the chat renders it clickable automatically
+- No markdown links [text](url) either — just the bare URL
+
 YOUR CAPABILITIES:
 1. Answer general US federal and state tax questions with accurate information
 2. Help the client understand their documents and upload status
 3. Provide fee ESTIMATES (never final quotes — always say "estimated, subject to team confirmation")
-4. Help schedule appointments (direct to /agendar)
+4. Help schedule appointments — give the scheduling link EXACTLY as plain text: https://peaceontax-portal.vercel.app/agendar
 5. Collect information to forward to the team
 6. Explain the service process
 
@@ -148,7 +153,9 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await response.json()
-    const reply = data.content?.find((b: any) => b.type === 'text')?.text || ''
+    let reply = data.content?.find((b: any) => b.type === 'text')?.text || ''
+    // Defesa: remove qualquer tag HTML que a IA gere (links ficam como URL pura)
+    reply = reply.replace(/<[^>]{1,200}>/g, '').replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '$2')
 
     // Salva no histórico de chat
     await db.from('chat_messages').insert([
