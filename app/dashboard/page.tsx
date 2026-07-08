@@ -1,6 +1,5 @@
 import { getUser, supabaseServer } from '@/lib/supabase-server'
 import Link from 'next/link'
-import BookkeepingAlertsCard from '@/components/BookkeepingAlertsCard'
 
 const STAGE_COLOR: Record<string,string> = {
   'Onboarding':'#6a7a9a','Gathering Docs':'#c06010','In Preparation':'#2D3278',
@@ -57,7 +56,6 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <BookkeepingAlertsCard />
       {/* ---- Cabeçalho ---- */}
       <div style={{ marginBottom:24 }}>
         <h1 style={{ fontFamily:'Georgia,serif', fontSize:26, color:'#0f2340', margin:'0 0 4px' }}>

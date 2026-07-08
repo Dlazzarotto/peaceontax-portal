@@ -17,6 +17,7 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
         {[
           ['Dashboard',  '/dashboard'],
           ['Clients',    '/clients'],
+          ['Bookkeeping','/dashboard/bookkeeping'],
           ['Invitations','/invitations'],
           ['Agenda',     '/dashboard/agenda'],
           ['Settings',   '/settings/users'],
@@ -36,6 +37,7 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
     </div>
   )
 }
+
 
 
 
