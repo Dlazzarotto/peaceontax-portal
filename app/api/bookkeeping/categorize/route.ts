@@ -27,8 +27,14 @@ Guidelines:
 - Liquor stores, entertainment = "Personal" unless the business is hospitality
 - confidence: 0-100, your certainty. Be conservative: ambiguous merchant = lower confidence
 
+Also extract the PAYEE (vendor/person paid or payer) from each description:
+- Normalize the name: "CHECKCARD 0929 AT&T*BILL PAYMENT 800-331-0500 TX" → "AT&T"
+- "Zelle Transfer Conf# abc; Paulo Bruestle" → "Paulo Bruestle"
+- "STAR MARKET 35 09/29 #000130919 PURCHASE" → "Star Market"
+- Checks without payee info → null. ATM/generic deposits → null
+
 Respond ONLY with a JSON array, no markdown:
-[{"id":"...","category":"...","confidence":95}]
+[{"id":"...","category":"...","confidence":95,"payee":"AT&T"}]
 
 Transactions:
 ${txList}`
@@ -108,9 +114,11 @@ export async function POST(req: NextRequest) {
         if (!r.id || !CATEGORIES.includes(r.category)) continue
         const conf = Math.max(0, Math.min(100, Number(r.confidence) || 0))
         const isAuto = conf >= 95
+        const payee = typeof (r as any).payee === 'string' && (r as any).payee.trim().length >= 2
+          ? (r as any).payee.trim().slice(0, 120) : null
         await db.from('bank_transactions').update({
           category: r.category, category_confidence: conf,
-          categorized_by: 'ai',
+          categorized_by: 'ai', payee,
           status: isAuto ? 'auto' : 'pending',   // <95%: sugestão fica, status segue pendente
           updated_at: new Date().toISOString(),
         }).eq('id', r.id).eq('client_id', clientId)
@@ -121,5 +129,43 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, ruled, ai: aiAuto, review })
+  // Backfill: payee ausente em transações já categorizadas (regras antigas não extraíam)
+  let payeesFilled = 0
+  const { data: noPayee } = await db.from('bank_transactions')
+    .select('id, description')
+    .eq('client_id', clientId)
+    .is('payee', null)
+    .in('status', ['auto', 'reviewed'])
+    .limit(200)
+  if (noPayee && noPayee.length > 0) {
+    const listStr = noPayee.map(t => JSON.stringify({ id: t.id, description: t.description })).join('\n')
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6', max_tokens: 6000,
+        messages: [{ role: 'user', content: `Extract the normalized PAYEE (vendor/person) from each bank transaction description. Examples: "CHECKCARD AT&T*BILL PAYMENT" → "AT&T"; "Zelle Conf#abc; Paulo Bruestle" → "Paulo Bruestle"; generic deposits/ATM → null.\nRespond ONLY a JSON array: [{"id":"...","payee":"..."}] (payee null if unknown)\n\n${listStr}` }],
+      }),
+    })
+    if (resp.ok) {
+      const d2 = await resp.json()
+      const t2 = (d2.content?.find((b: any) => b.type === 'text')?.text || '').replace(/```json|```/g, '').trim()
+      try {
+        const arr = JSON.parse(t2)
+        for (const r of arr) {
+          if (r.id && typeof r.payee === 'string' && r.payee.trim().length >= 2) {
+            await db.from('bank_transactions').update({ payee: r.payee.trim().slice(0, 120) })
+              .eq('id', r.id).eq('client_id', clientId)
+            payeesFilled++
+          }
+        }
+      } catch {}
+    }
+  }
+
+  return NextResponse.json({ ok: true, ruled, ai: aiAuto, review, payeesFilled })
 }

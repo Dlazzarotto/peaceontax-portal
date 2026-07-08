@@ -45,7 +45,7 @@ export async function PATCH(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
-  const { id, category, status, notes } = await req.json()
+  const { id, category, status, notes, payee } = await req.json()
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
   const db = serviceDb()
@@ -78,6 +78,7 @@ export async function PATCH(req: NextRequest) {
   }
   if (status && ['pending','auto','reviewed','excluded'].includes(status)) update.status = status
   if (notes !== undefined) update.notes = notes
+  if (payee !== undefined) update.payee = String(payee).trim().slice(0, 120) || null
 
   const { error } = await db.from('bank_transactions').update(update).eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

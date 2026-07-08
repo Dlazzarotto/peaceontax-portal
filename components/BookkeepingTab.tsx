@@ -8,7 +8,7 @@ import { useState, useEffect } from 'react'
 interface Tx {
   id: string; tx_date: string; description: string; amount: number
   balance: number|null; category: string|null; status: string
-  category_confidence: number|null; categorized_by: string|null
+  category_confidence: number|null; categorized_by: string|null; payee: string|null
   account_hint: string|null; statement_document_id: string|null; fiscal_year: number
 }
 interface Doc { id: string; file_name: string; category: string; tax_year: number }
@@ -114,9 +114,16 @@ export default function BookkeepingTab({ clientId }: Props) {
       body: JSON.stringify({ clientId, year: year === 'all' ? undefined : year }),
     })
     const d = await r.json()
-    if (d.ok) setMsg(`✓ Categorização: ${d.ruled} por regra · ${d.ai} pela IA (≥95%) · ${d.review} para revisão manual`)
+    if (d.ok) setMsg(`✓ Categorização: ${d.ruled} por regra · ${d.ai} pela IA (≥95%) · ${d.review} para revisão${d.payeesFilled ? ` · ${d.payeesFilled} payees extraídos` : ''}`)
     else setMsg(`Erro: ${d.error}`)
     setCategorizing(false); load()
+  }
+
+  const setTxPayee = async (id: string, payee: string) => {
+    await fetch('/api/bookkeeping/transactions', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id, payee }),
+    })
   }
 
   const setTxCategory = async (id: string, category: string) => {
@@ -232,6 +239,8 @@ export default function BookkeepingTab({ clientId }: Props) {
               {Array.from({length:12},(_,i)=>i+1).map(m => <option key={m} value={m}>{String(m).padStart(2,'0')}</option>)}
             </select>
             <button onClick={openPnl} style={btn('#2D3278')}>📄 Gerar P&L</button>
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}`, '_blank')}
+              style={btn('#5a1a8a')}>📋 Fornecedores / 1099</button>
           </div>
         </div>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
@@ -303,9 +312,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       ) : (
         <div style={{ background:'#fff', borderRadius:14, border:'1px solid #e2e8f4', overflow:'auto' }}>
-          <table style={{ width:'100%', borderCollapse:'collapse', minWidth:640 }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', minWidth:760 }}>
             <thead><tr style={{ background:'#f8faff' }}>
-              {['Data','Descrição','Valor','Categoria','Status'].map(h =>
+              {['Data','Descrição','Payee','Valor','Categoria','Status'].map(h =>
                 <th key={h} style={{ padding:'9px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4' }}>{h}</th>)}
             </tr></thead>
             <tbody>
@@ -317,6 +326,12 @@ export default function BookkeepingTab({ clientId }: Props) {
                   <td style={{ padding:'8px 14px', fontSize:12.5, color:'#1a2a3a', maxWidth:320 }}>
                     {t.description}
                     {t.account_hint && <div style={{ fontSize:10.5, color:'#9aaab0' }}>{t.account_hint}</div>}
+                  </td>
+                  <td style={{ padding:'8px 10px' }}>
+                    <input defaultValue={t.payee || ''} placeholder="—"
+                      onBlur={e => { if (e.target.value !== (t.payee || '')) setTxPayee(t.id, e.target.value) }}
+                      style={{ width:120, padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7,
+                        fontSize:11.5, fontWeight:600, color:'#2D3278', outline:'none' }} />
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:13, fontWeight:700, whiteSpace:'nowrap' as const,
                     color: t.amount < 0 ? '#b02020' : '#1a6b4a' }}>
