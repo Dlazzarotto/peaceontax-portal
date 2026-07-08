@@ -11,8 +11,19 @@ const FIRM = {
   phone: '(833) 732-2327', email: 'info@peaceontax.com',
 }
 
-const INCOME_CATS = ['Income', 'Refunds']
-const NON_PNL     = ['Transfer', 'Owner Draw', 'Owner Contribution', 'Personal', 'Uncategorized Check']
+// Kinds carregados do banco (com fallback)
+async function loadKinds(db: any) {
+  const { data } = await db.from('bookkeeping_categories').select('name, kind')
+  const income: string[] = [], nonPnl: string[] = []
+  for (const c of (data || [])) {
+    if (c.kind === 'income') income.push(c.name)
+    if (c.kind === 'non_pnl') nonPnl.push(c.name)
+  }
+  return {
+    INCOME_CATS: income.length ? income : ['Income','Refunds'],
+    NON_PNL: nonPnl.length ? nonPnl : ['Transfer','Owner Draw','Owner Contribution','Personal','Uncategorized Check'],
+  }
+}
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
@@ -26,6 +37,7 @@ export async function GET(req: NextRequest) {
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
+  const { INCOME_CATS, NON_PNL } = await loadKinds(db)
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 

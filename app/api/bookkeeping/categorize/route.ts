@@ -8,20 +8,15 @@ import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 
 export const maxDuration = 120
 
-// Plano de contas simplificado (cash-basis, alinhado a Schedule C / P&L pequeno negócio)
-export const CATEGORIES = [
-  'Income', 'Refunds',
-  'Advertising', 'Bank Fees', 'Car & Truck', 'Contract Labor', 'Insurance',
-  'Interest', 'Legal & Professional', 'Meals', 'Merchant Fees', 'Office Expense',
-  'Rent', 'Repairs & Maintenance', 'Software & Subscriptions', 'Supplies',
-  'Taxes & Licenses', 'Travel', 'Utilities', 'Wages',
-  'Owner Draw', 'Owner Contribution', 'Transfer', 'Personal', 'Uncategorized Check', 'Other',
-]
+async function loadCategories(db: any): Promise<string[]> {
+  const { data } = await db.from('bookkeeping_categories').select('name').eq('active', true)
+  return (data || []).map((c: any) => c.name)
+}
 
-const AI_PROMPT = (txList: string) => `You are a bookkeeping categorization engine for a US accounting firm (cash-basis, small business).
+const AI_PROMPT = (txList: string, cats: string[]) => `You are a bookkeeping categorization engine for a US accounting firm (cash-basis, small business).
 
 Categorize each bank transaction into EXACTLY ONE of these categories:
-${CATEGORIES.join(', ')}
+${cats.join(', ')}
 
 Guidelines:
 - Positive amounts are deposits/credits; negative are payments/debits
@@ -47,6 +42,7 @@ export async function POST(req: NextRequest) {
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
+  const CATEGORIES = await loadCategories(db)
 
   // Pendentes sem categoria confirmada
   let q = db.from('bank_transactions')
@@ -97,7 +93,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 8000,
-        messages: [{ role: 'user', content: AI_PROMPT(txList) }],
+        messages: [{ role: 'user', content: AI_PROMPT(txList, CATEGORIES) }],
       }),
     })
 

@@ -15,8 +15,6 @@ interface Doc { id: string; file_name: string; category: string; tax_year: numbe
 
 interface Props { clientId: string; clientName: string }
 
-const CATEGORIES = ['Income','Refunds','Advertising','Bank Fees','Car & Truck','Contract Labor','Insurance','Interest','Legal & Professional','Meals','Merchant Fees','Office Expense','Rent','Repairs & Maintenance','Software & Subscriptions','Supplies','Taxes & Licenses','Travel','Utilities','Wages','Owner Draw','Owner Contribution','Transfer','Personal','Uncategorized Check','Other']
-
 const STATUS_LABEL: Record<string,string> = {
   pending:'⏳ Em aberto', auto:'🤖 Auto', reviewed:'✅ Revisada', excluded:'🚫 Excluída',
 }
@@ -31,6 +29,10 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [categorizing, setCategorizing] = useState(false)
+  const [categories, setCategories] = useState<string[]>([])
+  const [newCatOpen, setNewCatOpen] = useState(false)
+  const [newCatName, setNewCatName] = useState('')
+  const [newCatKind, setNewCatKind] = useState('expense')
   const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovMonth, setOvMonth] = useState('')
@@ -54,6 +56,26 @@ export default function BookkeepingTab({ clientId }: Props) {
     setLoading(false)
   }
   useEffect(() => { load() }, [clientId, year, statusFilter])
+
+  useEffect(() => {
+    fetch('/api/bookkeeping/categories').then(r => r.json())
+      .then(d => setCategories((d.categories || []).map((c: any) => c.name)))
+      .catch(() => null)
+  }, [])
+
+  const createCategory = async () => {
+    if (newCatName.trim().length < 2) { setMsg('Nome da categoria muito curto.'); return }
+    const r = await fetch('/api/bookkeeping/categories', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ name: newCatName.trim(), kind: newCatKind }),
+    })
+    const d = await r.json()
+    if (d.ok) {
+      setMsg(`✓ Categoria "${newCatName.trim()}" criada.`)
+      setCategories(c => [...c, newCatName.trim()].sort())
+      setNewCatOpen(false); setNewCatName('')
+    } else setMsg(`Erro: ${d.error}`)
+  }
 
   // Auto-extração: processa extratos pendentes ao abrir a aba (um por vez)
   const [autoRan, setAutoRan] = useState(false)
@@ -232,6 +254,21 @@ export default function BookkeepingTab({ clientId }: Props) {
           style={btn('#5a1a8a', categorizing || !summary || summary.pending === 0)}>
           {categorizing ? '🤖 Categorizando…' : '🤖 Categorizar pendentes (regras + IA)'}
         </button>
+        <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
+          + Nova categoria
+        </button>
+        {newCatOpen && (
+          <span style={{ display:'inline-flex', gap:6, alignItems:'center' }}>
+            <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Nome da categoria"
+              style={{ padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', width:170 }} />
+            <select value={newCatKind} onChange={e => setNewCatKind(e.target.value)} style={sel}>
+              <option value="income">Receita</option>
+              <option value="expense">Despesa</option>
+              <option value="non_pnl">Fora do P&L</option>
+            </select>
+            <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
+          </span>
+        )}
         <select value={year} onChange={e => setYear(e.target.value === 'all' ? 'all' : Number(e.target.value))} style={sel}>
           <option value="all">Todos os anos</option>
           {years.map(y => <option key={y} value={y}>{y}</option>)}
@@ -279,7 +316,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                         fontWeight:600, color: t.category ? '#2D3278' : '#9aaab0', outline:'none', cursor:'pointer',
                         background: t.status === 'pending' && t.category ? '#fff7e0' : '#fff', maxWidth:180 }}>
                       <option value="" disabled>— escolher —</option>
-                      {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                     {t.category_confidence != null && t.categorized_by !== 'staff' && (
                       <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>
