@@ -26,7 +26,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [loading, setLoading] = useState(true)
   const [extracting, setExtracting] = useState<string|null>(null)
   const [msg, setMsg] = useState('')
-  const [year, setYear] = useState<number | 'all'>('all')
+  const [year, setYear] = useState<number | 'all'>(new Date().getFullYear())
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [accounts, setAccounts] = useState<any[]>([])
   const [plaidItems, setPlaidItems] = useState<any[]>([])

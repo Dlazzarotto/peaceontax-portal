@@ -43,9 +43,11 @@ export async function GET(req: NextRequest) {
   // Resumo por conta (cards estilo QuickBooks)
   const { data: accounts } = await serviceDb().from('bank_accounts')
     .select('id, name, type').eq('client_id', clientId).eq('active', true).order('name')
-  const { data: allTx } = await serviceDb().from('bank_transactions')
-    .select('account_id, status, tx_date, balance')
+  let allQ = serviceDb().from('bank_transactions')
+    .select('account_id, status, tx_date, balance, fiscal_year')
     .eq('client_id', clientId).limit(10000)
+  if (year) allQ = allQ.eq('fiscal_year', parseInt(year))
+  const { data: allTx } = await allQ
   const accountCards = (accounts || []).map(a => {
     const list = (allTx || []).filter(t => t.account_id === a.id)
     const latest = list.filter(t => t.balance != null)
