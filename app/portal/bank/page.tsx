@@ -16,6 +16,16 @@ export default function BankConnectPage() {
   const load = () => fetch('/api/plaid/items').then(r => r.json()).then(d => setItems(d.items || []))
   useEffect(() => { load() }, [])
 
+  // Detecta o Plaid mesmo quando o script já está em cache (onLoad não redispara)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.Plaid) { setPlaidReady(true); return }
+    const t = setInterval(() => {
+      if (typeof window !== 'undefined' && window.Plaid) { setPlaidReady(true); clearInterval(t) }
+    }, 300)
+    const stop = setTimeout(() => clearInterval(t), 15000)
+    return () => { clearInterval(t); clearTimeout(stop) }
+  }, [])
+
   const connect = async () => {
     setBusy(true); setMsg('')
     try {
@@ -60,7 +70,7 @@ export default function BankConnectPage() {
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
       <Script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
-        onLoad={() => setPlaidReady(true)} />
+        strategy="afterInteractive" onLoad={() => setPlaidReady(true)} />
 
       <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 22, color: '#0f2340', margin: '0 0 6px' }}>
         🏦 Contas bancárias
@@ -77,7 +87,7 @@ export default function BankConnectPage() {
           color: busy || !plaidReady ? '#9aaab0' : '#fff', border: 'none', borderRadius: 14,
           fontSize: 17, fontWeight: 800, cursor: busy || !plaidReady ? 'not-allowed' : 'pointer',
           minHeight: 56, marginBottom: 16 }}>
-        {busy ? 'Abrindo…' : '🏦 Conectar banco'}
+        {busy ? 'Abrindo…' : !plaidReady ? 'Carregando conexão segura…' : '🏦 Conectar banco'}
       </button>
 
       {msg && (
