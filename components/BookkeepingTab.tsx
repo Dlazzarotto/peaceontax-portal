@@ -132,17 +132,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   // Auto-extração: processa extratos pendentes ao abrir a aba (um por vez)
-  const [autoRan, setAutoRan] = useState(false)
-  useEffect(() => {
-    if (loading || autoRan || extracting) return
-    const pendingDoc = statements.find(s => !extractedDocIds.has(s.id))
-    if (pendingDoc) {
-      setAutoRan(true)
-      extract(pendingDoc.id, pendingDoc.file_name).then(() => setAutoRan(false))
-    }
-  }, [loading, statements, extracting])
 
   const extract = async (documentId: string, fileName: string) => {
+    if (plaidItems.length > 0 && !confirm(
+      `Importar as transações de "${fileName}"?\n\n⚠️ Este cliente tem banco conectado via Plaid. Importe este PDF somente se ele cobre um PERÍODO que o Plaid não trouxe (ex.: meses antigos) — senão as transações duplicam.\n\nO PDF continua arquivado para verificação de qualquer forma.`
+    )) return
     setExtracting(documentId); setMsg('')
     const r = await fetch('/api/bookkeeping/extract', {
       method:'POST', headers:{'content-type':'application/json'},
@@ -347,7 +341,8 @@ export default function BookkeepingTab({ clientId }: Props) {
           📄 Extratos bancários (PDF)
         </h3>
         <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px' }}>
-          Para contas fechadas ou sem conexão bancária: a IA lê o PDF e extrai todas as transações.
+          Os PDFs ficam sempre arquivados como <b>documentos de verificação</b> (cheques, descrições incompletas,
+          reconciliação). Use <b>⬇️ Importar</b> apenas nos extratos de períodos que o Plaid não cobre.
         </p>
         {statements.length === 0 ? (
           <p style={{ fontSize:13, color:'#9aaab0' }}>Nenhum extrato na categoria Bank Statements. Faça upload na aba Documents.</p>
@@ -357,12 +352,13 @@ export default function BookkeepingTab({ clientId }: Props) {
               <div key={s.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#f8faff', borderRadius:9, flexWrap:'wrap' }}>
                 <span style={{ fontSize:13, fontWeight:600, color:'#1a2a3a', flex:1, minWidth:180 }}>📄 {s.file_name}</span>
                 <span style={{ fontSize:11, color:'#6a7a9a' }}>{s.tax_year}</span>
+                <span style={{ fontSize:11.5, color:'#8a9ab0' }}>📎 verificação</span>
                 {extractedDocIds.has(s.id) ? (
-                  <span style={{ fontSize:12, color:'#1a6b4a', fontWeight:700 }}>✓ Extraído</span>
+                  <span style={{ fontSize:12, color:'#1a6b4a', fontWeight:700 }}>✓ Importado</span>
                 ) : (
                   <button onClick={() => extract(s.id, s.file_name)} disabled={!!extracting}
                     style={btn('#2D3278', !!extracting)}>
-                    {extracting === s.id ? '🤖 Lendo o PDF…' : '📊 Extrair transações'}
+                    {extracting === s.id ? '🤖 Lendo o PDF…' : '⬇️ Importar transações'}
                   </button>
                 )}
               </div>
