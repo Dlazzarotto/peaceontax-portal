@@ -95,8 +95,9 @@ export async function GET(req: NextRequest) {
 <div class="sheet">
   <div class="firm">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
   <h1>${displayName}</h1>
-  <h2>Vendor / Payee Report — ${year} (cash basis, payments only)</h2>
+  <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${year} (cash basis, payments only)</h2>
 
+  ${report === '1099' ? `
   ${candidates1099.length ? `
   <h3>⚠️ 1099 Candidates (≥ $600 in reportable categories)</h3>
   <table>
@@ -110,7 +111,9 @@ export async function GET(req: NextRequest) {
   <div class="warn">Collect Form W-9 from these payees and confirm entity type — corporations are generally exempt from 1099-NEC. Verify amounts before filing.</div>
   ` : `<h3>1099 Candidates</h3><p style="color:#6a7a9a; font-size:13px;">None found (no payee with ≥ $600 in Contract Labor or Subcontractors).</p>`}
 
-  <h3>All Vendors by Total Paid</h3>
+  ` : ''}
+
+  ${report === 'vendors' ? `<h3>All Vendors by Total Paid</h3>
   <table>
     <tr><th>Payee</th><th>Categories</th><th style="text-align:right">Total Paid</th><th style="text-align:right">Payments</th></tr>
     ${vendors.map(v => `<tr>
@@ -120,7 +123,9 @@ export async function GET(req: NextRequest) {
     </tr>`).join('') || '<tr><td colspan="4" style="color:#9aaab0">No categorized payments with payee yet.</td></tr>'}
   </table>
 
-  ${customers.length ? `
+  ` : ''}
+
+  ${report === 'vendors' && customers.length ? `
   <h3>💰 Customers by Total Received (money in)</h3>
   <table>
     <tr><th>Customer</th><th style="text-align:right">Total Received</th><th style="text-align:right">Payments</th></tr>

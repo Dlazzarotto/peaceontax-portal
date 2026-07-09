@@ -414,8 +414,8 @@ export default function BookkeepingTab({ clientId }: Props) {
       {/* P&L + Excedente */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom:14 }}>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
-          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>📈 P&L (cash basis)</div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>📑 Relatórios</div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8 }}>
             <select value={pnlYear} onChange={e => setPnlYear(Number(e.target.value))} style={sel}>
               {Array.from({length:7},(_,i)=>new Date().getFullYear()-i).map(y => <option key={y}>{y}</option>)}
             </select>
@@ -423,9 +423,15 @@ export default function BookkeepingTab({ clientId }: Props) {
               <option value="all">Ano inteiro</option>
               {Array.from({length:12},(_,i)=>i+1).map(m => <option key={m} value={m}>{String(m).padStart(2,'0')}</option>)}
             </select>
-            <button onClick={openPnl} style={btn('#2D3278')}>📄 Gerar P&L</button>
-            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}`, '_blank')}
-              style={btn('#5a1a8a')}>📋 Fornecedores / 1099</button>
+          </div>
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+            <button onClick={openPnl} style={btn('#2D3278')}>📈 P&L</button>
+            <button onClick={() => window.open(`/api/bookkeeping/balance-sheet?clientId=${clientId}&year=${pnlYear}`, '_blank')}
+              style={btn('#0a6a8a')}>🏦 Balance Sheet</button>
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}&report=vendors`, '_blank')}
+              style={btn('#5a1a8a')}>🏪 Fornecedores</button>
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}&report=1099`, '_blank')}
+              style={btn('#8a4a0a')}>📋 1099</button>
           </div>
         </div>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
