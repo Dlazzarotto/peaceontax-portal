@@ -20,13 +20,22 @@ export async function POST(req: NextRequest) {
   try {
     const ex = await plaidPost('/item/public_token/exchange', { public_token: publicToken })
 
-    const { data: item, error } = await db.from('plaid_items').insert({
+    // Upsert por item_id: reconectar o mesmo banco atualiza em vez de quebrar
+    const { data: item, error } = await db.from('plaid_items').upsert({
       client_id: client.id,
       item_id: ex.item_id,
       access_token: ex.access_token,
-      institution_name: institutionName || null,
-    }).select('id').single()
+      institution_name: institutionName ? String(institutionName).slice(0, 120) : null,
+      status: 'active',
+    }, { onConflict: 'item_id' }).select('id').single()
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // Trilha de auditoria (compliance)
+    await db.from('client_audit').insert({
+      client_id: client.id, action: 'plaid_connected',
+      performed_by: user.id,
+      details: { institution: institutionName || 'unknown' },
+    }).then(() => null, () => null)
 
     // Primeira sincronização (histórico inicial)
     const result = await syncPlaidItem(db, item!.id).catch(e => ({ error: (e as Error).message }))

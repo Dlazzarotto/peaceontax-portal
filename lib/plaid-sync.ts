@@ -45,6 +45,7 @@ export async function syncPlaidItem(db: any, plaidItemRowId: string) {
         account_id: accountMap[tx.account_id] || null,
         account_hint: item.institution_name || null,
         tx_date: tx.date,
+        fiscal_year: parseInt(String(tx.date).slice(0, 4)),
         description: (tx.merchant_name || tx.name || 'Transaction').slice(0, 500),
         amount: -Math.round(tx.amount * 100) / 100,   // inverte o sinal do Plaid
         payee: tx.merchant_name ? tx.merchant_name.slice(0, 120) : null,

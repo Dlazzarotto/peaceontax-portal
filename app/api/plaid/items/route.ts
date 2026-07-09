@@ -56,5 +56,11 @@ export async function DELETE(req: NextRequest) {
   await plaidPost('/item/remove', { access_token: item.access_token }).catch(() => null)
   await db.from('plaid_items').update({ status: 'disconnected', access_token: 'revoked' }).eq('id', id)
 
+  await db.from('client_audit').insert({
+    client_id: item.client_id, action: 'plaid_disconnected',
+    performed_by: user?.id || 'staff',
+    details: { institution: item.institution_name || 'unknown' },
+  }).then(() => null, () => null)
+
   return NextResponse.json({ ok: true })
 }
