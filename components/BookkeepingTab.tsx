@@ -29,6 +29,8 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [year, setYear] = useState<number | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [accounts, setAccounts] = useState<any[]>([])
+  const [plaidItems, setPlaidItems] = useState<any[]>([])
+  const [plaidBusy, setPlaidBusy] = useState(false)
   const [accountFilter, setAccountFilter] = useState<string>('all')
   const [tab, setTab] = useState<'recognized'|'unrecognized'|'register'|'excluded'>('recognized')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -50,6 +52,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rPayee, setRPayee] = useState('')
   const [rCategory, setRCategory] = useState('')
   const [rScope, setRScope] = useState('client')
+  const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [rPayeeType, setRPayeeType] = useState('vendor')
   const [payeeRegistry, setPayeeRegistry] = useState<{name:string; type:string}[]>([])
 
@@ -83,6 +86,23 @@ export default function BookkeepingTab({ clientId }: Props) {
     setLoading(false)
   }
   useEffect(() => { load() }, [clientId, year, accountFilter])
+  useEffect(() => {
+    fetch(`/api/plaid/items?clientId=${clientId}`).then(r => r.json())
+      .then(d => setPlaidItems(d.items || [])).catch(() => null)
+  }, [clientId])
+
+  const syncPlaid = async () => {
+    setPlaidBusy(true); setMsg('')
+    try {
+      const r = await fetch('/api/plaid/sync', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ clientId }),
+      }).then(x => x.json())
+      setMsg(r.ok ? `✓ Plaid: ${r.added} novas transações (${(r.details||[]).join(' · ')})` : `Erro: ${r.error}`)
+      if (r.ok) load()
+    } catch (e) { setMsg(`Erro: ${(e as Error).message}`) }
+    setPlaidBusy(false)
+  }
 
   useEffect(() => {
     fetch('/api/bookkeeping/categories').then(r => r.json())
@@ -159,14 +179,17 @@ export default function BookkeepingTab({ clientId }: Props) {
   const createRule = async () => {
     if (!rName.trim() || !rCategory) { setMsg('Regra precisa de nome e categoria.'); return }
     if (!rPattern.trim() && !rAmountOp) { setMsg('Defina ao menos uma condição (descrição ou valor).'); return }
+    const payload: any = {
+      clientId, scope: rScope, name: rName.trim(), direction: rDirection,
+      pattern: rPattern.trim(), matchType: rMatchType,
+      amountOp: rAmountOp || '', amountValue: rAmountVal ? Number(rAmountVal) : undefined,
+      payee: rPayee.trim(), category: rCategory,
+    }
+    if (editRuleId) payload.id = editRuleId
     const r = await fetch('/api/bookkeeping/rules', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({
-        clientId, scope: rScope, name: rName.trim(), direction: rDirection,
-        pattern: rPattern.trim(), matchType: rMatchType,
-        amountOp: rAmountOp || undefined, amountValue: rAmountVal ? Number(rAmountVal) : undefined,
-        payee: rPayee.trim(), category: rCategory,
-      }),
+      method: editRuleId ? 'PATCH' : 'POST',
+      headers:{'content-type':'application/json'},
+      body: JSON.stringify(payload),
     }).then(x => x.json())
     if (r.ok) {
       if (rPayee.trim()) {
@@ -175,8 +198,8 @@ export default function BookkeepingTab({ clientId }: Props) {
           body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
         })
       }
-      setMsg(`✓ Regra criada e aplicada retroativamente a ${r.applied ?? 0} transações. Relatórios já refletem a mudança.`)
-      setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee('')
+      setMsg(`✓ Regra ${editRuleId ? 'atualizada' : 'criada'} e aplicada retroativamente a ${r.applied ?? 0} transações.`)
+      setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setEditRuleId(null)
       loadRules(); loadPayees(); load()
     } else setMsg(`Erro: ${r.error}`)
   }
@@ -532,8 +555,16 @@ export default function BookkeepingTab({ clientId }: Props) {
                   ))}
                 </select>
               </div>
-              <div style={{ display:'flex', alignItems:'flex-end' }}>
-                <button onClick={createRule} style={btn('#1a6b4a')}>✓ Criar regra</button>
+              <div style={{ display:'flex', alignItems:'flex-end', gap:8 }}>
+                <button onClick={createRule} style={btn(editRuleId ? '#2D3278' : '#1a6b4a')}>
+                  {editRuleId ? '💾 Salvar alterações' : '✓ Criar regra'}
+                </button>
+                {editRuleId && (
+                  <button onClick={() => { setEditRuleId(null); setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRCategory('') }}
+                    style={{ padding:'9px 14px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                    Cancelar edição
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -553,8 +584,17 @@ export default function BookkeepingTab({ clientId }: Props) {
                 <span style={{ fontSize:10.5, padding:'1px 8px', borderRadius:12, background: r.client_id ? '#2D327815' : '#5a1a8a15', color: r.client_id ? '#2D3278' : '#5a1a8a', fontWeight:700 }}>
                   {r.client_id ? 'Cliente' : 'Global'}
                 </span>
+                <button onClick={() => {
+                    setEditRuleId(r.id)
+                    setRName(r.name || ''); setRDirection(r.direction || 'both')
+                    setRPattern(r.pattern || ''); setRMatchType(r.match_type || 'contains')
+                    setRAmountOp(r.amount_op || ''); setRAmountVal(r.amount_value != null ? String(r.amount_value) : '')
+                    setRPayee(r.payee || ''); setRCategory(r.category || '')
+                    setRScope(r.client_id ? 'client' : 'global')
+                  }}
+                  style={{ marginLeft:'auto', background:'none', border:'none', color:'#2D3278', cursor:'pointer', fontSize:13, fontWeight:700 }}>✏️ Editar</button>
                 <button onClick={() => deleteRule(r.id)}
-                  style={{ marginLeft:'auto', background:'none', border:'none', color:'#b02020', cursor:'pointer', fontSize:13, fontWeight:700 }}>✕</button>
+                  style={{ background:'none', border:'none', color:'#b02020', cursor:'pointer', fontSize:13, fontWeight:700 }}>✕</button>
               </div>
             ))}
             {rules.length === 0 && <p style={{ fontSize:12.5, color:'#9aaab0' }}>Nenhuma regra ainda.</p>}
@@ -629,6 +669,11 @@ export default function BookkeepingTab({ clientId }: Props) {
         <button onClick={() => { setRulesOpen(o => !o); if (!rulesOpen) { loadRules(); loadPayees() } }} style={btn('#1a6b4a')}>
           ⚙️ Regras
         </button>
+        {plaidItems.length > 0 && (
+          <button onClick={syncPlaid} disabled={plaidBusy} style={btn('#0a6a8a', plaidBusy)}>
+            {plaidBusy ? 'Sincronizando…' : `🔄 Sincronizar Plaid (${plaidItems.length})`}
+          </button>
+        )}
         {newCatOpen && (
           <span style={{ display:'inline-flex', gap:6, alignItems:'center' }}>
             <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Nome da categoria"
