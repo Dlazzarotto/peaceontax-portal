@@ -13,6 +13,10 @@ export async function plaidPost(path: string, body: Record<string, unknown>) {
     }),
   })
   const data = await res.json()
-  if (!res.ok) throw new Error(data?.error_message || data?.error_code || `Plaid ${res.status}`)
+  if (!res.ok) {
+    const hasId = !!process.env.PLAID_CLIENT_ID
+    const secretLen = (process.env.PLAID_SECRET || '').length
+    throw new Error(`${data?.error_message || data?.error_code || `Plaid ${res.status}`} [env=${ENV}, client_id=${hasId ? 'present' : 'MISSING'}, secret_len=${secretLen}]`)
+  }
   return data
 }
