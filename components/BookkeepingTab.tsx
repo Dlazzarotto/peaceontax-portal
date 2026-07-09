@@ -344,11 +344,11 @@ export default function BookkeepingTab({ clientId }: Props) {
           Os PDFs ficam sempre arquivados como <b>documentos de verificação</b> (cheques, descrições incompletas,
           reconciliação). Use <b>⬇️ Importar</b> apenas nos extratos de períodos que o Plaid não cobre.
         </p>
-        {statements.length === 0 ? (
-          <p style={{ fontSize:13, color:'#9aaab0' }}>Nenhum extrato na categoria Bank Statements. Faça upload na aba Documents.</p>
+        {statements.filter(st => year === 'all' || String(st.tax_year) === String(year)).length === 0 ? (
+          <p style={{ fontSize:13, color:'#9aaab0' }}>Nenhum extrato de {year === 'all' ? 'nenhum ano' : year}. PDFs de outros anos aparecem ao trocar o ano no seletor.</p>
         ) : (
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            {statements.map(s => (
+            {statements.filter(st => year === 'all' || String(st.tax_year) === String(year)).map(s => (
               <div key={s.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#f8faff', borderRadius:9, flexWrap:'wrap' }}>
                 <span style={{ fontSize:13, fontWeight:600, color:'#1a2a3a', flex:1, minWidth:180 }}>📄 {s.file_name}</span>
                 <span style={{ fontSize:11, color:'#6a7a9a' }}>{s.tax_year}</span>
