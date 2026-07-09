@@ -21,6 +21,7 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
   const year = parseInt(sp.get('year') || '')
+  const report = sp.get('report') === '1099' ? '1099' : 'vendors'
   if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
