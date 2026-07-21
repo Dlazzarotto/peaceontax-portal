@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
   if (!Array.isArray(ids) || ids.length === 0 || ids.length > 1000) {
     return NextResponse.json({ error: 'ids (1-1000) obrigatório' }, { status: 400 })
   }
-  if (!['approve','unmatch','exclude','restore'].includes(action)) {
+  if (!['approve','unmatch','exclude','restore','reopen'].includes(action)) {
     return NextResponse.json({ error: 'action inválida' }, { status: 400 })
   }
 
@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
   if (action === 'approve') update.status = 'approved'                      // → registro
   if (action === 'exclude') update.status = 'excluded'                      // fora dos livros
   if (action === 'restore') update.status = 'pending'                       // volta p/ revisão
+  if (action === 'reopen') update.status = 'auto'                       // registro → revisão (mantém categoria)
   if (action === 'unmatch') {                                               // não aceitar sugestão
     update.status = 'pending'
     update.category = null; update.category_confidence = null; update.categorized_by = null

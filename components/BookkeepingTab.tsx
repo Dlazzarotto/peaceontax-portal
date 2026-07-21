@@ -32,7 +32,8 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [plaidItems, setPlaidItems] = useState<any[]>([])
   const [plaidBusy, setPlaidBusy] = useState(false)
   const [accountFilter, setAccountFilter] = useState<string>('all')
-  const [tab, setTab] = useState<'recognized'|'unrecognized'|'register'|'excluded'>('recognized')
+  const [view, setView] = useState<'banking'|'register'|'statements'|'payees'|'rules'|'reports'>('banking')
+  const [tab, setTab] = useState<'recognized'|'unrecognized'|'excluded'>('recognized')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [categorizing, setCategorizing] = useState(false)
   const [categories, setCategories] = useState<{name:string; kind:string}[]>([])
@@ -41,7 +42,6 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatKind, setNewCatKind] = useState('expense')
 
   // Painel de regras (estilo QuickBooks)
-  const [rulesOpen, setRulesOpen] = useState(false)
   const [rules, setRules] = useState<any[]>([])
   const [rName, setRName] = useState('')
   const [rDirection, setRDirection] = useState('out')
@@ -313,7 +313,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     register:     t => t.status === 'approved' || t.status === 'reviewed',
     excluded:     t => t.status === 'excluded',
   }
-  const tabTxs = txs.filter(TAB_FILTER[tab])
+  const tabTxs = txs.filter(view === 'register' ? TAB_FILTER.register : TAB_FILTER[tab])
   const counts = {
     recognized: txs.filter(TAB_FILTER.recognized).length,
     unrecognized: txs.filter(TAB_FILTER.unrecognized).length,
@@ -333,8 +333,35 @@ export default function BookkeepingTab({ clientId }: Props) {
   })
   const sel = { padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, color:'#0f2340', outline:'none', cursor:'pointer' }
 
+  const MENU: [typeof view, string][] = [
+    ['banking', '🏦 Banking'],
+    ['register', '📖 Registro'],
+    ['statements', '📄 Extratos'],
+    ['payees', '🏪 Payees'],
+    ['rules', '⚙️ Regras'],
+    ['reports', '📑 Relatórios'],
+  ]
+
   return (
     <div>
+      {/* Menu por tema (estilo QuickBooks Desktop) */}
+      <div style={{ display:'flex', gap:4, marginBottom:16, background:'#fff', borderRadius:12, padding:6, border:'1px solid #e2e8f4', flexWrap:'wrap' }}>
+        {MENU.map(([k, label]) => (
+          <button key={k} onClick={() => { setView(k); if (k === 'rules' || k === 'payees') { loadRules(); loadPayees() } }}
+            style={{ padding:'10px 16px', background: view === k ? '#2D3278' : 'transparent',
+              color: view === k ? '#fff' : '#4a5a70', border:'none', borderRadius:9,
+              fontSize:13.5, fontWeight:700, cursor:'pointer' }}>
+            {label}
+          </button>
+        ))}
+        <select value={year} onChange={e => setYear(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+          style={{ marginLeft:'auto', padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, color:'#0f2340', outline:'none', cursor:'pointer' }}>
+          <option value="all">Todos os anos</option>
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
+
+      {view === 'statements' && (<>
       {/* Extratos disponíveis */}
       <div style={card}>
         <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>
@@ -371,6 +398,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         )}
       </div>
 
+      </>)}
+
+      {view === 'banking' && (<>
       {/* Resumo */}
       {summary && summary.total > 0 && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(140px, 1fr))', gap:10, marginBottom:14 }}>
@@ -411,6 +441,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
+      </>)}
+
+      {view === 'reports' && (<>
       {/* P&L + Excedente */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom:14 }}>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
@@ -436,7 +469,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>
-            🧮 Contador anual de transações — {pnlYear} (todos os bancos)
+            🧮 Total de transações do ano — {pnlYear} (todos os bancos)
           </div>
           {!ovData ? (
             <span style={{ fontSize:12.5, color:'#9aaab0' }}>{ovBusy ? 'Contando…' : '—'}</span>
@@ -446,10 +479,9 @@ export default function BookkeepingTab({ clientId }: Props) {
               {ovData.included ? (
                 <>
                   <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
-                    de {ovData.included} incluídas no contrato/ano
-                    {ovData.overage > 0
-                      ? ` → ${ovData.overage} excedentes = $${Number(ovData.charge).toFixed(2)}`
-                      : ' — dentro do limite ✓'}
+                    lançamentos no ano
+                    <span style={{ color:'#8a9ab0', fontWeight:400 }}> · contrato: {ovData.included}/ano
+                    {ovData.overage > 0 ? ` (${ovData.overage} acima → $${Number(ovData.charge).toFixed(2)})` : ' ✓'}</span>
                   </span>
                   {ovData.overage > 0 && (
                     <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
@@ -465,8 +497,10 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       </div>
 
+      </>)}
+
       {/* Painel de regras */}
-      {rulesOpen && (
+      {view === 'rules' && (
         <div style={{ background:'#fff', borderRadius:14, padding:20, border:'2px solid #1a6b4a', marginBottom:14 }}>
           <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>⚙️ Regras de categorização</h3>
           <p style={{ fontSize:12, color:'#6a7a9a', margin:'0 0 14px' }}>
@@ -659,6 +693,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
+      {(view === 'banking' || view === 'register') && (<>
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
         <button onClick={categorize} disabled={categorizing || !summary || summary.pending === 0}
@@ -667,9 +702,6 @@ export default function BookkeepingTab({ clientId }: Props) {
         </button>
         <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
           + Nova categoria
-        </button>
-        <button onClick={() => { setRulesOpen(o => !o); if (!rulesOpen) { loadRules(); loadPayees() } }} style={btn('#1a6b4a')}>
-          ⚙️ Regras
         </button>
         {plaidItems.length > 0 && (
           <button onClick={syncPlaid} disabled={plaidBusy} style={btn('#0a6a8a', plaidBusy)}>
@@ -693,19 +725,20 @@ export default function BookkeepingTab({ clientId }: Props) {
             <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
           </span>
         )}
-        <select value={year} onChange={e => setYear(e.target.value === 'all' ? 'all' : Number(e.target.value))} style={sel}>
-          <option value="all">Todos os anos</option>
-          {years.map(y => <option key={y} value={y}>{y}</option>)}
-        </select>
-
       </div>
 
-      {/* Abas estilo QuickBooks */}
+      {/* Abas de revisão (Banking) / cabeçalho do Registro */}
+      {view === 'register' && (
+        <div style={{ padding:'12px 4px', fontSize:13.5, color:'#4a5a70' }}>
+          📖 <b>Bank Register</b> — lançamentos aprovados nos livros ({counts.register}). Aqui você pode
+          <b> editar categoria/payee</b> (vira "revisado"), <b>↩️ reabrir</b> para a revisão do Banking, ou <b>🚫 anular</b>.
+        </div>
+      )}
+      {view === 'banking' && (
       <div style={{ display:'flex', gap:4, marginBottom:0, borderBottom:'2px solid #e2e8f4', flexWrap:'wrap' }}>
         {([
           ['recognized', `🔵 Reconhecidas (${counts.recognized})`],
           ['unrecognized', `🟠 Não reconhecidas (${counts.unrecognized})`],
-          ['register', `✅ No registro (${counts.register})`],
           ['excluded', `🚫 Excluídas (${counts.excluded})`],
         ] as const).map(([k, label]) => (
           <button key={k} onClick={() => { setTab(k); setSelected(new Set()) }}
@@ -716,21 +749,25 @@ export default function BookkeepingTab({ clientId }: Props) {
           </button>
         ))}
       </div>
+      )}
 
       {/* Ações em massa */}
       {selected.size > 0 && (
         <div style={{ display:'flex', gap:8, alignItems:'center', padding:'10px 14px', background:'#f0f4ff', borderRadius:'0 0 10px 10px', marginBottom:10, flexWrap:'wrap' }}>
           <span style={{ fontSize:13, fontWeight:700, color:'#2D3278' }}>{selected.size} selecionada(s):</span>
-          {(tab === 'recognized' || tab === 'unrecognized') && (
+          {view === 'banking' && (tab === 'recognized' || tab === 'unrecognized') && (
             <button onClick={() => bulkAction(Array.from(selected), 'approve')} style={btn('#1a6b4a')}>✓ Aprovar → registro</button>
           )}
-          {tab === 'recognized' && (
+          {view === 'banking' && tab === 'recognized' && (
             <button onClick={() => bulkAction(Array.from(selected), 'unmatch')} style={btn('#c06010')}>↩️ Não aceitar</button>
           )}
-          {tab !== 'excluded' && (
-            <button onClick={() => bulkAction(Array.from(selected), 'exclude')} style={btn('#b02020')}>🚫 Excluir</button>
+          {view === 'register' && (
+            <button onClick={() => bulkAction(Array.from(selected), 'reopen')} style={btn('#c06010')}>↩️ Reabrir p/ revisão</button>
           )}
-          {tab === 'excluded' && (
+          {(view === 'register' || tab !== 'excluded') && (
+            <button onClick={() => bulkAction(Array.from(selected), 'exclude')} style={btn('#b02020')}>🚫 {view === 'register' ? 'Anular (void)' : 'Excluir'}</button>
+          )}
+          {view === 'banking' && tab === 'excluded' && (
             <button onClick={() => bulkAction(Array.from(selected), 'restore')} style={btn('#6a7a9a')}>♻️ Restaurar</button>
           )}
         </div>
@@ -804,6 +841,10 @@ export default function BookkeepingTab({ clientId }: Props) {
                       <button onClick={() => bulkAction([t.id], 'approve')} title="Aprovar → registro"
                         style={{ background:'#e8f5ee', color:'#1a6b4a', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>✓</button>
                     )}
+                    {(t.status === 'approved' || t.status === 'reviewed') && (
+                      <button onClick={() => bulkAction([t.id], 'reopen')} title="Reabrir para revisão (Banking)"
+                        style={{ background:'#fff7e0', color:'#c06010', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>↩</button>
+                    )}
                     {t.status === 'auto' && (
                       <button onClick={() => bulkAction([t.id], 'unmatch')} title="Não aceitar (volta p/ não reconhecidas)"
                         style={{ background:'#fff7e0', color:'#c06010', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>↩</button>
@@ -820,6 +861,47 @@ export default function BookkeepingTab({ clientId }: Props) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      </>)}
+
+      {/* View Payees */}
+      {view === 'payees' && (
+        <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>
+          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>🏪 Payees (Vendors & Customers)</h3>
+          <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px' }}>
+            Cadastro dos favorecidos deste cliente. O tipo define onde aparecem nos relatórios (Vendor = pagamentos · Customer = recebimentos).
+          </p>
+          {payeeRegistry.length === 0 ? (
+            <p style={{ fontSize:13, color:'#9aaab0' }}>Nenhum payee ainda — eles são criados nas regras, no modal de categorização ou na coluna Payee da tabela.</p>
+          ) : (
+            <table style={{ width:'100%', borderCollapse:'collapse' as const, maxWidth:560 }}>
+              <thead><tr>
+                {['Nome','Tipo'].map(h => <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4' }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {payeeRegistry.map(p2 => (
+                  <tr key={p2.name} style={{ borderBottom:'1px solid #f0f4fa' }}>
+                    <td style={{ padding:'9px 10px', fontSize:13.5, fontWeight:600, color:'#0f2340' }}>{p2.name}</td>
+                    <td style={{ padding:'9px 10px' }}>
+                      <select value={p2.type}
+                        onChange={async e => {
+                          await fetch('/api/bookkeeping/payees', {
+                            method:'POST', headers:{'content-type':'application/json'},
+                            body: JSON.stringify({ clientId, name: p2.name, type: e.target.value }),
+                          })
+                          loadPayees()
+                        }}
+                        style={{ padding:'6px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:12.5, fontWeight:700, outline:'none', cursor:'pointer' }}>
+                        <option value="vendor">🏪 Vendor</option>
+                        <option value="customer">💰 Customer</option>
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
     </div>
