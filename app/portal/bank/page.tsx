@@ -16,6 +16,37 @@ export default function BankConnectPage() {
   const load = () => fetch('/api/plaid/items').then(r => r.json()).then(d => setItems(d.items || []))
   useEffect(() => { load() }, [])
 
+  // Retorno do OAuth (BofA/Chase/etc): o banco redireciona de volta com oauth_state_id —
+  // reabrimos o Link com o MESMO token e a URL recebida para concluir a conexão.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!window.location.search.includes('oauth_state_id')) return
+    const saved = (() => { try { return sessionStorage.getItem('plaid_link_token') } catch { return null } })()
+    if (!saved || !plaidReady) return
+    setBusy(true); setMsg('Concluindo a conexão com o banco…')
+    const handler = window.Plaid.create({
+      token: saved,
+      receivedRedirectUri: window.location.href,
+      onSuccess: async (publicToken: string, metadata: any) => {
+        const ex = await fetch('/api/plaid/exchange', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ publicToken, institutionName: metadata?.institution?.name || null }),
+        }).then(x => x.json())
+        setMsg(ex.ok ? `✓ Banco conectado! ${ex.sync?.added ?? 0} transações importadas.` : `Erro: ${ex.error}`)
+        try { sessionStorage.removeItem('plaid_link_token') } catch {}
+        window.history.replaceState({}, '', '/portal/bank')
+        setBusy(false); load()
+      },
+      onExit: () => {
+        setMsg('Conexão não concluída — tente novamente.')
+        try { sessionStorage.removeItem('plaid_link_token') } catch {}
+        window.history.replaceState({}, '', '/portal/bank')
+        setBusy(false)
+      },
+    })
+    handler.open()
+  }, [plaidReady])
+
   // Detecta o Plaid mesmo quando o script já está em cache (onLoad não redispara)
   useEffect(() => {
     if (typeof window !== 'undefined' && window.Plaid) { setPlaidReady(true); return }
@@ -31,6 +62,7 @@ export default function BankConnectPage() {
     try {
       const r = await fetch('/api/plaid/link-token', { method: 'POST' }).then(x => x.json())
       if (!r.linkToken) { setMsg(`Erro: ${r.error || 'não foi possível iniciar'}`); setBusy(false); return }
+      try { sessionStorage.setItem('plaid_link_token', r.linkToken) } catch {}
 
       const handler = window.Plaid.create({
         token: r.linkToken,
@@ -49,8 +81,21 @@ export default function BankConnectPage() {
           } else setMsg(`Erro: ${ex.error}`)
           setBusy(false)
         },
-        onExit: (err: any) => {
-          if (err) setMsg('Conexão cancelada.')
+        onExit: (err: any, metadata: any) => {
+          if (err) {
+            const code = err.error_code || ''
+            if (code === 'INSTITUTION_NOT_ENABLED' || code === 'INSTITUTION_NO_LONGER_SUPPORTED' || code === 'INSTITUTION_NOT_AVAILABLE' || /oauth/i.test(code)) {
+              setMsg('⏳ Este banco ainda está finalizando a aprovação da nossa integração (processo do próprio banco, leva algumas semanas). Avisaremos quando liberar — enquanto isso, envie os extratos em PDF pelo portal.')
+            } else if (code === 'INSTITUTION_DOWN' || code === 'INSTITUTION_NOT_RESPONDING') {
+              setMsg('O banco está temporariamente indisponível — tente novamente em alguns minutos.')
+            } else if (code === 'INVALID_CREDENTIALS') {
+              setMsg('Login ou senha do banco incorretos — tente novamente.')
+            } else {
+              setMsg(`Não foi possível conectar (${err.display_message || code || 'erro'}). Tente novamente ou fale conosco.`)
+            }
+          } else {
+            setMsg('Conexão cancelada. Quando quiser, é só tentar de novo.')
+          }
           setBusy(false)
         },
       })
