@@ -173,6 +173,19 @@ export default function BookkeepingTab({ clientId }: Props) {
   const createRule = async () => {
     if (!rName.trim() || !rCategory) { setMsg('Regra precisa de nome e categoria.'); return }
     if (!rPattern.trim() && !rAmountOp) { setMsg('Defina ao menos uma condição (descrição ou valor).'); return }
+
+    // Duplicata: mesmo texto (variações) e direção compatível
+    if (!editRuleId && rPattern.trim()) {
+      const norm = (x: string) => x.split('|').map(v => v.trim().toLowerCase()).filter(Boolean).sort().join('|')
+      const dup = rules.find(r =>
+        (r.direction === rDirection || r.direction === 'both' || rDirection === 'both') &&
+        norm(r.pattern || '') === norm(rPattern))
+      if (dup) {
+        setMsg(`⚠️ Já existe uma regra com este texto: "${dup.name || dup.pattern}". Use ✏️ Editar nela em vez de criar outra.`)
+        return
+      }
+    }
+
     const payload: any = {
       clientId, scope: rScope, name: rName.trim(), direction: rDirection,
       pattern: rPattern.trim(), matchType: rMatchType,
@@ -192,7 +205,8 @@ export default function BookkeepingTab({ clientId }: Props) {
           body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
         })
       }
-      setMsg(`✓ Regra ${editRuleId ? 'atualizada' : 'criada'} e aplicada retroativamente a ${r.applied ?? 0} transações.`)
+      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações.`)
+      setView('banking')
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setEditRuleId(null)
       loadRules(); loadPayees(); load()
     } else setMsg(`Erro: ${r.error}`)
@@ -322,7 +336,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
-  const years = Array.from(new Set(txs.map(t => t.fiscal_year))).sort((a,b) => b-a)
+  const years = (Array.from(new Set(txs.map(t => t.fiscal_year))) as number[]).sort((a,b) => b-a)
   const money = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toFixed(2)}`
 
   const card = { background:'#fff', borderRadius:14, padding:18, border:'1px solid #e2e8f4', marginBottom:14 }

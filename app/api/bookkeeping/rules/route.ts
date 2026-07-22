@@ -56,6 +56,21 @@ export async function POST(req: NextRequest) {
   if (!global && !b.clientId) return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
 
   const db = serviceDb()
+
+  // Duplicata: mesma direção + mesmo conjunto de variações do texto
+  if (pattern) {
+    const { data: existing } = await db.from('bookkeeping_rules')
+      .select('id, name, pattern, direction')
+      .or(global ? 'client_id.is.null' : `client_id.eq.${b.clientId},client_id.is.null`)
+    const norm = (p2: string | null) => (p2 || '').split('|').map(x => x.trim()).filter(Boolean).sort().join('|')
+    const dup = (existing || []).find(r =>
+      (r.direction === direction || r.direction === 'both' || direction === 'both') &&
+      norm(r.pattern) === norm(pattern))
+    if (dup) {
+      return NextResponse.json({ error: `Já existe uma regra com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.` }, { status: 409 })
+    }
+  }
+
   const { error } = await db.from('bookkeeping_rules').insert({
     client_id: global ? null : b.clientId,
     name, pattern, category, direction,
@@ -122,4 +137,75 @@ export async function DELETE(req: NextRequest) {
   const { error } = await serviceDb().from('bookkeeping_rules').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
+}
+
+export async function PATCH(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  if (!(await requireManager(auth.userId))) {
+    return NextResponse.json({ error: 'Somente manager/owner editam regras' }, { status: 403 })
+  }
+
+  const b = await req.json()
+  if (!b.id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+
+  const db = serviceDb()
+  const { data: existing } = await db.from('bookkeeping_rules').select('*').eq('id', b.id).single()
+  if (!existing) return NextResponse.json({ error: 'Regra não encontrada' }, { status: 404 })
+
+  const name = String(b.name ?? existing.name ?? '').trim()
+  const pattern = b.pattern !== undefined
+    ? (String(b.pattern).split('|').map((x: string) => x.trim().toLowerCase()).filter((x: string) => x.length >= 2).join('|') || null)
+    : existing.pattern
+  const category = String(b.category ?? existing.category).trim()
+  const direction = ['in','out','both'].includes(b.direction) ? b.direction : existing.direction
+  const matchType = ['contains','starts_with'].includes(b.matchType) ? b.matchType : existing.match_type
+  const amountOp = b.amountOp === '' ? null : (['gt','lt','eq'].includes(b.amountOp) ? b.amountOp : existing.amount_op)
+  const amountValue = amountOp ? Number(b.amountValue ?? existing.amount_value) : null
+  const payee = b.payee !== undefined ? (String(b.payee).trim() || null) : existing.payee
+
+  if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
+
+  const { error } = await db.from('bookkeeping_rules').update({
+    name, pattern, category, direction,
+    match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
+  }).eq('id', b.id)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Reaplica retroativamente (pending + auto do cliente atual)
+  let applied = 0
+  const targetClient = b.clientId || existing.client_id
+  if (targetClient) {
+    const { data: txs } = await db.from('bank_transactions')
+      .select('id, description, amount')
+      .eq('client_id', targetClient)
+      .in('status', ['pending', 'auto'])
+      .limit(5000)
+    for (const tx of (txs || [])) {
+      const desc = tx.description.toLowerCase()
+      const amount = Number(tx.amount)
+      if (direction === 'in' && amount <= 0) continue
+      if (direction === 'out' && amount >= 0) continue
+      if (pattern) {
+        const variants = pattern.split('|')
+        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        if (!hit) continue
+      }
+      if (amountOp) {
+        const abs = Math.abs(amount)
+        if (amountOp === 'gt' && !(abs > amountValue!)) continue
+        if (amountOp === 'lt' && !(abs < amountValue!)) continue
+        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
+      }
+      const upd: Record<string, unknown> = {
+        category, category_confidence: 100, categorized_by: 'rule',
+        status: 'auto', updated_at: new Date().toISOString(),
+      }
+      if (payee) upd.payee = payee
+      await db.from('bank_transactions').update(upd).eq('id', tx.id)
+      applied++
+    }
+  }
+
+  return NextResponse.json({ ok: true, applied })
 }
