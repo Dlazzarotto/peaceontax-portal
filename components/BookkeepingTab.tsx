@@ -41,6 +41,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatName, setNewCatName] = useState('')
   const [newCatKind, setNewCatKind] = useState('expense')
   const [newCatParent, setNewCatParent] = useState('')
+  const [newCatIsSub, setNewCatIsSub] = useState(false)
 
   // Painel de regras (estilo QuickBooks)
   const [rules, setRules] = useState<any[]>([])
@@ -120,6 +121,7 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   const createCategory = async () => {
     if (newCatName.trim().length < 2) { setMsg('Nome da categoria muito curto.'); return }
+    if (newCatIsSub && !newCatParent) { setMsg('Escolha a conta mãe da sub-account.'); return }
     const r = await fetch('/api/bookkeeping/categories', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({ name: newCatName.trim(), kind: newCatKind, parent: newCatParent || undefined }),
@@ -129,7 +131,7 @@ export default function BookkeepingTab({ clientId }: Props) {
       const fullName = newCatParent ? `${newCatParent}: ${newCatName.trim()}` : newCatName.trim()
       setMsg(`✓ Categoria "${fullName}" criada.`)
       setCategories(c => [...c, { name: fullName, kind: newCatKind }])
-      setNewCatOpen(false); setNewCatName(''); setNewCatParent('')
+      setNewCatOpen(false); setNewCatName(''); setNewCatParent(''); setNewCatIsSub(false)
     } else setMsg(`Erro: ${d.error}`)
   }
 
@@ -755,11 +757,19 @@ export default function BookkeepingTab({ clientId }: Props) {
               <option value="asset">Asset</option>
               <option value="non_pnl">Fora do P&L</option>
             </select>
-            <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)} style={sel}>
-              <option value="">— conta principal —</option>
-              {categories.filter(c => c.kind === newCatKind && !c.name.includes(':')).map(c =>
-                <option key={c.name} value={c.name}>Subconta de: {c.name}</option>)}
-            </select>
+            <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, fontWeight:600, color:'#0f2340', cursor:'pointer', whiteSpace:'nowrap' as const }}>
+              <input type="checkbox" checked={newCatIsSub}
+                onChange={e => { setNewCatIsSub(e.target.checked); if (!e.target.checked) setNewCatParent('') }}
+                style={{ width:17, height:17, cursor:'pointer' }} />
+              Sub-account
+            </label>
+            {newCatIsSub && (
+              <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)} style={sel}>
+                <option value="">— escolher a conta mãe —</option>
+                {categories.filter(c => c.kind === newCatKind && !c.name.includes(':')).map(c =>
+                  <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            )}
             <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
           </span>
         )}
