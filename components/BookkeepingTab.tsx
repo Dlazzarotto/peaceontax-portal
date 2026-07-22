@@ -173,6 +173,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const createRule = async () => {
     if (!rName.trim() || !rCategory) { setMsg('Regra precisa de nome e categoria.'); return }
     if (!rPattern.trim() && !rAmountOp) { setMsg('Defina ao menos uma condição (descrição ou valor).'); return }
+    if (!rPayee.trim()) { setMsg('⚠️ Payee é obrigatório — informe o favorecido (Vendor/Customer) da regra.'); return }
 
     // Duplicata: mesmo texto (variações) e direção compatível
     if (!editRuleId && rPattern.trim()) {
@@ -516,7 +517,21 @@ export default function BookkeepingTab({ clientId }: Props) {
       {/* Painel de regras */}
       {view === 'rules' && (
         <div style={{ background:'#fff', borderRadius:14, padding:20, border:'2px solid #1a6b4a', marginBottom:14 }}>
-          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>⚙️ Regras de categorização</h3>
+          <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>⚙️ Regras de categorização</h3>
+            {rules.some(r => !r.payee || !String(r.payee).trim()) && (
+              <button onClick={async () => {
+                const n = rules.filter(r => !r.payee || !String(r.payee).trim()).length
+                if (!confirm(`Excluir de uma vez as ${n} regra(s) sem payee? Elas serão removidas — as transações já processadas não mudam; recategorize com regras novas (com payee).`)) return
+                const r2 = await fetch(`/api/bookkeeping/rules?mode=no_payee&clientId=${clientId}`, { method:'DELETE' }).then(x => x.json())
+                setMsg(r2.ok ? `🧹 ${r2.deleted} regra(s) sem payee excluída(s).` : `Erro: ${r2.error}`)
+                loadRules()
+              }}
+                style={{ marginLeft:'auto', padding:'7px 14px', background:'#fee2e2', color:'#b02020', border:'none', borderRadius:8, fontSize:12.5, fontWeight:700, cursor:'pointer' }}>
+                🧹 Excluir todas sem payee ({rules.filter(r => !r.payee || !String(r.payee).trim()).length})
+              </button>
+            )}
+          </div>
           <p style={{ fontSize:12, color:'#6a7a9a', margin:'0 0 14px' }}>
             Regras têm prioridade sobre a IA. Formato QuickBooks: nome + direção + condições (descrição e/ou valor) + payee + categoria.
           </p>
@@ -576,7 +591,7 @@ export default function BookkeepingTab({ clientId }: Props) {
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(170px, 1fr))', gap:10, marginBottom:12 }}>
               <div>
-                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Então: Payee (opcional)</label>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Então: Payee *</label>
                 <input value={rPayee} onChange={e => setRPayee(e.target.value)} list="payee-list" placeholder="Escolher ou criar"
                   style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
                 <datalist id="payee-list">

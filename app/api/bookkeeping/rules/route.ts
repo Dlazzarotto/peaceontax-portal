@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
   if (name.length < 2) return NextResponse.json({ error: 'Nome da regra obrigatório' }, { status: 400 })
   if (!category) return NextResponse.json({ error: 'Categoria obrigatória' }, { status: 400 })
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição (descrição ou valor)' }, { status: 400 })
+  if (!payee) return NextResponse.json({ error: 'Payee é obrigatório na regra — informe o favorecido (Vendor/Customer)' }, { status: 400 })
   if (amountOp && (amountValue == null || isNaN(amountValue))) {
     return NextResponse.json({ error: 'Valor da condição inválido' }, { status: 400 })
   }
@@ -132,6 +133,18 @@ export async function DELETE(req: NextRequest) {
   if (!(await requireManager(auth.userId))) {
     return NextResponse.json({ error: 'Somente manager/owner' }, { status: 403 })
   }
+  // Modo em massa: excluir todas as regras sem payee (do cliente + globais)
+  const mode = req.nextUrl.searchParams.get('mode')
+  if (mode === 'no_payee') {
+    const clientId = req.nextUrl.searchParams.get('clientId')
+    let q = serviceDb().from('bookkeeping_rules').delete()
+      .or('payee.is.null,payee.eq.')
+    if (clientId) q = q.or(`client_id.eq.${clientId},client_id.is.null`)
+    const { error, count } = await q.select('id', { count: 'exact' }) as any
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true, deleted: count ?? 0 })
+  }
+
   const id = req.nextUrl.searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
   const { error } = await serviceDb().from('bookkeeping_rules').delete().eq('id', id)
