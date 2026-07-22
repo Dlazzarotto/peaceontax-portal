@@ -24,6 +24,7 @@ export async function POST() {
       country_codes: ['US'],
       language: client.language === 'pt' ? 'pt' : client.language === 'es' ? 'es' : 'en',
       redirect_uri: `${appUrl}/portal/bank`,   // OAuth: precisa estar em Allowed redirect URIs no Plaid
+      transactions: { days_requested: 730 },   // 24 meses de histórico (padrão seria só 90 dias)
     })
     return NextResponse.json({ linkToken: data.link_token })
   } catch (e) {
