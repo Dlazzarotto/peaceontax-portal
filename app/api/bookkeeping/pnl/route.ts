@@ -65,6 +65,37 @@ export async function GET(req: NextRequest) {
     .map(([c, v]) => ({ cat: c, val: v }))
     .sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
 
+  // Sub-contas ("Pai: Filho"): agrupa sob a mãe, com subtotal
+  const withSubs = (items: { cat: string; val: number }[]) => {
+    const parents: Record<string, { direct: number; subs: { cat: string; val: number }[] }> = {}
+    for (const it of items) {
+      const idx = it.cat.indexOf(': ')
+      if (idx > 0) {
+        const parent = it.cat.slice(0, idx)
+        parents[parent] = parents[parent] || { direct: 0, subs: [] }
+        parents[parent].subs.push({ cat: it.cat.slice(idx + 2), val: it.val })
+      } else {
+        parents[it.cat] = parents[it.cat] || { direct: 0, subs: [] }
+        parents[it.cat].direct += it.val
+      }
+    }
+    return Object.entries(parents)
+      .map(([cat, g]) => ({ cat, direct: g.direct, subs: g.subs, total: g.direct + g.subs.reduce((s2, x) => s2 + x.val, 0) }))
+      .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+  }
+
+  const renderSection = (items: { cat: string; val: number }[]) =>
+    withSubs(items).map(g => {
+      if (g.subs.length === 0) return row(g.cat, g.direct)
+      const subRows = g.subs.sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
+        .map(sb => `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${sb.cat}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
+      const directRow = g.direct !== 0
+        ? `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 (direct)</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
+      return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${g.cat}</td><td></td></tr>`
+        + subRows + directRow
+        + `<tr><td style="padding:2px 14px 8px 30px; color:#6a7a9a; font-size:12px">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
+    }).join('')
+
   const income   = group('income')
   const cogs     = group('cogs')
   const expenses = group('expense')
@@ -120,16 +151,16 @@ export async function GET(req: NextRequest) {
 
   <table>
     <tr class="section"><td colspan="2">Income</td></tr>
-    ${income.map(i => row(i.cat, i.val)).join('') || row('No income recorded', 0)}
+    ${renderSection(income) || row('No income recorded', 0)}
     <tr class="subtotal"><td>Total Income</td><td class="r">${money(totalIncome)}</td></tr>
 
     ${cogs.length ? `
     <tr class="section"><td colspan="2">Cost of Goods Sold</td></tr>
-    ${cogs.map(i => row(i.cat, i.val)).join('')}
+    ${renderSection(cogs)}
     <tr class="subtotal"><td>Gross Profit</td><td class="r">${money(grossProfit)}</td></tr>` : ''}
 
     <tr class="section"><td colspan="2">Expenses</td></tr>
-    ${expenses.map(e => row(e.cat, e.val)).join('') || row('No expenses recorded', 0)}
+    ${renderSection(expenses) || row('No expenses recorded', 0)}
     <tr class="subtotal"><td>Total Expenses</td><td class="r">${money(totalExpense)}</td></tr>
     <tr class="subtotal"><td>Operating ${operProfit >= 0 ? 'Profit' : 'Loss'}</td><td class="r">${money(operProfit)}</td></tr>
 

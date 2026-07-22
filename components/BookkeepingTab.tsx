@@ -40,6 +40,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatOpen, setNewCatOpen] = useState(false)
   const [newCatName, setNewCatName] = useState('')
   const [newCatKind, setNewCatKind] = useState('expense')
+  const [newCatParent, setNewCatParent] = useState('')
 
   // Painel de regras (estilo QuickBooks)
   const [rules, setRules] = useState<any[]>([])
@@ -121,13 +122,14 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (newCatName.trim().length < 2) { setMsg('Nome da categoria muito curto.'); return }
     const r = await fetch('/api/bookkeeping/categories', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ name: newCatName.trim(), kind: newCatKind }),
+      body: JSON.stringify({ name: newCatName.trim(), kind: newCatKind, parent: newCatParent || undefined }),
     })
     const d = await r.json()
     if (d.ok) {
-      setMsg(`✓ Categoria "${newCatName.trim()}" criada.`)
-      setCategories(c => [...c, { name: newCatName.trim(), kind: newCatKind }])
-      setNewCatOpen(false); setNewCatName('')
+      const fullName = newCatParent ? `${newCatParent}: ${newCatName.trim()}` : newCatName.trim()
+      setMsg(`✓ Categoria "${fullName}" criada.`)
+      setCategories(c => [...c, { name: fullName, kind: newCatKind }])
+      setNewCatOpen(false); setNewCatName(''); setNewCatParent('')
     } else setMsg(`Erro: ${d.error}`)
   }
 
@@ -614,8 +616,10 @@ export default function BookkeepingTab({ clientId }: Props) {
                   <option value="">— escolher —</option>
                   {GROUP_ORDER.filter(g => categories.some(c => c.kind === g)).map(g => (
                     <optgroup key={g} label={GROUP_LABEL[g]}>
-                      {categories.filter(c => c.kind === g).map(c =>
-                        <option key={c.name} value={c.name}>{c.name}</option>)}
+                      {categories.filter(c => c.kind === g)
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map(c =>
+                        <option key={c.name} value={c.name}>{c.name.includes(':') ? `\u00A0\u00A0\u21B3 ${c.name.split(': ')[1]}` : c.name}</option>)}
                     </optgroup>
                   ))}
                 </select>
@@ -751,6 +755,11 @@ export default function BookkeepingTab({ clientId }: Props) {
               <option value="asset">Asset</option>
               <option value="non_pnl">Fora do P&L</option>
             </select>
+            <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)} style={sel}>
+              <option value="">— conta principal —</option>
+              {categories.filter(c => c.kind === newCatKind && !c.name.includes(':')).map(c =>
+                <option key={c.name} value={c.name}>Subconta de: {c.name}</option>)}
+            </select>
             <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
           </span>
         )}
@@ -854,8 +863,10 @@ export default function BookkeepingTab({ clientId }: Props) {
                       <option value="" disabled>— escolher —</option>
                       {GROUP_ORDER.filter(g => categories.some(c => c.kind === g)).map(g => (
                         <optgroup key={g} label={GROUP_LABEL[g]}>
-                          {categories.filter(c => c.kind === g).map(c =>
-                            <option key={c.name} value={c.name}>{c.name}</option>)}
+                          {categories.filter(c => c.kind === g)
+                            .sort((a, b) => a.name.localeCompare(b.name))
+                            .map(c =>
+                            <option key={c.name} value={c.name}>{c.name.includes(':') ? `\u00A0\u00A0\u21B3 ${c.name.split(': ')[1]}` : c.name}</option>)}
                         </optgroup>
                       ))}
                     </select>
