@@ -21,7 +21,7 @@ export default function BankConnectPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     if (!window.location.search.includes('oauth_state_id')) return
-    const saved = (() => { try { return sessionStorage.getItem('plaid_link_token') } catch { return null } })()
+    const saved = (() => { try { return localStorage.getItem('plaid_link_token') } catch { return null } })()
     if (!saved || !plaidReady) return
     setBusy(true); setMsg('Concluindo a conexão com o banco…')
     const handler = window.Plaid.create({
@@ -33,13 +33,13 @@ export default function BankConnectPage() {
           body: JSON.stringify({ publicToken, institutionName: metadata?.institution?.name || null }),
         }).then(x => x.json())
         setMsg(ex.ok ? `✓ Banco conectado! ${ex.sync?.added ?? 0} transações importadas.` : `Erro: ${ex.error}`)
-        try { sessionStorage.removeItem('plaid_link_token') } catch {}
+        try { localStorage.removeItem('plaid_link_token') } catch {}
         window.history.replaceState({}, '', '/portal/bank')
         setBusy(false); load()
       },
       onExit: () => {
         setMsg('Conexão não concluída — tente novamente.')
-        try { sessionStorage.removeItem('plaid_link_token') } catch {}
+        try { localStorage.removeItem('plaid_link_token') } catch {}
         window.history.replaceState({}, '', '/portal/bank')
         setBusy(false)
       },
@@ -62,7 +62,7 @@ export default function BankConnectPage() {
     try {
       const r = await fetch('/api/plaid/link-token', { method: 'POST' }).then(x => x.json())
       if (!r.linkToken) { setMsg(`Erro: ${r.error || 'não foi possível iniciar'}`); setBusy(false); return }
-      try { sessionStorage.setItem('plaid_link_token', r.linkToken) } catch {}
+      try { localStorage.setItem('plaid_link_token', r.linkToken) } catch {}
 
       const handler = window.Plaid.create({
         token: r.linkToken,
