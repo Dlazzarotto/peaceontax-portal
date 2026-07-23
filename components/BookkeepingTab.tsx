@@ -63,6 +63,16 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rScope, setRScope] = useState('client')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
+
+  // Variações como LINHAS (estilo QuickBooks) — internamente viram texto separado por |
+  const linesOf = (v: string) => v === '' ? [''] : v.split('|').map(x => x.replace(/^ +| +$/g, ''))
+  const setLineIn = (v: string, i: number, val: string) => {
+    const arr = linesOf(v); arr[i] = val; return arr.join('|')
+  }
+  const addLineTo = (v: string) => (v === '' ? '|' : v + '|')
+  const removeLineFrom = (v: string, i: number) => {
+    const arr = linesOf(v); arr.splice(i, 1); return arr.join('|')
+  }
   const [rPayeeType, setRPayeeType] = useState('vendor')
   const [payeeRegistry, setPayeeRegistry] = useState<{name:string; type:string}[]>([])
 
@@ -292,7 +302,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         clientId, scope: mScope,
         name: mPattern.trim().slice(0, 40),
         direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
-        pattern: mPattern.trim(), matchType: 'contains',
+        pattern: mPattern.replace(/ \/ /g, '|').trim(), matchType: 'contains',
         payee: mPayee.trim(),
         category: catDecision.category,
       }),
@@ -598,10 +608,22 @@ export default function BookkeepingTab({ clientId }: Props) {
                 </select>
               </div>
               <div>
-                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Texto — variações com | </label>
-                <input value={rPattern} onChange={e => setRPattern(e.target.value)} placeholder="walmart | wal mart | wm"
-                  style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
-                <div style={{ fontSize:10.5, color:'#9aaab0', marginTop:2 }}>Qualquer variação ativa a regra (OU)</div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Se a descrição contém… (qualquer linha ativa a regra)</label>
+                {linesOf(rPattern).map((ln, i) => (
+                  <div key={i} style={{ display:'flex', gap:6, marginBottom:6 }}>
+                    <input value={ln} onChange={e => setRPattern(setLineIn(rPattern, i, e.target.value))}
+                      placeholder={i === 0 ? 'ex.: amazon' : 'ex.: amzn'}
+                      style={{ flex:1, padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+                    {linesOf(rPattern).length > 1 && (
+                      <button onClick={() => setRPattern(removeLineFrom(rPattern, i))}
+                        style={{ background:'#fee2e2', color:'#b02020', border:'none', borderRadius:8, padding:'0 10px', fontSize:14, fontWeight:800, cursor:'pointer' }}>✕</button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={() => setRPattern(addLineTo(rPattern))}
+                  style={{ background:'#f0f4ff', color:'#2D3278', border:'1.5px dashed #2D327850', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                  ➕ Adicionar linha
+                </button>
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>E valor… (opcional)</label>
@@ -743,10 +765,23 @@ export default function BookkeepingTab({ clientId }: Props) {
 
             <div style={{ background:'#f0f9f4', border:'1.5px solid #1a6b4a40', borderRadius:10, padding:12, marginBottom:14 }}>
               <div style={{ fontSize:12.5, fontWeight:700, color:'#1a6b4a', marginBottom:6 }}>
-                📐 Se criar regra: aplica a TODOS cuja descrição contém… (variações com |)
+                📐 Se criar regra: aplica a TODOS cuja descrição contém… (qualquer linha)
               </div>
-              <input value={mPattern} onChange={e => setMPattern(e.target.value)} placeholder="walmart | wal mart | wm"
-                style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', marginBottom:8 }} />
+              {linesOf(mPattern).map((ln, i) => (
+                <div key={i} style={{ display:'flex', gap:6, marginBottom:6 }}>
+                  <input value={ln} onChange={e => setMPattern(setLineIn(mPattern, i, e.target.value))}
+                    placeholder={i === 0 ? 'ex.: ford credit' : 'outra variação'}
+                    style={{ flex:1, padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+                  {linesOf(mPattern).length > 1 && (
+                    <button onClick={() => setMPattern(removeLineFrom(mPattern, i))}
+                      style={{ background:'#fee2e2', color:'#b02020', border:'none', borderRadius:8, padding:'0 10px', fontSize:14, fontWeight:800, cursor:'pointer' }}>✕</button>
+                  )}
+                </div>
+              ))}
+              <button onClick={() => setMPattern(addLineTo(mPattern))}
+                style={{ background:'#fff', color:'#1a6b4a', border:'1.5px dashed #1a6b4a70', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer', marginBottom:8 }}>
+                ➕ Adicionar linha
+              </button>
               <select value={mScope} onChange={e => setMScope(e.target.value)} style={{ ...sel, width:'100%' }}>
                 <option value="client">Só este cliente</option>
                 <option value="global">Todos os clientes</option>
