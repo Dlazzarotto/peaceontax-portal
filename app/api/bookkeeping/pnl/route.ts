@@ -171,16 +171,16 @@ export async function GET(req: NextRequest) {
 
     ${otherInc.length ? `
     <tr class="section"><td colspan="2">Other Income</td></tr>
-    ${otherInc.map(i => row(i.cat, i.val)).join('')}` : ''}
+    ${otherInc.map(i => row(i.cat, i.val, true, i.cat)).join('')}` : ''}
     ${otherExp.length ? `
     <tr class="section"><td colspan="2">Other Expenses</td></tr>
-    ${otherExp.map(i => row(i.cat, i.val)).join('')}` : ''}
+    ${otherExp.map(i => row(i.cat, i.val, true, i.cat)).join('')}` : ''}
 
     <tr class="net"><td>NET ${netProfit >= 0 ? 'PROFIT' : 'LOSS'}</td><td class="r">${money(netProfit)}</td></tr>
 
     ${nonPnl.length ? `
     <tr class="section"><td colspan="2" style="background:#8a9ab0">Balance Sheet / Non-P&amp;L Items (informational)</td></tr>
-    ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val).slice(4)}`).join('')}` : ''}
+    ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val, true, n.cat).slice(4)}`).join('')}` : ''}
   </table>
 
   ${(pendingCount ?? 0) > 0 ? `<div class="warn">⚠️ ${pendingCount} transactions are still uncategorized for ${year} — this P&amp;L is preliminary.</div>` : ''}
