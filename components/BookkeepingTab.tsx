@@ -62,6 +62,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rCategory, setRCategory] = useState('')
   const [rScope, setRScope] = useState('client')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
+  const [ruleSearch, setRuleSearch] = useState('')
   const [rPayeeType, setRPayeeType] = useState('vendor')
   const [payeeRegistry, setPayeeRegistry] = useState<{name:string; type:string}[]>([])
 
@@ -667,9 +668,18 @@ export default function BookkeepingTab({ clientId }: Props) {
             </div>
           </div>
 
+          {/* Busca de regras */}
+          <input value={ruleSearch} onChange={e => setRuleSearch(e.target.value)}
+            placeholder="🔍 Buscar regra por nome, texto, payee ou categoria…"
+            style={{ width:'100%', padding:'10px 14px', border:'1.5px solid #e2e8f4', borderRadius:10, fontSize:14, outline:'none', marginBottom:10 }} />
+
           {/* Lista de regras */}
-          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:260, overflow:'auto' }}>
-            {rules.map(r => (
+          <div style={{ display:'flex', flexDirection:'column', gap:6, maxHeight:340, overflow:'auto' }}>
+            {rules.filter(r => {
+              const q2 = ruleSearch.trim().toLowerCase()
+              if (!q2) return true
+              return [r.name, r.pattern, r.payee, r.category].some(f => f && String(f).toLowerCase().includes(q2))
+            }).map(r => (
               <div key={r.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', background:'#f8faff', borderRadius:8, fontSize:12.5, flexWrap:'wrap' }}>
                 <span style={{ fontWeight:700, color:'#0f2340' }}>{r.name || r.pattern}</span>
                 <span style={{ color:'#6a7a9a' }}>
@@ -696,6 +706,10 @@ export default function BookkeepingTab({ clientId }: Props) {
               </div>
             ))}
             {rules.length === 0 && <p style={{ fontSize:12.5, color:'#9aaab0' }}>Nenhuma regra ainda.</p>}
+            {rules.length > 0 && ruleSearch.trim() && rules.filter(r => {
+              const q2 = ruleSearch.trim().toLowerCase()
+              return [r.name, r.pattern, r.payee, r.category].some(f => f && String(f).toLowerCase().includes(q2))
+            }).length === 0 && <p style={{ fontSize:12.5, color:'#9aaab0' }}>Nenhuma regra corresponde a "{ruleSearch}".</p>}
           </div>
         </div>
       )}
