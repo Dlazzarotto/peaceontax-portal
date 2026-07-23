@@ -229,11 +229,19 @@ export default function BookkeepingTab({ clientId }: Props) {
       payload.password = reclassPwd
       payload.reason = reclassReason.trim()
     }
-    const r = await fetch('/api/bookkeeping/rules', {
-      method: editRuleId ? 'PATCH' : 'POST',
-      headers:{'content-type':'application/json'},
-      body: JSON.stringify(payload),
-    }).then(x => x.json())
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/rules', {
+        method: editRuleId ? 'PATCH' : 'POST',
+        headers:{'content-type':'application/json'},
+        body: JSON.stringify(payload),
+      })
+      try { r = await resp.json() }
+      catch { r = { ok: false, error: `Servidor respondeu ${resp.status} sem JSON — veja o log do Vercel` } }
+    } catch (err) {
+      setMsg(`Erro de rede ao salvar: ${(err as Error).message}`)
+      return
+    }
     if (r.ok) {
       if (rPayee.trim()) {
         await fetch('/api/bookkeeping/payees', {
