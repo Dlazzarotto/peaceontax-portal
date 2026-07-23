@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
     .select('*')
     .eq('client_id', clientId)
     .order('tx_date', { ascending: false })
-    .limit(1000)
+    .limit(8000)
 
   const accountId = sp.get('accountId')
   const year = sp.get('year')
