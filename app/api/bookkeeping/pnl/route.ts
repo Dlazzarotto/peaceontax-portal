@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
   const group = (kind: string) => Object.entries(byCat)
     .filter(([c]) => (kindMap[c] || 'expense') === kind)
     .map(([c, v]) => ({ cat: c, val: v }))
-    .sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
+    .sort((a, b) => a.cat.localeCompare(b.cat, undefined, { sensitivity: 'base' }))
 
   // Sub-contas ("Pai: Filho"): agrupa sob a mãe, com subtotal
   const withSubs = (items: { cat: string; val: number }[]) => {
@@ -81,13 +81,13 @@ export async function GET(req: NextRequest) {
     }
     return Object.entries(parents)
       .map(([cat, g]) => ({ cat, direct: g.direct, subs: g.subs, total: g.direct + g.subs.reduce((s2, x) => s2 + x.val, 0) }))
-      .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+      .sort((a, b) => a.cat.localeCompare(b.cat, undefined, { sensitivity: 'base' }))
   }
 
   const renderSection = (items: { cat: string; val: number }[]) =>
     withSubs(items).map(g => {
       if (g.subs.length === 0) return row(g.cat, g.direct, true, g.cat)
-      const subRows = g.subs.sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
+      const subRows = g.subs.sort((a, b) => a.cat.localeCompare(b.cat, undefined, { sensitivity: 'base' }))
         .map(sb => `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
       const directRow = g.direct !== 0
         ? `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
