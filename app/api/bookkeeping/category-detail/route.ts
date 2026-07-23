@@ -11,6 +11,8 @@ const FIRM = {
   phone: '(833) 732-2327',
 }
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
@@ -107,5 +109,5 @@ export async function GET(req: NextRequest) {
   <div class="footer">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document — verify before filing</div>
   </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }

@@ -19,6 +19,8 @@ async function loadKindMap(db: any): Promise<Record<string, string>> {
   return map
 }
 
+export const dynamic = 'force-dynamic'
+
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
@@ -189,5 +191,5 @@ export async function GET(req: NextRequest) {
 </div>
 </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }
