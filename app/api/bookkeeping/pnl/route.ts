@@ -86,11 +86,11 @@ export async function GET(req: NextRequest) {
 
   const renderSection = (items: { cat: string; val: number }[]) =>
     withSubs(items).map(g => {
-      if (g.subs.length === 0) return row(g.cat, g.direct)
+      if (g.subs.length === 0) return row(g.cat, g.direct, true, g.cat)
       const subRows = g.subs.sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
-        .map(sb => `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${sb.cat}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
+        .map(sb => `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
       const directRow = g.direct !== 0
-        ? `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 (direct)</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
+        ? `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
       return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${g.cat}</td><td></td></tr>`
         + subRows + directRow
         + `<tr><td style="padding:2px 14px 8px 30px; color:#6a7a9a; font-size:12px">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
@@ -120,8 +120,13 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || ''
   const money = (n: number) => `${n < 0 ? '(' : ''}$${Math.abs(n).toFixed(2)}${n < 0 ? ')' : ''}`
 
-  const row = (label: string, val: number, indent = true) =>
-    `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${label}</td><td class="r">${money(val)}</td></tr>`
+  const detailUrl = (cat: string) =>
+    `/api/bookkeeping/category-detail?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}&category=${encodeURIComponent(cat)}`
+  const catLink = (cat: string, label?: string) =>
+    `<a href="${detailUrl(cat)}" target="_blank" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${label ?? cat}</a>`
+
+  const row = (label: string, val: number, indent = true, linkCat?: string) =>
+    `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`
 
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>P&L ${period} — ${displayName}</title>
