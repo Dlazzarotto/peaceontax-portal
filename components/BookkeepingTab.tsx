@@ -63,6 +63,9 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rScope, setRScope] = useState('client')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
+  const [reclassOn, setReclassOn] = useState(false)
+  const [reclassPwd, setReclassPwd] = useState('')
+  const [reclassReason, setReclassReason] = useState('')
 
   // Variações como LINHAS (estilo QuickBooks) — internamente viram texto separado por |
   const linesOf = (v: string) => v === '' ? [''] : v.split('|').map(x => x.replace(/^ +| +$/g, ''))
@@ -219,6 +222,13 @@ export default function BookkeepingTab({ clientId }: Props) {
       payee: rPayee.trim(), category: rCategory,
     }
     if (editRuleId) payload.id = editRuleId
+    if (editRuleId && reclassOn) {
+      if (!reclassPwd) { setMsg('🔒 Digite sua senha para reclassificar o registro.'); return }
+      if (reclassReason.trim().length < 5) { setMsg('🔒 Informe o motivo da reclassificação (mín. 5 caracteres).'); return }
+      payload.applyToRegister = true
+      payload.password = reclassPwd
+      payload.reason = reclassReason.trim()
+    }
     const r = await fetch('/api/bookkeeping/rules', {
       method: editRuleId ? 'PATCH' : 'POST',
       headers:{'content-type':'application/json'},
@@ -231,7 +241,8 @@ export default function BookkeepingTab({ clientId }: Props) {
           body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
         })
       }
-      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações.`)
+      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações${r.registerChanged ? ` · 🔒 ${r.registerChanged} do REGISTRO reclassificadas` : ''}.`)
+      setReclassOn(false); setReclassPwd(''); setReclassReason('')
       setView('banking')
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setEditRuleId(null)
       loadRules(); loadPayees(); load()
@@ -676,6 +687,25 @@ export default function BookkeepingTab({ clientId }: Props) {
                   <option value="__new__">➕ Criar nova categoria…</option>
                 </select>
               </div>
+              {editRuleId && (
+                <div style={{ width:'100%', background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'10px 12px', margin:'8px 0' }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, fontWeight:700, color:'#6a5a10', cursor:'pointer' }}>
+                    <input type="checkbox" checked={reclassOn} onChange={e => setReclassOn(e.target.checked)}
+                      style={{ width:17, height:17, cursor:'pointer' }} />
+                    🔒 Reclassificar também o REGISTRO (lançamentos já aprovados)
+                  </label>
+                  {reclassOn && (
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:8 }}>
+                      <input type="password" value={reclassPwd} onChange={e => setReclassPwd(e.target.value)}
+                        placeholder="Sua senha" autoComplete="current-password"
+                        style={{ flex:'1 1 140px', padding:'8px 10px', border:'1.5px solid #e0c060', borderRadius:8, fontSize:13, outline:'none' }} />
+                      <input value={reclassReason} onChange={e => setReclassReason(e.target.value)}
+                        placeholder="Motivo (fica registrado em auditoria)"
+                        style={{ flex:'2 1 220px', padding:'8px 10px', border:'1.5px solid #e0c060', borderRadius:8, fontSize:13, outline:'none' }} />
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display:'flex', alignItems:'flex-end', gap:8 }}>
                 <button onClick={createRule} style={btn(editRuleId ? '#2D3278' : '#1a6b4a')}>
                   {editRuleId ? '💾 Salvar alterações' : '✓ Criar regra'}

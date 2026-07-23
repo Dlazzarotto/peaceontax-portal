@@ -3,6 +3,7 @@
 // DELETE /api/bookkeeping/rules?id=...        — exclui regra (manager/owner)
 
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 
@@ -220,5 +221,64 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, applied })
+  // ── RECLASSIFICAR O REGISTRO (aprovadas) — owner/manager + SENHA + MOTIVO ──
+  let registerChanged = 0
+  if (b.applyToRegister === true && targetClient) {
+    const reason = String(b.reason || '').trim()
+    if (reason.length < 5) {
+      return NextResponse.json({ error: 'Motivo obrigatório (mín. 5 caracteres) para reclassificar o registro' }, { status: 400 })
+    }
+    const password = String(b.password || '')
+    if (!password) return NextResponse.json({ error: 'Senha obrigatória para reclassificar o registro' }, { status: 400 })
+
+    // Re-autenticação: valida a senha do próprio usuário logado
+    const authClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { auth: { persistSession: false } }
+    )
+    const { error: pwErr } = await authClient.auth.signInWithPassword({
+      email: auth.email!, password,
+    })
+    if (pwErr) return NextResponse.json({ error: 'Senha incorreta' }, { status: 403 })
+
+    const { data: regTxs } = await db.from('bank_transactions')
+      .select('id, description, amount')
+      .eq('client_id', targetClient)
+      .in('status', ['approved', 'reviewed'])
+      .limit(5000)
+    for (const tx of (regTxs || [])) {
+      const desc = tx.description.toLowerCase()
+      const amount = Number(tx.amount)
+      if (direction === 'in' && amount <= 0) continue
+      if (direction === 'out' && amount >= 0) continue
+      if (pattern) {
+        const variants = pattern.split('|')
+        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        if (!hit) continue
+      }
+      if (amountOp) {
+        const abs = Math.abs(amount)
+        if (amountOp === 'gt' && !(abs > amountValue!)) continue
+        if (amountOp === 'lt' && !(abs < amountValue!)) continue
+        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
+      }
+      const upd: Record<string, unknown> = {
+        category, categorized_by: 'rule', updated_at: new Date().toISOString(),
+      }
+      if (payee) upd.payee = payee
+      // status permanece: continua no registro, apenas reclassificado
+      const { error: uErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
+      if (!uErr) registerChanged++
+    }
+
+    await db.from('bookkeeping_reclass_log').insert({
+      rule_id: b.id, client_id: targetClient,
+      changed_by: auth.userId, changed_by_email: auth.email || null,
+      reason, affected_register: registerChanged,
+      new_category: category, new_payee: payee || null,
+    })
+  }
+
+  return NextResponse.json({ ok: true, applied, registerChanged })
 }
