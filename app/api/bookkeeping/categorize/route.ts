@@ -53,12 +53,13 @@ export async function POST(req: NextRequest) {
   const db = serviceDb()
   const CATEGORIES = await loadCategories(db)
 
-  // Pendentes sem categoria confirmada
+  // Pendentes + reconhecidas (regras têm prioridade e também reprocessam as 'auto';
+  // aprovadas/registro nunca são tocadas)
   let q = db.from('bank_transactions')
-    .select('id, description, amount')
+    .select('id, description, amount, status')
     .eq('client_id', clientId)
-    .eq('status', 'pending')
-    .limit(400)
+    .in('status', ['pending', 'auto'])
+    .limit(800)
   if (year) q = q.eq('fiscal_year', year)
   const { data: txs } = await q
   if (!txs || txs.length === 0) return NextResponse.json({ ok: true, ruled: 0, ai: 0, review: 0, message: 'Nada pendente' })
@@ -111,8 +112,9 @@ export async function POST(req: NextRequest) {
 
   // IA em lote no que sobrou
   let aiAuto = 0, review = 0
-  if (useAI && unresolved.length > 0) {
-    const txList = unresolved.map(t => JSON.stringify({ id: t.id, description: t.description, amount: t.amount })).join('\n')
+  const aiCandidates = unresolved.filter(t => (t as any).status === 'pending')
+  if (useAI && aiCandidates.length > 0) {
+    const txList = aiCandidates.map(t => JSON.stringify({ id: t.id, description: t.description, amount: t.amount })).join('\n')
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -162,7 +164,7 @@ export async function POST(req: NextRequest) {
         if (isAuto) aiAuto++; else review++
       }
     } else {
-      review = unresolved.length
+      review = aiCandidates.length
     }
   }
 
