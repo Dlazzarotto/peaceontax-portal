@@ -638,7 +638,9 @@ export default function BookkeepingTab({ clientId }: Props) {
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Categoria *</label>
-                <select value={rCategory} onChange={e => setRCategory(e.target.value)} style={{ ...sel, width:'100%' }}>
+                <select value={rCategory}
+                  onChange={e => { if (e.target.value === '__new__') { setNewCatOpen(true); return } setRCategory(e.target.value) }}
+                  style={{ ...sel, width:'100%' }}>
                   <option value="">— escolher —</option>
                   {GROUP_ORDER.filter(g => categories.some(c => c.kind === g)).map(g => (
                     <optgroup key={g} label={GROUP_LABEL[g]}>
@@ -648,6 +650,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                         <option key={c.name} value={c.name}>{c.name.includes(':') ? `\u00A0\u00A0\u21B3 ${c.name.split(': ')[1]}` : c.name}</option>)}
                     </optgroup>
                   ))}
+                  <option value="__new__">➕ Criar nova categoria…</option>
                 </select>
               </div>
               <div style={{ display:'flex', alignItems:'flex-end', gap:8 }}>
@@ -757,25 +760,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
-      {(view === 'banking' || view === 'register') && (<>
-      {/* Filtros */}
-      <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
-        <button onClick={() => categorize('rules')} disabled={categorizing} style={btn('#2D3278', categorizing)}>
-          {categorizing ? 'Aplicando…' : '📐 Aplicar regras'}
-        </button>
-        <button onClick={() => { if (confirm('Pedir sugestões da IA para os lançamentos SEM regra? As sugestões ficam nas Reconhecidas aguardando sua aprovação — nada entra no registro sozinho.')) categorize('ai') }}
-          disabled={categorizing} style={btn('#5a6a7a', categorizing)}>
-          🤖 Sugerir com IA (opcional)
-        </button>
-        <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
-          + Nova categoria
-        </button>
-        {plaidItems.length > 0 && (
-          <button onClick={syncPlaid} disabled={plaidBusy} style={btn('#0a6a8a', plaidBusy)}>
-            {plaidBusy ? 'Sincronizando…' : `🔄 Sincronizar Plaid (${plaidItems.length})`}
-          </button>
-        )}
-        {newCatOpen && (
+      {newCatOpen && (
           <span style={{ display:'inline-flex', gap:6, alignItems:'center' }}>
             <input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="Nome da categoria"
               style={{ padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none', width:170 }} />
@@ -805,6 +790,26 @@ export default function BookkeepingTab({ clientId }: Props) {
             <button onClick={createCategory} style={btn('#1a6b4a')}>✓ Criar</button>
           </span>
         )}
+
+      {(view === 'banking' || view === 'register') && (<>
+      {/* Filtros */}
+      <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
+        <button onClick={() => categorize('rules')} disabled={categorizing} style={btn('#2D3278', categorizing)}>
+          {categorizing ? 'Aplicando…' : '📐 Aplicar regras'}
+        </button>
+        <button onClick={() => { if (confirm('Pedir sugestões da IA para os lançamentos SEM regra? As sugestões ficam nas Reconhecidas aguardando sua aprovação — nada entra no registro sozinho.')) categorize('ai') }}
+          disabled={categorizing} style={btn('#5a6a7a', categorizing)}>
+          🤖 Sugerir com IA (opcional)
+        </button>
+        <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
+          + Nova categoria
+        </button>
+        {plaidItems.length > 0 && (
+          <button onClick={syncPlaid} disabled={plaidBusy} style={btn('#0a6a8a', plaidBusy)}>
+            {plaidBusy ? 'Sincronizando…' : `🔄 Sincronizar Plaid (${plaidItems.length})`}
+          </button>
+        )}
+
       </div>
 
       {/* Abas de revisão (Banking) / cabeçalho do Registro */}
@@ -905,7 +910,11 @@ export default function BookkeepingTab({ clientId }: Props) {
                     {money(Number(t.amount))}
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:12 }}>
-                    <select value={t.category || ''} onChange={e => setTxCategory(t, e.target.value)}
+                    <select value={t.category || ''}
+                      onChange={e => {
+                        if (e.target.value === '__new__') { setNewCatOpen(true); return }
+                        setTxCategory(t, e.target.value)
+                      }}
                       style={{ padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:11.5,
                         fontWeight:600, color: t.category ? '#2D3278' : '#9aaab0', outline:'none', cursor:'pointer',
                         background: t.status === 'pending' && t.category ? '#fff7e0' : '#fff', maxWidth:180 }}>
@@ -918,6 +927,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                             <option key={c.name} value={c.name}>{c.name.includes(':') ? `\u00A0\u00A0\u21B3 ${c.name.split(': ')[1]}` : c.name}</option>)}
                         </optgroup>
                       ))}
+                      <option value="__new__">➕ Criar nova categoria…</option>
                     </select>
                     {t.category_confidence != null && t.categorized_by !== 'staff' && (
                       <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>
