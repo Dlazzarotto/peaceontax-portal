@@ -128,6 +128,12 @@ export async function POST(req: NextRequest) {
       }),
     })
 
+    // Regra contábil: Transfer/Credit Card Payment SÓ com a conta contraparte no sistema
+    const { data: clientAccounts } = await db.from('bank_accounts')
+      .select('id, type').eq('client_id', clientId).eq('active', true)
+    const accountCount = (clientAccounts || []).length
+    const hasCreditCard = (clientAccounts || []).some(a => a.type === 'credit_card')
+
     if (response.ok) {
       const data = await response.json()
       const text = (data.content?.find((b: any) => b.type === 'text')?.text || '')
@@ -137,7 +143,13 @@ export async function POST(req: NextRequest) {
 
       for (const r of results) {
         if (!r.id || !CATEGORIES.includes(r.category)) continue
-        const conf = Math.max(0, Math.min(100, Number(r.confidence) || 0))
+        let conf = Math.max(0, Math.min(100, Number(r.confidence) || 0))
+
+        // Transfer exige ≥2 contas do cliente no sistema; Credit Card Payment exige um cartão cadastrado.
+        // Sem a contraparte "baixada", vira revisão manual (pode ser saída real, não transferência).
+        if (r.category === 'Transfer' && accountCount < 2) conf = Math.min(conf, 50)
+        if (r.category === 'Credit Card Payment' && !hasCreditCard) conf = Math.min(conf, 50)
+
         const isAuto = conf >= 95
         const payee = typeof (r as any).payee === 'string' && (r as any).payee.trim().length >= 2
           ? (r as any).payee.trim().slice(0, 120) : null
