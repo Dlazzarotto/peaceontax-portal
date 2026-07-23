@@ -434,6 +434,16 @@ export default function BookkeepingTab({ clientId }: Props) {
         </select>
       </div>
 
+      {msg && (
+        <div style={{ marginBottom:14, padding:'11px 16px', borderRadius:10, fontSize:13.5, fontWeight:700,
+          background: msg.startsWith('✓') ? '#e8f5ee' : msg.startsWith('🧹') ? '#f0f4ff' : '#fee2e2',
+          color: msg.startsWith('✓') ? '#1a6b4a' : msg.startsWith('🧹') ? '#2D3278' : '#b02020',
+          border: `1px solid ${msg.startsWith('✓') ? '#1a6b4a30' : msg.startsWith('🧹') ? '#2D327830' : '#b0202030'}` }}>
+          {msg}
+          <button onClick={() => setMsg('')} style={{ float:'right', background:'none', border:'none', cursor:'pointer', fontSize:14, color:'inherit', fontWeight:800 }}>✕</button>
+        </div>
+      )}
+
       {view === 'statements' && (<>
       {/* Extratos disponíveis */}
       <div style={card}>
@@ -464,10 +474,6 @@ export default function BookkeepingTab({ clientId }: Props) {
               </div>
             ))}
           </div>
-        )}
-        {msg && (
-          <p style={{ fontSize:13, fontWeight:600, marginTop:10,
-            color: msg.startsWith('✓') ? '#1a6b4a' : '#b02020' }}>{msg}</p>
         )}
       </div>
 
