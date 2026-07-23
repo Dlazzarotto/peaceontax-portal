@@ -45,7 +45,8 @@ export async function POST(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
-  const { clientId, year } = await req.json()
+  const { clientId, year, mode } = await req.json()
+  const useAI = mode === 'ai'   // padrão: SÓ regras — nada é pré-definido sem regra
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest) {
 
   // IA em lote no que sobrou
   let aiAuto = 0, review = 0
-  if (unresolved.length > 0) {
+  if (useAI && unresolved.length > 0) {
     const txList = unresolved.map(t => JSON.stringify({ id: t.id, description: t.description, amount: t.amount })).join('\n')
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {

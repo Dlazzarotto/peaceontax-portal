@@ -152,14 +152,16 @@ export default function BookkeepingTab({ clientId }: Props) {
     setExtracting(null); load()
   }
 
-  const categorize = async () => {
+  const categorize = async (mode: 'rules' | 'ai' = 'rules') => {
     setCategorizing(true); setMsg('')
     const r = await fetch('/api/bookkeeping/categorize', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, year: year === 'all' ? undefined : year }),
+      body: JSON.stringify({ clientId, year: year === 'all' ? undefined : year, mode }),
     })
     const d = await r.json()
-    if (d.ok) setMsg(`✓ Categorização: ${d.ruled} por regra · ${d.ai} pela IA (≥95%) · ${d.review} para revisão${d.payeesFilled ? ` · ${d.payeesFilled} payees extraídos` : ''}`)
+    if (d.ok) setMsg(mode === 'ai'
+      ? `✓ ${d.ruled} por regra · ${d.ai} sugeridas pela IA (≥95%) · ${d.review} sem sugestão`
+      : `✓ ${d.ruled} lançamento(s) reconhecido(s) por regra · ${(d.review ?? 0) + (d.ai ?? 0)} sem regra (para sua decisão)`)
     else setMsg(`Erro: ${d.error}`)
     setCategorizing(false); load()
   }
@@ -731,9 +733,12 @@ export default function BookkeepingTab({ clientId }: Props) {
       {(view === 'banking' || view === 'register') && (<>
       {/* Filtros */}
       <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
-        <button onClick={categorize} disabled={categorizing || !summary || summary.pending === 0}
-          style={btn('#5a1a8a', categorizing || !summary || summary.pending === 0)}>
-          {categorizing ? '🤖 Categorizando…' : '🤖 Categorizar pendentes (regras + IA)'}
+        <button onClick={() => categorize('rules')} disabled={categorizing} style={btn('#2D3278', categorizing)}>
+          {categorizing ? 'Aplicando…' : '📐 Aplicar regras'}
+        </button>
+        <button onClick={() => { if (confirm('Pedir sugestões da IA para os lançamentos SEM regra? As sugestões ficam nas Reconhecidas aguardando sua aprovação — nada entra no registro sozinho.')) categorize('ai') }}
+          disabled={categorizing} style={btn('#5a6a7a', categorizing)}>
+          🤖 Sugerir com IA (opcional)
         </button>
         <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
           + Nova categoria
