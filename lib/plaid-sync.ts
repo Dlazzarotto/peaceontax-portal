@@ -2,6 +2,7 @@
 // Convenção de sinal: Plaid usa positivo = saída; nosso padrão é negativo = saída → inverte.
 
 import { plaidPost } from '@/lib/plaid'
+import { applyRulesToClient } from '@/lib/apply-rules'
 
 export async function syncPlaidItem(db: any, plaidItemRowId: string) {
   const { data: item } = await db.from('plaid_items').select('*').eq('id', plaidItemRowId).single()
@@ -82,5 +83,8 @@ export async function syncPlaidItem(db: any, plaidItemRowId: string) {
     status: 'active',
   }).eq('id', plaidItemRowId)
 
-  return { added, modified, removed }
+  // Regras aplicam AUTOMATICAMENTE às transações recém-chegadas (estilo QuickBooks)
+  const ruled = added > 0 ? await applyRulesToClient(db, item.client_id).catch(() => 0) : 0
+
+  return { added, modified, removed, ruled }
 }

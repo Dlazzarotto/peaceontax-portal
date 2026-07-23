@@ -4,6 +4,7 @@
 // Equipe apenas. Custo: ~1 chamada de IA por extrato.
 
 import { NextRequest, NextResponse } from 'next/server'
+import { applyRulesToClient } from '@/lib/apply-rules'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 
 export const maxDuration = 120  // extratos longos podem demorar
@@ -163,8 +164,12 @@ export async function POST(req: NextRequest) {
     const insertedCount = inserted?.length ?? 0
     const duplicates = rows.length - insertedCount
 
+    // Regras aplicam AUTOMATICAMENTE às transações importadas (estilo QuickBooks)
+    const ruled = insertedCount > 0 ? await applyRulesToClient(db, doc.client_id).catch(() => 0) : 0
+
     return NextResponse.json({
       ok: true,
+      ruled,
       extracted: rows.length,
       inserted: insertedCount,
       duplicates,
