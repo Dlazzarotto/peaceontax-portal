@@ -35,6 +35,13 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [view, setView] = useState<'banking'|'register'|'statements'|'payees'|'rules'|'reports'>('banking')
   const [tab, setTab] = useState<'recognized'|'unrecognized'|'excluded'>('recognized')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [sortField, setSortField] = useState<'tx_date'|'description'|'amount'>('tx_date')
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc')
+
+  const toggleSort = (f: 'tx_date'|'description'|'amount') => {
+    if (sortField === f) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortField(f); setSortDir(f === 'description' ? 'asc' : 'desc') }
+  }
   const [categorizing, setCategorizing] = useState(false)
   const [categories, setCategories] = useState<{name:string; kind:string}[]>([])
   const [newCatOpen, setNewCatOpen] = useState(false)
@@ -64,6 +71,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [mPayee, setMPayee] = useState('')
   const [mPayeeType, setMPayeeType] = useState('vendor')
   const [mScope, setMScope] = useState('client')
+  const [mErr, setMErr] = useState('')
   const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovData, setOvData] = useState<any>(null)
@@ -253,7 +261,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const setTxCategory = (tx: Tx, category: string) => {
-    setCatDecision({ tx, category })
+    setCatDecision({ tx, category }); setMErr('')
     setMPattern(suggestPattern(tx.description))
     setMPayee(tx.payee || '')
     setMPayeeType(Number(tx.amount) > 0 ? 'customer' : 'vendor')
@@ -272,13 +280,11 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   const applyAsRule = async () => {
     if (!catDecision) return
-    if (!mPattern.trim()) { setMsg('Defina o texto da regra.'); return }
-    // 1. Marca este lançamento como revisado
-    await fetch('/api/bookkeeping/transactions', {
-      method:'PATCH', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee || undefined }),
-    })
-    // 2. Cria a regra (aplicação retroativa automática a todos que casam)
+    setMErr('')
+    if (!mPattern.trim()) { setMErr('Defina o texto da regra.'); return }
+    if (!mPayee.trim()) { setMErr('Payee é obrigatório para criar a regra — informe o favorecido.'); return }
+
+    // 1. Cria a regra (aplicação retroativa a pendentes + reconhecidas)
     const r = await fetch('/api/bookkeeping/rules', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({
@@ -286,20 +292,29 @@ export default function BookkeepingTab({ clientId }: Props) {
         name: mPattern.trim().slice(0, 40),
         direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
         pattern: mPattern.trim(), matchType: 'contains',
-        payee: mPayee.trim() || undefined,
+        payee: mPayee.trim(),
         category: catDecision.category,
       }),
     }).then(x => x.json())
-    if (r.ok && mPayee.trim()) {
-      await fetch('/api/bookkeeping/payees', {
-        method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ clientId, name: mPayee.trim(), type: mPayeeType }),
-      })
+
+    if (!r.ok) {
+      setMErr(`Não foi possível criar a regra: ${r.error}`)   // fica no modal, visível
+      return
     }
-    setMsg(r.ok
-      ? `✓ Regra criada e aplicada a ${(r.applied ?? 0) + 1} lançamento(s) com a mesma informação.`
-      : `Erro: ${r.error}`)
-    setCatDecision(null); load(); loadRules()
+
+    // 2. Este lançamento: revisado com a categoria + payee
+    await fetch('/api/bookkeeping/transactions', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee.trim() }),
+    })
+    // 3. Payee no cadastro com o tipo escolhido
+    await fetch('/api/bookkeeping/payees', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ clientId, name: mPayee.trim(), type: mPayeeType }),
+    })
+
+    setMsg(`✓ Regra criada e aplicada a ${(r.applied ?? 0) + 1} lançamento(s) com a mesma informação.`)
+    setCatDecision(null); setMErr(''); load(); loadRules()
   }
 
   const openPnl = () => {
@@ -335,6 +350,13 @@ export default function BookkeepingTab({ clientId }: Props) {
     excluded:     t => t.status === 'excluded',
   }
   const tabTxs = txs.filter(view === 'register' ? TAB_FILTER.register : TAB_FILTER[tab])
+    .sort((a, b) => {
+      let cmp = 0
+      if (sortField === 'tx_date') cmp = String(a.tx_date).localeCompare(String(b.tx_date))
+      else if (sortField === 'description') cmp = String(a.description).localeCompare(String(b.description), undefined, { sensitivity: 'base' })
+      else cmp = Number(a.amount) - Number(b.amount)
+      return sortDir === 'asc' ? cmp : -cmp
+    })
   const counts = {
     recognized: txs.filter(TAB_FILTER.recognized).length,
     unrecognized: txs.filter(TAB_FILTER.unrecognized).length,
@@ -689,7 +711,7 @@ export default function BookkeepingTab({ clientId }: Props) {
 
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
               <div>
-                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Payee (Vendor/Customer)</label>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Payee (Vendor/Customer) *</label>
                 <input value={mPayee} onChange={e => setMPayee(e.target.value)} list="payee-list" placeholder="Opcional"
                   style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
               </div>
@@ -714,6 +736,11 @@ export default function BookkeepingTab({ clientId }: Props) {
               </select>
             </div>
 
+            {mErr && (
+              <p style={{ fontSize:13, fontWeight:700, color:'#b02020', background:'#fee2e2', borderRadius:8, padding:'9px 12px', margin:'0 0 12px' }}>
+                ⚠️ {mErr}
+              </p>
+            )}
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end', flexWrap:'wrap' }}>
               <button onClick={() => setCatDecision(null)}
                 style={{ padding:'9px 14px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
@@ -843,8 +870,15 @@ export default function BookkeepingTab({ clientId }: Props) {
                   onChange={e => setSelected(e.target.checked ? new Set(tabTxs.map(t => t.id)) : new Set())}
                   style={{ width:17, height:17, cursor:'pointer' }} />
               </th>
-              {['Data','Descrição','Payee','Valor','Categoria','Ação'].map(h =>
-                <th key={h} style={{ padding:'9px 14px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4' }}>{h}</th>)}
+              {([['Data','tx_date'],['Descrição','description'],['Payee',''],['Valor','amount'],['Categoria',''],['Ação','']] as const).map(([h, f]) =>
+                <th key={h}
+                  onClick={f ? () => toggleSort(f as any) : undefined}
+                  style={{ padding:'9px 14px', textAlign:'left', fontSize:11, fontWeight:700,
+                    color: f && sortField === f ? '#2D3278' : '#6a7a9a',
+                    textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4',
+                    cursor: f ? 'pointer' : 'default', userSelect:'none' as const, whiteSpace:'nowrap' as const }}>
+                  {h}{f && sortField === f ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </th>)}
             </tr></thead>
             <tbody>
               {tabTxs.map(t => (
