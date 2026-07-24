@@ -11,14 +11,26 @@ export default function LoginPage() {
   const [error,   setError]   = useState('')
   const [loading, setLoading] = useState(false)
 
+  const PT_ERRORS: Record<string, string> = {
+    'Invalid login credentials': 'E-mail ou senha incorretos. Se você acabou de redefinir a senha, use exatamente a que definiu — ou clique em "Forgot password?" para criar outra.',
+    'Email not confirmed': 'Seu e-mail ainda não foi confirmado. Fale com nossa equipe: (833) 732-2327.',
+    'Too many requests': 'Muitas tentativas — aguarde 1 minuto e tente de novo.',
+  }
+
   const login = async () => {
     if (!role || !email || !pass) return
     setLoading(true); setError('')
     const sb = supabaseBrowser()
-    const { data, error: e } = await sb.auth.signInWithPassword({ email, password: pass })
-    if (e) { setError(e.message); setLoading(false); return }
+    const cleanEmail = email.trim().toLowerCase()
+    const { data, error: e } = await sb.auth.signInWithPassword({ email: cleanEmail, password: pass })
+    if (e) {
+      setError(PT_ERRORS[e.message] || `Não foi possível entrar: ${e.message}`)
+      setLoading(false)
+      return
+    }
     const userRole = data.user?.user_metadata?.role || role
     router.push(userRole === 'firm' ? '/dashboard' : '/portal')
+    router.refresh()
   }
 
   const canSubmit = role && email && pass && !loading
