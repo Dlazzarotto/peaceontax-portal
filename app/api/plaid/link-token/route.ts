@@ -10,9 +10,15 @@ export async function POST() {
   if (!user) return NextResponse.json({ error: 'Login necessário' }, { status: 401 })
 
   const db = serviceDb()
-  const { data: client } = await db.from('clients')
-    .select('id, name, language').eq('user_id', user.id).single()
-  if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
+  const { data: clientRows } = await db.from('clients')
+    .select('id, name, language').eq('user_id', user.id).limit(2)
+  if (!clientRows || clientRows.length === 0) {
+    return NextResponse.json({ error: 'Seu login ainda não está vinculado a um cadastro — fale com nossa equipe.' }, { status: 404 })
+  }
+  if (clientRows.length > 1) {
+    return NextResponse.json({ error: 'Seu login está vinculado a mais de um cadastro — fale com nossa equipe.' }, { status: 409 })
+  }
+  const client = clientRows[0]
 
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app').replace(/\/$/, '')
 

@@ -12,6 +12,8 @@ export default function BankConnectPage() {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [plaidReady, setPlaidReady] = useState(false)
+  const [plaidFailed, setPlaidFailed] = useState(false)
+  const [scriptNonce, setScriptNonce] = useState(0)
 
   const load = () => fetch('/api/plaid/items').then(r => r.json()).then(d => setItems(d.items || []))
   useEffect(() => { load() }, [])
@@ -50,12 +52,16 @@ export default function BankConnectPage() {
   // Detecta o Plaid mesmo quando o script já está em cache (onLoad não redispara)
   useEffect(() => {
     if (typeof window !== 'undefined' && window.Plaid) { setPlaidReady(true); return }
+    setPlaidFailed(false)
     const t = setInterval(() => {
       if (typeof window !== 'undefined' && window.Plaid) { setPlaidReady(true); clearInterval(t) }
     }, 300)
-    const stop = setTimeout(() => clearInterval(t), 15000)
+    const stop = setTimeout(() => {
+      clearInterval(t)
+      if (typeof window === 'undefined' || !window.Plaid) setPlaidFailed(true)
+    }, 12000)
     return () => { clearInterval(t); clearTimeout(stop) }
-  }, [])
+  }, [scriptNonce])
 
   const connect = async () => {
     setBusy(true); setMsg('')
@@ -114,8 +120,10 @@ export default function BankConnectPage() {
 
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
-      <Script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
-        strategy="afterInteractive" onLoad={() => setPlaidReady(true)} />
+      <Script key={scriptNonce} src={`https://cdn.plaid.com/link/v2/stable/link-initialize.js?r=${scriptNonce}`}
+        strategy="afterInteractive"
+        onLoad={() => setPlaidReady(true)}
+        onError={() => setPlaidFailed(true)} />
 
       <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 22, color: '#0f2340', margin: '0 0 6px' }}>
         🏦 Contas bancárias
@@ -127,6 +135,17 @@ export default function BankConnectPage() {
         financeiros dos EUA. <b>Nunca vemos sua senha do banco.</b>
       </p>
 
+      {plaidFailed && !plaidReady && (
+        <div style={{ background:'#fee2e2', border:'1px solid #b0202040', borderRadius:12, padding:'13px 16px', marginBottom:12 }}>
+          <p style={{ fontSize:14, fontWeight:700, color:'#b02020', margin:'0 0 8px' }}>
+            ⚠️ A conexão segura não carregou — pode ser a rede ou um bloqueador de conteúdo.
+          </p>
+          <button onClick={() => { setPlaidFailed(false); setScriptNonce(n => n + 1) }}
+            style={{ padding:'11px 18px', background:'#b02020', color:'#fff', border:'none', borderRadius:10, fontSize:14, fontWeight:800, cursor:'pointer', width:'100%' }}>
+            🔄 Tentar carregar de novo
+          </button>
+        </div>
+      )}
       <button onClick={connect} disabled={busy || !plaidReady}
         style={{ width: '100%', padding: '17px', background: busy || !plaidReady ? '#e2e8f4' : '#2D3278',
           color: busy || !plaidReady ? '#9aaab0' : '#fff', border: 'none', borderRadius: 14,

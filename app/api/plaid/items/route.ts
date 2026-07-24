@@ -23,8 +23,11 @@ export async function GET(req: NextRequest) {
 
   const user = await getUser()
   if (!user) return NextResponse.json({ error: 'Login necessário' }, { status: 401 })
-  const { data: client } = await db.from('clients').select('id').eq('user_id', user.id).single()
-  if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
+  const { data: clientRows } = await db.from('clients').select('id').eq('user_id', user.id).limit(2)
+  if (!clientRows || clientRows.length === 0) {
+    return NextResponse.json({ error: 'Seu login ainda não está vinculado a um cadastro — fale com nossa equipe.' }, { status: 404 })
+  }
+  const client = clientRows[0]
 
   const { data } = await db.from('plaid_items')
     .select('id, institution_name, status, last_synced_at, created_at')
@@ -44,8 +47,8 @@ export async function DELETE(req: NextRequest) {
   const user = await getUser()
   let allowed = false
   if (user) {
-    const { data: client } = await db.from('clients').select('id').eq('user_id', user.id).single()
-    if (client?.id === item.client_id) allowed = true
+    const { data: ownRows } = await db.from('clients').select('id').eq('user_id', user.id)
+    if ((ownRows || []).some(c => c.id === item.client_id)) allowed = true
   }
   if (!allowed) {
     const auth = await getAuth()
