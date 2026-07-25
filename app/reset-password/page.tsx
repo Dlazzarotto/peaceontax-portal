@@ -4,7 +4,7 @@ import { supabaseBrowser } from '@/lib/supabase-browser'
 
 export default function ResetPage() {
   const [email, setEmail] = useState('')
-  const [sent,  setSent]  = useState(false)
+  const [sent] = useState(false)
   const [err,   setErr]   = useState('')
   const [busy,  setBusy]  = useState(false)
 
@@ -23,7 +23,8 @@ export default function ResetPage() {
       }
       return
     }
-    setSent(true)
+    try { sessionStorage.setItem('reset_email', email.trim().toLowerCase()) } catch {}
+    window.location.href = '/reset-password/new'
   }
 
   const s: React.CSSProperties = { minHeight:'100vh', background:'linear-gradient(135deg,#2D3278,#1a1f5e)', display:'flex', alignItems:'center', justifyContent:'center' }

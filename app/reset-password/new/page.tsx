@@ -5,48 +5,48 @@ import { useRouter } from 'next/navigation'
 
 export default function NewPasswordPage() {
   const router = useRouter()
+  const [email, setEmail] = useState('')
+  const [code,  setCode]  = useState('')
   const [pass,  setPass]  = useState('')
   const [pass2, setPass2] = useState('')
   const [done,  setDone]  = useState(false)
   const [err,   setErr]   = useState('')
   const [busy,  setBusy]  = useState(false)
-  const [hasSession, setHasSession] = useState<boolean | null>(null)
 
-  // O link do e-mail precisa ter criado a sessão de recuperação —
-  // sem ela, gravar senha é impossível (e antes a tela fingia sucesso).
   useEffect(() => {
-    const sb = supabaseBrowser()
-    const url = new URL(window.location.href)
-    const code = url.searchParams.get('code')
-    const run = async () => {
-      if (code) {
-        // O link do e-mail chega aqui com ?code= — a troca por sessão
-        // acontece NESTE navegador, que guarda a chave de verificação.
-        const { error } = await sb.auth.exchangeCodeForSession(code)
-        window.history.replaceState({}, '', '/reset-password/new')
-        if (!error) { setHasSession(true); return }
-      }
-      const { data } = await sb.auth.getSession()
-      setHasSession(!!data.session)
-    }
-    run()
+    try { const e = sessionStorage.getItem('reset_email'); if (e) setEmail(e) } catch {}
   }, [])
 
   const update = async () => {
     setErr('')
+    if (!email.trim()) { setErr('Informe o e-mail que recebeu o código.'); return }
+    if (code.trim().length < 6) { setErr('Digite o código de 6 dígitos do e-mail.'); return }
+    if (pass.length < 8) { setErr('A senha precisa de pelo menos 8 caracteres.'); return }
     if (pass !== pass2) { setErr('As senhas não conferem — digite a mesma nos dois campos.'); return }
     setBusy(true)
     const sb = supabaseBrowser()
-    const { error } = await sb.auth.updateUser({ password: pass })
+
+    // 1. Valida o código do e-mail (à prova de scanners de link)
+    const { error: otpErr } = await sb.auth.verifyOtp({
+      email: email.trim().toLowerCase(),
+      token: code.trim(),
+      type: 'recovery',
+    })
+    if (otpErr) {
+      setBusy(false)
+      setErr(/expired|invalid/i.test(otpErr.message)
+        ? 'Código inválido ou vencido. Peça um novo em "Redefinir senha" e use o código do e-mail MAIS RECENTE.'
+        : `Não foi possível validar: ${otpErr.message}`)
+      return
+    }
+
+    // 2. Grava a nova senha (com erro visível se falhar)
+    const { error: upErr } = await sb.auth.updateUser({ password: pass })
     setBusy(false)
-    if (error) {
-      if (/session/i.test(error.message)) {
-        setErr('O link expirou ou foi aberto em outro navegador. Peça um novo link e abra no mesmo aparelho.')
-      } else if (/different from the old/i.test(error.message)) {
-        setErr('A nova senha precisa ser diferente da atual.')
-      } else {
-        setErr(`Não foi possível salvar: ${error.message}`)
-      }
+    if (upErr) {
+      setErr(/different from the old/i.test(upErr.message)
+        ? 'A nova senha precisa ser diferente da atual.'
+        : `Não foi possível salvar: ${upErr.message}`)
       return
     }
     setDone(true)
@@ -60,38 +60,32 @@ export default function NewPasswordPage() {
 
   return (
     <div style={s}><div style={card}>
-      <h1 style={{ fontFamily:'Georgia,serif', fontSize:20, color:'#2D3278', marginBottom:16 }}>🔒 Nova senha</h1>
-
-      {hasSession === false && (
+      <h1 style={{ fontFamily:'Georgia,serif', fontSize:20, color:'#2D3278', marginBottom:6 }}>🔒 Nova senha</h1>
+      {!done && (
         <>
-          <p style={{ color:'#b02020', fontSize:13.5, lineHeight:1.5 }}>
-            ⚠️ Este link expirou ou foi aberto em um navegador diferente do que pediu a redefinição.
+          <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px', lineHeight:1.5 }}>
+            Digite o <b>código de 6 dígitos</b> que enviamos ao seu e-mail e escolha a nova senha.
           </p>
-          <a href="/reset-password" style={{ display:'block', textAlign:'center', marginTop:14, padding:'12px', background:'#2D3278', color:'#fff', borderRadius:10, fontSize:14, fontWeight:700, textDecoration:'none' }}>
-            Pedir um novo link
-          </a>
-        </>
-      )}
-
-      {hasSession && !done && (
-        <>
+          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Seu e-mail" style={inp} />
+          <input inputMode="numeric" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            placeholder="Código de 6 dígitos" style={{ ...inp, letterSpacing: 6, fontWeight: 800, fontSize: 18, textAlign:'center' as const }} />
           <input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Nova senha (mín. 8 caracteres)" style={inp} />
           <input type="password" value={pass2} onChange={e => setPass2(e.target.value)} placeholder="Repita a nova senha" style={inp} />
           {err && <p style={{ color:'#b02020', fontSize:12.5, margin:'0 0 12px', lineHeight:1.45 }}>⚠️ {err}</p>}
-          <button onClick={update} disabled={pass.length < 8 || busy}
+          <button onClick={update} disabled={busy}
             style={{ width:'100%', padding:'12px', background: busy ? '#9aaab0' : '#2D3278', color:'#fff', border:'none', borderRadius:10, fontSize:14, cursor: busy ? 'wait' : 'pointer', fontWeight:700 }}>
-            {busy ? 'Salvando…' : 'Salvar nova senha'}
+            {busy ? 'Validando…' : 'Salvar nova senha'}
           </button>
+          <a href="/reset-password" style={{ display:'block', textAlign:'center', marginTop:12, fontSize:12, color:'#6a7a9a' }}>
+            Não recebeu? Pedir novo código
+          </a>
         </>
       )}
-
       {done && (
         <p style={{ color:'#1a6b4a', fontSize:14, lineHeight:1.5 }}>
-          ✅ Senha alterada com sucesso! Levando você ao login para entrar com ela…
+          ✅ Senha alterada com sucesso! Levando você ao login…
         </p>
       )}
-
-      {hasSession === null && <p style={{ color:'#6a7a9a', fontSize:13 }}>Verificando o link…</p>}
     </div></div>
   )
 }
