@@ -20,7 +20,7 @@ export default function NewPasswordPage() {
   const update = async () => {
     setErr('')
     if (!email.trim()) { setErr('Informe o e-mail que recebeu o código.'); return }
-    if (code.trim().length < 6) { setErr('Digite o código de 6 dígitos do e-mail.'); return }
+    if (code.trim().length < 6) { setErr('Digite o código completo que veio no e-mail.'); return }
     if (pass.length < 8) { setErr('A senha precisa de pelo menos 8 caracteres.'); return }
     if (pass !== pass2) { setErr('As senhas não conferem — digite a mesma nos dois campos.'); return }
     setBusy(true)
@@ -64,11 +64,11 @@ export default function NewPasswordPage() {
       {!done && (
         <>
           <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px', lineHeight:1.5 }}>
-            Digite o <b>código de 6 dígitos</b> que enviamos ao seu e-mail e escolha a nova senha.
+            Digite o <b>código</b> que enviamos ao seu e-mail e escolha a nova senha.
           </p>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Seu e-mail" style={inp} />
-          <input inputMode="numeric" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            placeholder="Código de 6 dígitos" style={{ ...inp, letterSpacing: 6, fontWeight: 800, fontSize: 18, textAlign:'center' as const }} />
+          <input inputMode="numeric" value={code} onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 10))}
+            placeholder="Código do e-mail" style={{ ...inp, letterSpacing: 4, fontWeight: 800, fontSize: 18, textAlign:'center' as const }} />
           <input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Nova senha (mín. 8 caracteres)" style={inp} />
           <input type="password" value={pass2} onChange={e => setPass2(e.target.value)} placeholder="Repita a nova senha" style={inp} />
           {err && <p style={{ color:'#b02020', fontSize:12.5, margin:'0 0 12px', lineHeight:1.45 }}>⚠️ {err}</p>}
