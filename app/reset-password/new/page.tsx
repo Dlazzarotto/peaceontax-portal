@@ -16,7 +16,20 @@ export default function NewPasswordPage() {
   // sem ela, gravar senha é impossível (e antes a tela fingia sucesso).
   useEffect(() => {
     const sb = supabaseBrowser()
-    sb.auth.getSession().then(({ data }) => setHasSession(!!data.session))
+    const url = new URL(window.location.href)
+    const code = url.searchParams.get('code')
+    const run = async () => {
+      if (code) {
+        // O link do e-mail chega aqui com ?code= — a troca por sessão
+        // acontece NESTE navegador, que guarda a chave de verificação.
+        const { error } = await sb.auth.exchangeCodeForSession(code)
+        window.history.replaceState({}, '', '/reset-password/new')
+        if (!error) { setHasSession(true); return }
+      }
+      const { data } = await sb.auth.getSession()
+      setHasSession(!!data.session)
+    }
+    run()
   }, [])
 
   const update = async () => {

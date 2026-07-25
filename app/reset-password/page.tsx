@@ -12,7 +12,7 @@ export default function ResetPage() {
     setBusy(true); setErr('')
     const sb = supabaseBrowser()
     const { error } = await sb.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-      redirectTo: `${window.location.origin}/auth/callback?type=recovery`,
+      redirectTo: `${window.location.origin}/reset-password/new`,
     })
     setBusy(false)
     if (error) {
