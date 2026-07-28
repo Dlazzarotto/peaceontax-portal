@@ -3,7 +3,99 @@
 // Extrai transações dos extratos PDF (contas fechadas) e lista com resumo.
 // Categorização automática (regras + IA) chega no módulo 5.2.
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+
+// ── Célula de Payee com autocomplete do cadastro (Vendors/Customers) ──
+function PayeeCell({ value, amount, registry, onSave }: {
+  value: string
+  amount: number
+  registry: { name: string; type: string }[]
+  onSave: (name: string, type: 'vendor' | 'customer') => void
+}) {
+  const [txt, setTxt]   = useState(value || '')
+  const [open, setOpen] = useState(false)
+  const [hi, setHi]     = useState(0)
+  const [pos, setPos]   = useState<{ top: number; left: number; width: number } | null>(null)
+  const ref = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { setTxt(value || '') }, [value])
+
+  const q = txt.trim().toLowerCase()
+  const matches = registry
+    .filter(p => !q || p.name.toLowerCase().includes(q))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 8)
+  const exact = registry.some(p => p.name.toLowerCase() === q)
+  const defaultType: 'vendor' | 'customer' = Number(amount) > 0 ? 'customer' : 'vendor'
+  const showNew = q.length > 1 && !exact
+
+  const place = () => {
+    const r = ref.current?.getBoundingClientRect()
+    if (r) setPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 230) })
+  }
+
+  const choose = (name: string, type?: string) => {
+    setTxt(name); setOpen(false)
+    if (name !== (value || '')) onSave(name, (type as 'vendor' | 'customer') || defaultType)
+  }
+
+  const commitFree = () => {
+    const v = txt.trim()
+    if (v !== (value || '')) onSave(v, defaultType)
+  }
+
+  const total = matches.length + (showNew ? 1 : 0)
+
+  return (
+    <>
+      <input ref={ref} value={txt} placeholder="—"
+        onChange={e => { setTxt(e.target.value); place(); setOpen(true); setHi(0) }}
+        onFocus={() => { place(); setOpen(true); setHi(0) }}
+        onBlur={() => setTimeout(() => { setOpen(false); commitFree() }, 160)}
+        onKeyDown={e => {
+          if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { place(); setOpen(true); return }
+          if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, total - 1)) }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)) }
+          else if (e.key === 'Enter') {
+            e.preventDefault()
+            if (open && hi < matches.length) choose(matches[hi].name, matches[hi].type)
+            else { setOpen(false); commitFree() }
+            ;(e.target as HTMLInputElement).blur()
+          } else if (e.key === 'Escape') { setOpen(false); setTxt(value || '') }
+        }}
+        style={{ width:120, padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7,
+          fontSize:11.5, fontWeight:600, color:'#2D3278', outline:'none' }} />
+
+      {open && pos && total > 0 && (
+        <div style={{ position:'fixed', top:pos.top, left:pos.left, width:pos.width, zIndex:200,
+          background:'#fff', border:'1.5px solid #e2e8f4', borderRadius:10,
+          boxShadow:'0 14px 40px rgba(15,35,64,0.18)', maxHeight:260, overflowY:'auto' as const }}>
+          {matches.map((p2, i) => (
+            <div key={p2.name}
+              onMouseDown={e => { e.preventDefault(); choose(p2.name, p2.type) }}
+              onMouseEnter={() => setHi(i)}
+              style={{ padding:'9px 12px', fontSize:13, fontWeight:600, cursor:'pointer',
+                display:'flex', alignItems:'center', gap:8,
+                background: hi === i ? '#f0f4ff' : 'transparent',
+                color:'#0f2340', borderBottom:'1px solid #f4f7fb' }}>
+              <span>{p2.type === 'customer' ? '💰' : '🏪'}</span>
+              <span style={{ flex:1 }}>{p2.name}</span>
+              <span style={{ fontSize:10.5, color:'#9aaab0' }}>{p2.type === 'customer' ? 'Customer' : 'Vendor'}</span>
+            </div>
+          ))}
+          {showNew && (
+            <div onMouseDown={e => { e.preventDefault(); choose(txt.trim()) }}
+              onMouseEnter={() => setHi(matches.length)}
+              style={{ padding:'9px 12px', fontSize:12.5, fontWeight:700, cursor:'pointer',
+                background: hi === matches.length ? '#e8f5ee' : '#fafcff', color:'#1a6b4a' }}>
+              ➕ Usar &quot;{txt.trim()}&quot; como novo {defaultType === 'customer' ? 'Customer' : 'Vendor'}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
 
 interface Tx {
   id: string; tx_date: string; description: string; amount: number
@@ -113,6 +205,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   useEffect(() => {
     fetch(`/api/plaid/items?clientId=${clientId}`).then(r => r.json())
       .then(d => setPlaidItems(d.items || [])).catch(() => null)
+    loadPayees()   // cadastro de Vendors/Customers alimenta o autocomplete da coluna Payee
   }, [clientId])
 
   const syncPlaid = async () => {
@@ -283,11 +376,21 @@ export default function BookkeepingTab({ clientId }: Props) {
     .replace(/\d{2}\/\d{2}/g, '').replace(/#?\d{4,}/g, '').replace(/x{4,}/gi, '')
     .replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 3).join(' ')
 
-  const setTxPayee = async (id: string, payee: string) => {
+  const setTxPayee = async (id: string, payee: string, type: 'vendor' | 'customer' = 'vendor') => {
+    const clean = payee.trim()
     await fetch('/api/bookkeeping/transactions', {
       method:'PATCH', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id, payee }),
+      body: JSON.stringify({ id, payee: clean }),
     })
+    setTxs(prev => prev.map(t => t.id === id ? { ...t, payee: clean } : t))
+    // Novo nome entra no cadastro de Payees para virar sugestão nas próximas
+    if (clean && !payeeRegistry.some(p2 => p2.name.toLowerCase() === clean.toLowerCase())) {
+      await fetch('/api/bookkeeping/payees', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ clientId, name: clean, type }),
+      }).catch(() => null)
+      loadPayees()
+    }
   }
 
   const setTxCategory = (tx: Tx, category: string) => {
@@ -993,10 +1096,9 @@ export default function BookkeepingTab({ clientId }: Props) {
                     {t.account_hint && <div style={{ fontSize:10.5, color:'#9aaab0' }}>{t.account_hint}</div>}
                   </td>
                   <td style={{ padding:'8px 10px' }}>
-                    <input defaultValue={t.payee || ''} placeholder="—"
-                      onBlur={e => { if (e.target.value !== (t.payee || '')) setTxPayee(t.id, e.target.value) }}
-                      style={{ width:120, padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7,
-                        fontSize:11.5, fontWeight:600, color:'#2D3278', outline:'none' }} />
+                    <PayeeCell value={t.payee || ''} amount={Number(t.amount)}
+                      registry={payeeRegistry}
+                      onSave={(name, type) => setTxPayee(t.id, name, type)} />
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:13, fontWeight:700, whiteSpace:'nowrap' as const,
                     color: t.amount < 0 ? '#b02020' : '#1a6b4a' }}>
