@@ -33,8 +33,14 @@ export async function POST(req: NextRequest) {
 
   const db = serviceDb()
   const { data: client } = await db.from('clients')
-    .select('id, name, email, user_id').eq('id', clientId).single()
+    .select('id, name, email, user_id, type, language').eq('id', clientId).single()
   if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
+  // A escolha Business/Individual é da EQUIPE, feita no cadastro — nunca do cliente
+  if (client.type !== 'business' && client.type !== 'individual') {
+    return NextResponse.json({
+      error: 'Defina o tipo do cliente (Business ou Individual) no cadastro antes de enviar o acesso',
+    }, { status: 400 })
+  }
   if (!client.email || !client.email.includes('@')) {
     return NextResponse.json({ error: 'Cliente sem e-mail válido — corrija o e-mail primeiro' }, { status: 400 })
   }
@@ -43,9 +49,17 @@ export async function POST(req: NextRequest) {
 
   if (client.user_id) {
     // Já tem login: redefine a senha + flag de troca obrigatória
+    const { data: existing } = await db.auth.admin.getUserById(client.user_id)
     const { error } = await db.auth.admin.updateUserById(client.user_id, {
       password: tempPassword,
-      user_metadata: { must_change_password: true },
+      user_metadata: {
+        ...(existing?.user?.user_metadata || {}),
+        role: 'client',
+        client_type: client.type,        // definido pela equipe no convite
+        name: client.name,
+        language: client.language || 'pt',
+        must_change_password: true,
+      },
     })
     if (error) return NextResponse.json({ error: `Auth: ${error.message}` }, { status: 500 })
   } else {
@@ -54,7 +68,13 @@ export async function POST(req: NextRequest) {
       email: client.email,
       password: tempPassword,
       email_confirm: true,
-      user_metadata: { role: 'client', name: client.name, must_change_password: true },
+      user_metadata: {
+        role: 'client',
+        client_type: client.type,        // definido pela equipe no convite
+        name: client.name,
+        language: client.language || 'pt',
+        must_change_password: true,
+      },
     })
     if (error) {
       // E-mail já usado por outro login?
@@ -71,8 +91,8 @@ export async function POST(req: NextRequest) {
     client_id: clientId,
     action: 'temp_password_issued',
     performed_by: auth.userId,
-    details: { note: 'Senha provisória gerada — troca obrigatória no primeiro acesso' },
+    details: { note: 'Senha provisória gerada — troca obrigatória no primeiro acesso', client_type: client.type },
   }).then(() => null, () => null)
 
-  return NextResponse.json({ ok: true, tempPassword, loginEmail: client.email })
+  return NextResponse.json({ ok: true, tempPassword, loginEmail: client.email, clientType: client.type })
 }
