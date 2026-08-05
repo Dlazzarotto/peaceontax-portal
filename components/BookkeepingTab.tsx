@@ -425,8 +425,23 @@ export default function BookkeepingTab({ clientId }: Props) {
     // Só quando a linha ainda está SEM categoria — nunca sobrescreve o que você já definiu.
     const row = txs.find(t => t.id === id)
     let applied: string | null = null
+    let origem = 'último lançamento deste payee'
     if (clean && row && !row.category) {
-      const cat = lastCategoryForPayee(clean)
+      // 1) tela atual (instantâneo) — 2) TODO o histórico do cliente, qualquer ano/banco
+      let cat = lastCategoryForPayee(clean)
+      if (!cat) {
+        try {
+          const r = await fetch(
+            `/api/bookkeeping/payee-category?clientId=${clientId}&payee=${encodeURIComponent(clean)}`
+          ).then(x => x.json())
+          if (r?.category) {
+            cat = r.category
+            origem = r.source === 'regra'
+              ? 'regra deste payee'
+              : `último lançamento (${String(r.lastDate || '').slice(0, 10)})`
+          }
+        } catch { /* sem sugestão — segue sem categoria */ }
+      }
       if (cat) {
         await fetch('/api/bookkeeping/transactions', {
           method:'PATCH', headers:{'content-type':'application/json'},
@@ -439,7 +454,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     setTxs(prev => prev.map(t => t.id === id
       ? { ...t, payee: clean, ...(applied ? { category: applied, categorized_by: 'staff', status: 'reviewed' } : {}) }
       : t))
-    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada — mesma do último lançamento deste payee.`)
+    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada — ${origem}.`)
     // Novo nome entra no cadastro de Payees para virar sugestão nas próximas
     if (clean && !payeeRegistry.some(p2 => p2.name.toLowerCase() === clean.toLowerCase())) {
       await fetch('/api/bookkeeping/payees', {
