@@ -355,16 +355,42 @@ export default function BookkeepingTab({ clientId }: Props) {
     loadRules()
   }
 
-  const bulkAction = async (ids: string[], action: 'approve'|'unmatch'|'exclude'|'restore') => {
+  const bulkAction = async (ids: string[], action: 'approve'|'unmatch'|'exclude'|'restore'|'reopen') => {
     if (ids.length === 0) return
-    const r = await fetch('/api/bookkeeping/transactions', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ ids, action }),
-    }).then(x => x.json())
-    if (r.ok) {
-      const verb = action === 'approve' ? 'aprovadas → registro' : action === 'exclude' ? 'excluídas' : action === 'unmatch' ? 'devolvidas para revisão' : 'restauradas'
-      setMsg(`✓ ${r.affected} transação(ões) ${verb}.`)
-    } else setMsg(`Erro: ${r.error}`)
+    // O servidor aceita até 1000 por chamada — enviamos em lotes de 400
+    const LOTE = 400
+    const lotes: string[][] = []
+    for (let i = 0; i < ids.length; i += LOTE) lotes.push(ids.slice(i, i + LOTE))
+
+    let afetadas = 0
+    for (let i = 0; i < lotes.length; i++) {
+      if (lotes.length > 1) setMsg(`Processando… lote ${i + 1} de ${lotes.length} (${afetadas} de ${ids.length})`)
+      let r: any
+      try {
+        const resp = await fetch('/api/bookkeeping/transactions', {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ ids: lotes[i], action }),
+        })
+        try { r = await resp.json() }
+        catch { r = { ok: false, error: `servidor respondeu ${resp.status}` } }
+      } catch (e) {
+        r = { ok: false, error: (e as Error).message }
+      }
+      if (!r.ok) {
+        setMsg(`Erro no lote ${i + 1} de ${lotes.length} (${afetadas} já processadas): ${r.error}`)
+        setSelected(new Set()); load()
+        return
+      }
+      afetadas += r.affected ?? lotes[i].length
+    }
+
+    const verb = action === 'approve' ? 'aprovadas → registro'
+      : action === 'exclude' ? 'excluídas'
+      : action === 'unmatch' ? 'devolvidas para revisão'
+      : action === 'reopen' ? 'reabertas para revisão'
+      : 'restauradas'
+    setMsg(`✓ ${afetadas} transação(ões) ${verb}.`)
+    setSelected(new Set())
     load()
   }
 
@@ -376,13 +402,44 @@ export default function BookkeepingTab({ clientId }: Props) {
     .replace(/\d{2}\/\d{2}/g, '').replace(/#?\d{4,}/g, '').replace(/x{4,}/gi, '')
     .replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 3).join(' ')
 
+  // Última conta usada para este payee NESTE cliente (histórico) — ou a regra dele
+  const lastCategoryForPayee = (payee: string): string | null => {
+    const key = payee.trim().toLowerCase()
+    if (!key) return null
+    const hist = txs
+      .filter(t => (t.payee || '').trim().toLowerCase() === key && t.category)
+      .sort((a, b) => String(b.tx_date).localeCompare(String(a.tx_date)))
+    if (hist.length) return hist[0].category as string
+    const rule = rules.find(r => String(r.payee || '').trim().toLowerCase() === key && r.category)
+    return rule?.category || null
+  }
+
   const setTxPayee = async (id: string, payee: string, type: 'vendor' | 'customer' = 'vendor') => {
     const clean = payee.trim()
     await fetch('/api/bookkeeping/transactions', {
       method:'PATCH', headers:{'content-type':'application/json'},
       body: JSON.stringify({ id, payee: clean }),
     })
-    setTxs(prev => prev.map(t => t.id === id ? { ...t, payee: clean } : t))
+
+    // Payee já usado antes? Traz a mesma conta do último lançamento dele.
+    // Só quando a linha ainda está SEM categoria — nunca sobrescreve o que você já definiu.
+    const row = txs.find(t => t.id === id)
+    let applied: string | null = null
+    if (clean && row && !row.category) {
+      const cat = lastCategoryForPayee(clean)
+      if (cat) {
+        await fetch('/api/bookkeeping/transactions', {
+          method:'PATCH', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ id, category: cat }),
+        })
+        applied = cat
+      }
+    }
+
+    setTxs(prev => prev.map(t => t.id === id
+      ? { ...t, payee: clean, ...(applied ? { category: applied, categorized_by: 'staff', status: 'reviewed' } : {}) }
+      : t))
+    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada — mesma do último lançamento deste payee.`)
     // Novo nome entra no cadastro de Payees para virar sugestão nas próximas
     if (clean && !payeeRegistry.some(p2 => p2.name.toLowerCase() === clean.toLowerCase())) {
       await fetch('/api/bookkeeping/payees', {
