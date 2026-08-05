@@ -446,16 +446,18 @@ export default function BookkeepingTab({ clientId }: Props) {
       if (cat) {
         await fetch('/api/bookkeeping/transactions', {
           method:'PATCH', headers:{'content-type':'application/json'},
-          body: JSON.stringify({ id, category: cat }),
+          // status 'auto' = fica em 🔵 Reconhecidas aguardando SUA aprovação.
+          // Sem isso o servidor marcaria 'reviewed' e o lançamento iria direto ao registro.
+          body: JSON.stringify({ id, category: cat, status: 'auto' }),
         })
         applied = cat
       }
     }
 
     setTxs(prev => prev.map(t => t.id === id
-      ? { ...t, payee: clean, ...(applied ? { category: applied, categorized_by: 'staff', status: 'reviewed' } : {}) }
+      ? { ...t, payee: clean, ...(applied ? { category: applied, categorized_by: 'staff', status: 'auto' } : {}) }
       : t))
-    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada — ${origem}.`)
+    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada (${origem}) — o lançamento foi para 🔵 Reconhecidas, aguardando sua aprovação.`)
     // Novo nome entra no cadastro de Payees para virar sugestão nas próximas
     if (clean && !payeeRegistry.some(p2 => p2.name.toLowerCase() === clean.toLowerCase())) {
       await fetch('/api/bookkeeping/payees', {
