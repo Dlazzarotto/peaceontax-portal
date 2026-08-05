@@ -570,7 +570,12 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
-  const years = (Array.from(new Set(txs.map(t => t.fiscal_year))) as number[]).sort((a,b) => b-a)
+  // Anos disponíveis: das transações E dos extratos em PDF (cliente sem transações
+  // importadas precisa poder escolher o ano dos extratos que enviou)
+  const years = (Array.from(new Set([
+    ...txs.map(t => t.fiscal_year),
+    ...statements.map(st => st.tax_year),
+  ].filter(Boolean))) as number[]).sort((a, b) => b - a)
   const money = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toFixed(2)}`
 
   const card = { background:'#fff', borderRadius:14, padding:18, border:'1px solid #e2e8f4', marginBottom:14 }
