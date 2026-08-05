@@ -189,16 +189,17 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (year !== 'all') params.set('year', String(year))
     if (accountFilter !== 'all') params.set('accountId', accountFilter)
 
-    const [t, d] = await Promise.all([
+    const [t, st] = await Promise.all([
       fetch(`/api/bookkeeping/transactions?${params}`).then(r => r.json()),
-      fetch(`/api/clients/${clientId}`).then(r => r.json()).catch(() => ({ documents: [] })),
+      // rota dedicada: lê os extratos direto da tabela de documentos
+      fetch(`/api/bookkeeping/statements?clientId=${clientId}`)
+        .then(r => r.json()).catch(() => ({ statements: [] })),
     ])
     setTxs(t.transactions || [])
     setSummary(t.summary || null)
     setAccounts(t.accounts || [])
     setSelected(new Set())
-    setStatements((d.documents || []).filter((x: Doc) =>
-      (x.category || '').toLowerCase().includes('bank')))
+    setStatements(st.statements || [])
     setLoading(false)
   }
   useEffect(() => { load() }, [clientId, year, accountFilter])
