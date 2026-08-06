@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 
-export const maxDuration = 120
+export const maxDuration = 300  // Vercel Pro: até 300s — lotes grandes na sugestão da IA
 
 async function loadCategories(db: any): Promise<string[]> {
   const { data } = await db.from('bookkeeping_categories').select('name').eq('active', true)

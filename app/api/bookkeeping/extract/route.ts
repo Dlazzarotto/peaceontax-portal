@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { applyRulesToClient } from '@/lib/apply-rules'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 
-export const maxDuration = 120  // extratos longos podem demorar
+export const maxDuration = 300  // Vercel Pro: até 300s — extratos longos (centenas de lançamentos)
 
 const EXTRACTION_PROMPT = `You are a bank statement transaction extractor for an accounting firm.
 
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 16000,
+        max_tokens: 32000,
         messages: [{
           role: 'user',
           content: [
@@ -111,12 +111,23 @@ export async function POST(req: NextRequest) {
     const text = (data.content?.find((b: any) => b.type === 'text')?.text || '')
       .replace(/```json|```/g, '').trim()
 
+    // Extrato muito longo: a resposta vem cortada no meio e nunca fecha o JSON
+    if (data.stop_reason === 'max_tokens') {
+      return NextResponse.json({
+        error: 'Este extrato é longo demais para uma leitura só. Divida o PDF em duas partes (ex.: metade das páginas em cada) e importe uma de cada vez.',
+      }, { status: 413 })
+    }
+
     let parsed: { account_hint?: string; transactions: any[] }
     try {
       parsed = JSON.parse(text)
     } catch {
       console.error('Parse fail:', text.slice(0, 500))
-      return NextResponse.json({ error: 'A IA não retornou JSON válido — tente novamente' }, { status: 502 })
+      return NextResponse.json({
+        error: text.length > 3000
+          ? 'A leitura ficou incompleta (extrato muito longo). Divida o PDF em duas partes e importe cada uma.'
+          : 'A IA não retornou JSON válido — tente novamente',
+      }, { status: 502 })
     }
 
     const txs = (parsed.transactions || []).filter(t =>
