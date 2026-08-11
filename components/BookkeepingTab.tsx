@@ -102,6 +102,7 @@ interface Tx {
   balance: number|null; category: string|null; status: string
   category_confidence: number|null; categorized_by: string|null; payee: string|null
   account_hint: string|null; statement_document_id: string|null; fiscal_year: number
+  account_id?: string|null; transfer_match_id?: string|null; counterparty_account_id?: string|null
 }
 interface Doc { id: string; file_name: string; category: string; tax_year: number }
 
@@ -161,6 +162,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [csvAcc, setCsvAcc]       = useState('')
   const [csvNewAcc, setCsvNewAcc] = useState('')
   const [csvBusy, setCsvBusy]     = useState(false)
+  // Conciliação de transferências entre contas
+  const [matchTx, setMatchTx]   = useState<Tx | null>(null)
+  const [matchAcc, setMatchAcc] = useState('')
+  const [matchCand, setMatchCand] = useState<any[] | null>(null)
+  const [matchBusy, setMatchBusy] = useState(false)
   const [csvFrom, setCsvFrom]     = useState('')
   const [csvTo, setCsvTo]         = useState('')
   const [reclassOn, setReclassOn] = useState(false)
@@ -228,6 +234,50 @@ export default function BookkeepingTab({ clientId }: Props) {
       + (r.foraDoPeriodo ? ` · ${r.foraDoPeriodo} fora do período escolhido (não importados)` : '')
       + (r.ruled ? ` · ${r.ruled} reconhecido(s) pelas suas regras` : ''))
     setCsvPrev(null); setCsvFile(null); setCsvAcc(''); setCsvNewAcc(''); setCsvFrom(''); setCsvTo('')
+    load()
+  }
+
+  const abrirMatch = (tx: Tx) => {
+    setMatchTx(tx); setMatchAcc(''); setMatchCand(null)
+  }
+
+  const buscarMatch = async (accountId: string) => {
+    if (!matchTx || !accountId) return
+    setMatchAcc(accountId); setMatchBusy(true); setMatchCand(null)
+    let r: any
+    try {
+      r = await fetch(`/api/bookkeeping/transfer-match?txId=${matchTx.id}&accountId=${accountId}`).then(x => x.json())
+    } catch (e) { r = { error: (e as Error).message } }
+    setMatchBusy(false)
+    if (!r?.ok) { setMsg(`Erro: ${r?.error}`); return }
+    setMatchCand(r.candidatos || [])
+    // uma única correspondência: concilia direto
+    if ((r.candidatos || []).length === 1) ligarMatch(r.candidatos[0].id)
+  }
+
+  const ligarMatch = async (matchId: string) => {
+    if (!matchTx) return
+    setMatchBusy(true)
+    const cat = matchTx.category === 'Credit Card Payment' ? 'Credit Card Payment' : 'Transfer'
+    let r: any
+    try {
+      r = await fetch('/api/bookkeeping/transfer-match', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ txId: matchTx.id, matchId, category: cat }),
+      }).then(x => x.json())
+    } catch (e) { r = { error: (e as Error).message } }
+    setMatchBusy(false)
+    if (!r?.ok) { setMsg(`Erro ao conciliar: ${r?.error}`); return }
+    setMsg(`🔗 Transferência conciliada: as duas pontas foram marcadas como "${r.category}" e estão em 🔵 Reconhecidas.`)
+    setMatchTx(null); setMatchCand(null); load()
+  }
+
+  const desfazerMatch = async (tx: Tx) => {
+    if (!confirm('Desfazer a conciliação desta transferência? As duas pontas voltam a ficar livres.')) return
+    const r = await fetch(`/api/bookkeeping/transfer-match?txId=${tx.id}`, { method:'DELETE' })
+      .then(x => x.json()).catch(e => ({ error: String(e) }))
+    if (!r?.ok) { setMsg(`Erro: ${r?.error}`); return }
+    setMsg('Conciliação desfeita.')
     load()
   }
 
@@ -1124,6 +1174,65 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
+      {/* Modal: conciliar transferência entre contas */}
+      {matchTx && (
+        <div onClick={() => setMatchTx(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.55)', zIndex:300, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:'#fff', borderRadius:16, padding:'22px 24px', maxWidth:560, width:'100%', maxHeight:'86vh', overflowY:'auto' as const }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:17, color:'#0f2340', margin:'0 0 6px' }}>
+              🔗 Conciliar {matchTx.category === 'Credit Card Payment' ? 'pagamento de cartão' : 'transferência'}
+            </h3>
+            <p style={{ fontSize:13, color:'#4a5a70', margin:'0 0 14px', lineHeight:1.5 }}>
+              {matchTx.tx_date} · <b>{Number(matchTx.amount) < 0 ? '−' : ''}${Math.abs(Number(matchTx.amount)).toFixed(2)}</b>
+              {' '}· {String(matchTx.description).slice(0, 60)}
+              <br />
+              Escolha a conta da outra ponta — o sistema procura o lançamento espelho (mesmo valor, sinal oposto, até 7 dias de diferença).
+            </p>
+
+            <select value={matchAcc} onChange={e => buscarMatch(e.target.value)} disabled={matchBusy}
+              style={{ ...sel, width:'100%', marginBottom:12 }}>
+              <option value="">— escolher a conta —</option>
+              {accounts.filter(a => a.id !== (matchTx as any).account_id).map(a =>
+                <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+
+            {matchBusy && <p style={{ fontSize:13, color:'#6a7a9a' }}>Procurando…</p>}
+
+            {matchCand && matchCand.length === 0 && (
+              <div style={{ background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'11px 14px', fontSize:12.5, color:'#6a5a10', lineHeight:1.5 }}>
+                Nenhum lançamento correspondente nessa conta. Pode ser que os lançamentos dela ainda não tenham sido
+                importados, ou que a data esteja fora da janela de 7 dias.
+              </div>
+            )}
+
+            {matchCand && matchCand.length > 1 && (
+              <>
+                <div style={{ fontSize:12, fontWeight:700, color:'#6a7a9a', marginBottom:6 }}>
+                  {matchCand.length} candidatos — escolha o correto:
+                </div>
+                {matchCand.map(c => (
+                  <div key={c.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 11px', border:'1px solid #e2e8f4', borderRadius:10, marginBottom:6 }}>
+                    <div style={{ flex:1, fontSize:12.5 }}>
+                      <b>{c.tx_date}</b> ({c.dias === 0 ? 'mesmo dia' : `${c.dias} dia(s)`})<br />
+                      <span style={{ color:'#6a7a9a' }}>{String(c.description).slice(0, 50)}</span>
+                    </div>
+                    <div style={{ fontWeight:700, fontSize:13, color: Number(c.amount) < 0 ? '#b02020' : '#1a6b4a' }}>
+                      {Number(c.amount) < 0 ? '−' : ''}${Math.abs(Number(c.amount)).toFixed(2)}
+                    </div>
+                    <button onClick={() => ligarMatch(c.id)} disabled={matchBusy} style={btn('#1a6b4a', matchBusy)}>Vincular</button>
+                  </div>
+                ))}
+              </>
+            )}
+
+            <div style={{ marginTop:14, textAlign:'right' as const }}>
+              <button onClick={() => setMatchTx(null)} style={btn('#6a7a9a')}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal QuickBooks: só este lançamento ou regra */}
       {catDecision && (
         <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
@@ -1369,6 +1478,22 @@ export default function BookkeepingTab({ clientId }: Props) {
                       <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>
                         {t.categorized_by === 'rule' ? 'regra' : `IA ${Number(t.category_confidence).toFixed(0)}%`}
                       </div>
+                    )}
+                    {(t.category === 'Transfer' || t.category === 'Credit Card Payment') && (
+                      t.transfer_match_id ? (
+                        <div style={{ fontSize:10.5, color:'#1a6b4a', marginTop:3, fontWeight:700 }}>
+                          🔗 conciliada
+                          <button onClick={() => desfazerMatch(t)}
+                            style={{ marginLeft:6, background:'none', border:'none', color:'#8a9ab0', fontSize:10.5, cursor:'pointer', textDecoration:'underline' }}>
+                            desfazer
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => abrirMatch(t)}
+                          style={{ marginTop:3, background:'#f0f4ff', color:'#2D3278', border:'1px solid #2D327830', borderRadius:7, padding:'3px 8px', fontSize:10.5, fontWeight:700, cursor:'pointer' }}>
+                          🔗 conciliar com a outra conta
+                        </button>
+                      )
                     )}
                   </td>
                   <td style={{ padding:'8px 10px', whiteSpace:'nowrap' as const }}>
