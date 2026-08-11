@@ -155,6 +155,14 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rScope, setRScope] = useState('client')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
+  // Importação de CSV do banco (bancos fora do Plaid)
+  const [csvFile, setCsvFile]     = useState<File | null>(null)
+  const [csvPrev, setCsvPrev]     = useState<any>(null)
+  const [csvAcc, setCsvAcc]       = useState('')
+  const [csvNewAcc, setCsvNewAcc] = useState('')
+  const [csvBusy, setCsvBusy]     = useState(false)
+  const [csvFrom, setCsvFrom]     = useState('')
+  const [csvTo, setCsvTo]         = useState('')
   const [reclassOn, setReclassOn] = useState(false)
   const [reclassPwd, setReclassPwd] = useState('')
   const [reclassReason, setReclassReason] = useState('')
@@ -182,6 +190,51 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovData, setOvData] = useState<any>(null)
   const [ovBusy, setOvBusy] = useState(false)
+
+  const csvPreviewFile = async (f: File) => {
+    setCsvBusy(true); setMsg(''); setCsvPrev(null)
+    const fd = new FormData()
+    fd.append('file', f); fd.append('clientId', clientId); fd.append('preview', 'true')
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/import-csv', { method:'POST', body: fd })
+      r = await resp.json()
+    } catch (e) { r = { error: (e as Error).message } }
+    setCsvBusy(false)
+    if (!r?.ok) { setMsg(`Erro ao ler o CSV: ${r?.error || 'formato não reconhecido'}`); return }
+    setCsvFile(f); setCsvPrev(r)
+    // Já existem lançamentos nesse período? Sugere importar só o que vem DEPOIS deles.
+    const ult = r?.existentes?.ultimaData
+    if (r?.existentes?.total > 0 && ult) {
+      const d = new Date(ult); d.setDate(d.getDate() + 1)
+      setCsvFrom(d.toISOString().slice(0, 10)); setCsvTo('')
+    } else { setCsvFrom(''); setCsvTo('') }
+  }
+
+  const csvImport = async () => {
+    if (!csvFile) return
+    setCsvBusy(true); setMsg('')
+    const fd = new FormData()
+    fd.append('file', csvFile); fd.append('clientId', clientId); fd.append('preview', 'false')
+    if (csvAcc) fd.append('accountId', csvAcc)
+    else if (csvNewAcc.trim()) fd.append('accountName', csvNewAcc.trim())
+    if (csvFrom) fd.append('from', csvFrom)
+    if (csvTo) fd.append('to', csvTo)
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/import-csv', { method:'POST', body: fd })
+      r = await resp.json()
+    } catch (e) { r = { error: (e as Error).message } }
+    setCsvBusy(false)
+    if (!r?.ok) { setMsg(`Erro na importação: ${r?.error}`); return }
+    setMsg(`✓ CSV importado: ${r.inseridas} lançamento(s) novo(s)`
+      + (r.duplicadas ? ` · ${r.duplicadas} já existiam (não duplicou)` : '')
+      + (r.duplicadas ? '' : '')
+      + (r.foraDoPeriodo ? ` · ${r.foraDoPeriodo} fora do período escolhido (não importados)` : '')
+      + (r.ruled ? ` · ${r.ruled} reconhecido(s) pelas suas regras` : ''))
+    setCsvPrev(null); setCsvFile(null); setCsvAcc(''); setCsvNewAcc(''); setCsvFrom(''); setCsvTo('')
+    load()
+  }
 
   const load = async () => {
     setLoading(true)
@@ -628,6 +681,105 @@ export default function BookkeepingTab({ clientId }: Props) {
       )}
 
       {view === 'statements' && (<>
+
+      {/* Importar CSV do banco (bancos sem conexão automática) */}
+      <div style={{ ...card, marginBottom:14 }}>
+        <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>
+          📥 Importar CSV do banco
+        </h3>
+        <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px', lineHeight:1.5 }}>
+          Para bancos sem conexão automática: o cliente baixa o CSV no site do banco e você importa aqui.
+          Enviar o mesmo arquivo duas vezes <b>não duplica</b> nada.
+        </p>
+
+        {!csvPrev && (
+          <input type="file" accept=".csv,text/csv" disabled={csvBusy}
+            onChange={e => { const f = e.target.files?.[0]; if (f) csvPreviewFile(f); e.currentTarget.value = '' }}
+            style={{ fontSize:13 }} />
+        )}
+        {csvBusy && <p style={{ fontSize:13, color:'#6a7a9a', margin:'8px 0 0' }}>Processando…</p>}
+
+        {csvPrev && (
+          <div style={{ background:'#f8fafc', border:'1px solid #e2e8f4', borderRadius:12, padding:'14px 16px' }}>
+            <div style={{ fontSize:13.5, fontWeight:700, color:'#0f2340', marginBottom:8 }}>
+              {csvFile?.name}
+            </div>
+            <div style={{ fontSize:13, color:'#4a5a70', lineHeight:1.7, marginBottom:10 }}>
+              <b>{csvPrev.resumo.total}</b> lançamentos · {csvPrev.resumo.de} a {csvPrev.resumo.ate}<br />
+              {csvPrev.resumo.entradas} entradas · {csvPrev.resumo.saidas} saídas
+              {csvPrev.resumo.ignoradas > 0 && <> · <span style={{ color:'#b02020' }}>{csvPrev.resumo.ignoradas} linha(s) ignorada(s)</span></>}
+              <br />
+              <span style={{ fontSize:11.5, color:'#8a9ab0' }}>
+                Colunas: {csvPrev.resumo.colunas.data} · {(csvPrev.resumo.colunas.descricao || []).join(' + ')} · {(csvPrev.resumo.colunas.valor || []).join(' / ')}
+                {csvPrev.resumo.colunas.cheque ? ` · ${csvPrev.resumo.colunas.cheque}` : ''}
+              </span>
+            </div>
+
+            <table style={{ width:'100%', borderCollapse:'collapse' as const, fontSize:12, marginBottom:12 }}>
+              <tbody>
+                {(csvPrev.amostra || []).map((a: any, i: number) => (
+                  <tr key={i} style={{ borderBottom:'1px solid #eef1f6' }}>
+                    <td style={{ padding:'5px 6px', whiteSpace:'nowrap' as const, color:'#6a7a9a' }}>{a.date}</td>
+                    <td style={{ padding:'5px 6px' }}>{String(a.description).slice(0, 60)}</td>
+                    <td style={{ padding:'5px 6px', textAlign:'right' as const, fontWeight:700,
+                      color: a.amount < 0 ? '#b02020' : '#1a6b4a' }}>
+                      {a.amount < 0 ? '−' : ''}${Math.abs(a.amount).toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {csvPrev.existentes?.total > 0 && (
+              <div style={{ background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'11px 14px', marginBottom:12 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'#6a5a10', marginBottom:4 }}>
+                  ⚠️ Já existem {csvPrev.existentes.total} lançamentos neste período
+                </div>
+                <div style={{ fontSize:12.5, color:'#6a5a10', lineHeight:1.5 }}>
+                  Origem: {Object.entries(csvPrev.existentes.porFonte || {}).map(([k, v]: any) => `${v} via ${k}`).join(' · ')}.
+                  {' '}O CSV descreve os lançamentos de forma diferente do PDF, então <b>importar tudo criaria duplicatas</b>.
+                  Deixamos o período abaixo já ajustado para trazer só o que vem depois do que você tem.
+                </div>
+              </div>
+            )}
+
+            <div style={{ fontSize:11.5, fontWeight:700, color:'#6a7a9a', marginBottom:5 }}>Período a importar (deixe em branco para tudo)</div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12, alignItems:'center' }}>
+              <input type="date" value={csvFrom} onChange={e => setCsvFrom(e.target.value)} style={sel} />
+              <span style={{ fontSize:12.5, color:'#6a7a9a' }}>até</span>
+              <input type="date" value={csvTo} onChange={e => setCsvTo(e.target.value)} style={sel} />
+              {(csvFrom || csvTo) && (
+                <button onClick={() => { setCsvFrom(''); setCsvTo('') }}
+                  style={{ background:'none', border:'none', color:'#2D3278', fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                  limpar período
+                </button>
+              )}
+            </div>
+
+            <div style={{ fontSize:11.5, fontWeight:700, color:'#6a7a9a', marginBottom:5 }}>Conta bancária destes lançamentos</div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+              <select value={csvAcc} onChange={e => setCsvAcc(e.target.value)} style={sel}>
+                <option value="">— nova conta —</option>
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+              {!csvAcc && (
+                <input value={csvNewAcc} onChange={e => setCsvNewAcc(e.target.value)}
+                  placeholder="Nome da conta (ex.: Cambridge Savings ...1234)"
+                  style={{ flex:'1 1 240px', padding:'8px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
+              )}
+            </div>
+
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <button onClick={csvImport} disabled={csvBusy || (!csvAcc && !csvNewAcc.trim())} style={btn('#1a6b4a', csvBusy)}>
+                {csvBusy ? 'Importando…' : `⬇️ Importar ${csvPrev.resumo.total} lançamentos`}
+              </button>
+              <button onClick={() => { setCsvPrev(null); setCsvFile(null); setCsvAcc(''); setCsvNewAcc('') }}
+                style={btn('#6a7a9a')}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Extratos disponíveis */}
       <div style={card}>
         <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>
