@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { getUser } from '@/lib/supabase-server'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -15,7 +16,6 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
@@ -25,7 +25,18 @@ export async function GET(req: NextRequest) {
   if (!clientId || !year || !category) {
     return NextResponse.json({ error: 'clientId, year e category obrigatórios' }, { status: 400 })
   }
-  if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
+  let isClient = false
+  if (auth?.isStaff) {
+    if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  } else {
+    const user = await getUser()
+    if (!user) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    const { data: own } = await serviceDb().from('clients').select('id, type').eq('user_id', user.id)
+    const mine = (own || []).find(c => c.id === clientId)
+    if (!mine || mine.type !== 'business') return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    isClient = true
+  }
 
   const db = serviceDb()
   const { data: client } = await db.from('clients')
@@ -45,6 +56,34 @@ export async function GET(req: NextRequest) {
   if (month && /^\d{1,2}$/.test(month)) {
     const mm = month.padStart(2, '0')
     list = list.filter(t => String(t.tx_date).slice(5, 7) === mm)
+  }
+
+  // Vazio? Descobre ONDE estão os lançamentos desta conta (ano e status)
+  let diagnostico = ''
+  if (list.length === 0) {
+    const { data: todos } = await db
+      .from('bank_transactions')
+      .select('fiscal_year, status, amount')
+      .eq('client_id', clientId)
+      .eq('category', category)
+      .limit(5000)
+
+    if (!todos || todos.length === 0) {
+      diagnostico = `Nenhum lançamento com a conta "${category}" foi encontrado para este cliente em nenhum ano.`
+    } else {
+      const porAno: Record<string, Record<string, number>> = {}
+      for (const t of todos as any[]) {
+        const y = String(t.fiscal_year ?? 'sem ano')
+        porAno[y] = porAno[y] || {}
+        porAno[y][t.status] = (porAno[y][t.status] || 0) + 1
+      }
+      const partes = Object.entries(porAno)
+        .sort((a, b) => b[0].localeCompare(a[0]))
+        .map(([y, st]) => `${y}: ` + Object.entries(st)
+          .map(([k, v]) => `${v} ${k === 'approved' ? 'aprovados' : k === 'reviewed' ? 'revisados' : k === 'auto' ? 'reconhecidos (aguardando aprovação)' : k === 'pending' ? 'em aberto' : k}`)
+          .join(', '))
+      diagnostico = `Esta conta tem lançamentos, mas fora deste período/registro — ${partes.join(' · ')}.`
+    }
   }
 
   const money = (v: number) => {
@@ -90,6 +129,8 @@ export async function GET(req: NextRequest) {
 
   ${positives > 0 && negatives > 0 ? `<div class="warn">⚠️ Esta conta mistura valores positivos e negativos — as linhas destacadas em amarelo têm o sinal MENOS comum nesta conta. Confira se são estornos/reembolsos legítimos ou lançamentos com sinal errado.</div>` : ''}
 
+  ${diagnostico ? `<div class="warn">🔎 ${diagnostico}</div>` : ''}
+
   <table>
     <tr><th>Date</th><th>Description</th><th>Payee</th><th>Account</th><th style="text-align:right">Amount</th></tr>
     ${list.map(t => {
@@ -109,5 +150,8 @@ export async function GET(req: NextRequest) {
   <div class="footer">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document — verify before filing</div>
   </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
+  const output = isClient
+    ? html.replace(/Internal working document[^<]*/g, 'Relatório preliminar — sujeito a revisão da nossa equipe')
+    : html
+  return new NextResponse(output, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }
