@@ -4,6 +4,7 @@
 // Categorização automática (regras + IA) chega no módulo 5.2.
 
 import { useState, useEffect, useRef } from 'react'
+import ReconcileTab from '@/components/ReconcileTab'
 
 // ── Célula de Payee com autocomplete do cadastro (Vendors/Customers) ──
 function PayeeCell({ value, amount, registry, onSave }: {
@@ -125,7 +126,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [plaidItems, setPlaidItems] = useState<any[]>([])
   const [plaidBusy, setPlaidBusy] = useState(false)
   const [accountFilter, setAccountFilter] = useState<string>('all')
-  const [view, setView] = useState<'banking'|'register'|'statements'|'payees'|'rules'|'reports'>('banking')
+  const [view, setView] = useState<'banking'|'register'|'statements'|'payees'|'rules'|'reports'|'reconcile'>('banking')
   const [tab, setTab] = useState<'recognized'|'unrecognized'|'excluded'>('recognized')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sortField, setSortField] = useState<'tx_date'|'description'|'amount'>('tx_date')
@@ -693,6 +694,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     ['statements', '📄 Extratos'],
     ['payees', '🏪 Payees'],
     ['rules', '⚙️ Regras'],
+    ['reconcile', '✅ Conciliação'],
     ['reports', '📑 Relatórios'],
   ]
 
@@ -1172,6 +1174,10 @@ export default function BookkeepingTab({ clientId }: Props) {
             }).length === 0 && <p style={{ fontSize:12.5, color:'#9aaab0' }}>Nenhuma regra corresponde a "{ruleSearch}".</p>}
           </div>
         </div>
+      )}
+
+      {view === 'reconcile' && (
+        <ReconcileTab clientId={clientId} accounts={accounts} />
       )}
 
       {/* Modal: conciliar transferência entre contas */}
