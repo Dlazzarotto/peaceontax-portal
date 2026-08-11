@@ -180,34 +180,46 @@ export async function POST(req: NextRequest) {
 
     if (preview) {
       // O que já existe no período deste CSV — e de onde veio
-      const { data: jaExiste } = await serviceDb()
-        .from('bank_transactions')
-        .select('tx_date, source')
-        .eq('client_id', clientId)
-        .gte('tx_date', resumo.de)
-        .lte('tx_date', resumo.ate)
-        .neq('status', 'excluded')
-        .limit(10000)
+      const dbp = serviceDb()
+      const [{ data: jaExiste }, { data: contas }] = await Promise.all([
+        dbp.from('bank_transactions')
+          .select('tx_date, source, account_id')
+          .eq('client_id', clientId)
+          .gte('tx_date', resumo.de)
+          .lte('tx_date', resumo.ate)
+          .neq('status', 'excluded')
+          .limit(20000),
+        dbp.from('bank_accounts').select('id, name').eq('client_id', clientId),
+      ])
 
-      const porFonte: Record<string, number> = {}
-      let ultimaData = ''
+      const nomeConta = new Map((contas || []).map((a: any) => [a.id, a.name]))
+      const porConta: Record<string, { nome: string; total: number; ultimaData: string; fontes: Record<string, number> }> = {}
       for (const t of (jaExiste || [])) {
+        const key = (t as any).account_id || 'sem_conta'
+        const nome = nomeConta.get((t as any).account_id) || 'Sem conta definida'
+        porConta[key] = porConta[key] || { nome, total: 0, ultimaData: '', fontes: {} }
+        porConta[key].total++
         const f = (t as any).source || 'outro'
-        porFonte[f] = (porFonte[f] || 0) + 1
-        if ((t as any).tx_date > ultimaData) ultimaData = (t as any).tx_date
+        porConta[key].fontes[f] = (porConta[key].fontes[f] || 0) + 1
+        if ((t as any).tx_date > porConta[key].ultimaData) porConta[key].ultimaData = (t as any).tx_date
       }
 
       return NextResponse.json({
         ok: true, preview: true, resumo, amostra: parsed.slice(0, 6),
         existentes: {
           total: (jaExiste || []).length,
-          porFonte,
-          ultimaData: ultimaData || null,
+          contas: Object.entries(porConta).map(([id, v]) => ({ accountId: id, ...v })),
         },
       })
     }
 
     // ── Importação ──
+    if (emJanela.length === 0) {
+      return NextResponse.json({
+        error: `O período escolhido (${from || 'início'} a ${to || 'fim'}) não inclui nenhum lançamento deste arquivo, que vai de ${resumo.de} a ${resumo.ate}. Ajuste ou limpe as datas.`,
+      }, { status: 422 })
+    }
+
     const db = serviceDb()
     let contaId = accountId
     if (!contaId && accountName) {

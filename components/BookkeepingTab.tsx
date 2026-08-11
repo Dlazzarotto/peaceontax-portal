@@ -203,12 +203,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     setCsvBusy(false)
     if (!r?.ok) { setMsg(`Erro ao ler o CSV: ${r?.error || 'formato não reconhecido'}`); return }
     setCsvFile(f); setCsvPrev(r)
-    // Já existem lançamentos nesse período? Sugere importar só o que vem DEPOIS deles.
-    const ult = r?.existentes?.ultimaData
-    if (r?.existentes?.total > 0 && ult) {
-      const d = new Date(ult); d.setDate(d.getDate() + 1)
-      setCsvFrom(d.toISOString().slice(0, 10)); setCsvTo('')
-    } else { setCsvFrom(''); setCsvTo('') }
+    setCsvFrom(''); setCsvTo('')   // por padrão importa tudo; o recorte é decisão sua
   }
 
   const csvImport = async () => {
@@ -732,13 +727,27 @@ export default function BookkeepingTab({ clientId }: Props) {
 
             {csvPrev.existentes?.total > 0 && (
               <div style={{ background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'11px 14px', marginBottom:12 }}>
-                <div style={{ fontSize:13, fontWeight:700, color:'#6a5a10', marginBottom:4 }}>
-                  ⚠️ Já existem {csvPrev.existentes.total} lançamentos neste período
+                <div style={{ fontSize:13, fontWeight:700, color:'#6a5a10', marginBottom:6 }}>
+                  ⚠️ Este cliente já tem {csvPrev.existentes.total} lançamentos no período do arquivo
                 </div>
-                <div style={{ fontSize:12.5, color:'#6a5a10', lineHeight:1.5 }}>
-                  Origem: {Object.entries(csvPrev.existentes.porFonte || {}).map(([k, v]: any) => `${v} via ${k}`).join(' · ')}.
-                  {' '}O CSV descreve os lançamentos de forma diferente do PDF, então <b>importar tudo criaria duplicatas</b>.
-                  Deixamos o período abaixo já ajustado para trazer só o que vem depois do que você tem.
+                <div style={{ fontSize:12.5, color:'#6a5a10', lineHeight:1.6 }}>
+                  {(csvPrev.existentes.contas || []).map((c: any) => (
+                    <div key={c.accountId} style={{ marginBottom:4 }}>
+                      • <b>{c.nome}</b>: {c.total} lançamentos (até {c.ultimaData}) —{' '}
+                      {Object.entries(c.fontes || {}).map(([k, v]: any) => `${v} via ${k}`).join(', ')}
+                      {c.accountId === csvAcc && (
+                        <button onClick={() => { const d = new Date(c.ultimaData); d.setDate(d.getDate() + 1); setCsvFrom(d.toISOString().slice(0,10)); setCsvTo('') }}
+                          style={{ marginLeft:8, background:'#fff', border:'1px solid #e0c060', borderRadius:7, padding:'2px 8px', fontSize:11.5, fontWeight:700, color:'#6a5a10', cursor:'pointer' }}>
+                          importar só o que falta desta conta
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div style={{ marginTop:6 }}>
+                    Se este CSV é de uma conta <b>diferente</b> das listadas acima, pode importar tudo — não há risco de duplicar.
+                    Se for a <b>mesma</b> conta, use o recorte de período (o CSV descreve os lançamentos de forma diferente do PDF,
+                    então o mesmo lançamento entraria duas vezes).
+                  </div>
                 </div>
               </div>
             )}
