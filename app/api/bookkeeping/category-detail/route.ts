@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
     const user = await getUser()
     if (!user) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
     const { data: own } = await serviceDb().from('clients').select('id, type').eq('user_id', user.id)
-    const mine = (own || []).find(c => c.id === clientId)
+    const mine = (own || []).find((c: any) => c.id === clientId)
     if (!mine || mine.type !== 'business') return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
     isClient = true
   }
@@ -43,19 +43,33 @@ export async function GET(req: NextRequest) {
     .select('name, business_name').eq('id', clientId).single()
 
   let q = db.from('bank_transactions')
-    .select('tx_date, description, payee, amount, status, bank_accounts(name)')
+    .select('tx_date, description, payee, amount, status, account_id')
     .eq('client_id', clientId)
     .eq('fiscal_year', year)
     .eq('category', category)
     .in('status', ['approved', 'reviewed'])
     .order('tx_date', { ascending: true })
     .limit(5000)
-  const { data: txs } = await q
+  const { data: txs, error: qErr } = await q
+  if (qErr) {
+    return new NextResponse(
+      `<html><body style="font-family:Georgia,serif;max-width:700px;margin:40px auto;padding:0 20px">
+        <h2 style="color:#b02020">Erro ao carregar o detalhe da conta</h2>
+        <p style="font-size:14px;color:#4a5a70">${qErr.message}</p>
+        <p style="font-size:12px;color:#9aaab0">Conta: ${category} · Ano: ${year}</p>
+      </body></html>`,
+      { status: 500, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+  }
+
+  // Nomes das contas buscados à parte (join embutido pode falhar em silêncio)
+  const { data: contas } = await db.from('bank_accounts')
+    .select('id, name').eq('client_id', clientId)
+  const nomeConta = new Map((contas || []).map((a: any) => [a.id, a.name]))
 
   let list = txs || []
   if (month && /^\d{1,2}$/.test(month)) {
     const mm = month.padStart(2, '0')
-    list = list.filter(t => String(t.tx_date).slice(5, 7) === mm)
+    list = list.filter((t: any) => String(t.tx_date).slice(5, 7) === mm)
   }
 
   // Vazio? Descobre ONDE estão os lançamentos desta conta (ano e status)
@@ -90,9 +104,9 @@ export async function GET(req: NextRequest) {
     const abs = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     return v < 0 ? `-$${abs}` : `$${abs}`
   }
-  const total = list.reduce((s, t) => s + Number(t.amount), 0)
-  const positives = list.filter(t => Number(t.amount) > 0).length
-  const negatives = list.filter(t => Number(t.amount) < 0).length
+  const total = list.reduce((acc: number, t: any) => acc + Number(t.amount), 0)
+  const positives = list.filter((t: any) => Number(t.amount) > 0).length
+  const negatives = list.filter((t: any) => Number(t.amount) < 0).length
   const displayName = client?.business_name || client?.name || 'Client'
   const period = month ? `${month.padStart(2, '0')}/${year}` : String(year)
 
@@ -133,14 +147,14 @@ export async function GET(req: NextRequest) {
 
   <table>
     <tr><th>Date</th><th>Description</th><th>Payee</th><th>Account</th><th style="text-align:right">Amount</th></tr>
-    ${list.map(t => {
+    ${list.map((t: any) => {
       const amt = Number(t.amount)
       const minority = (positives > 0 && negatives > 0) && ((negatives >= positives && amt > 0) || (positives > negatives && amt < 0))
       return `<tr${minority ? ' class="odd"' : ''}>
         <td style="white-space:nowrap">${t.tx_date}</td>
         <td>${String(t.description).slice(0, 90)}</td>
         <td>${t.payee || '<span class="muted">—</span>'}</td>
-        <td class="muted">${(t as any).bank_accounts?.name || '—'}</td>
+        <td class="muted">${nomeConta.get((t as any).account_id) || '—'}</td>
         <td class="r ${amt < 0 ? 'neg' : 'pos'}">${money(amt)}</td>
       </tr>`
     }).join('') || '<tr><td colspan="5" class="muted">No approved entries in this account for the period.</td></tr>'}
