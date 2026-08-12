@@ -311,13 +311,28 @@ export default function BookkeepingTab({ clientId }: Props) {
   const syncPlaid = async () => {
     setPlaidBusy(true); setMsg('')
     try {
-      const r = await fetch('/api/plaid/sync', {
+      const resp = await fetch('/api/plaid/sync', {
         method:'POST', headers:{'content-type':'application/json'},
         body: JSON.stringify({ clientId }),
-      }).then(x => x.json())
-      setMsg(r.ok ? `✓ Plaid: ${r.added} novas transações (${(r.details||[]).join(' · ')})` : `Erro: ${r.error}`)
+      })
+      // Resposta pode não ser JSON (tempo esgotado / erro do servidor):
+      // ler como texto primeiro evita o erro genérico do navegador.
+      const bruto = await resp.text()
+      let r: any = null
+      try { r = JSON.parse(bruto) } catch { /* veio HTML */ }
+
+      if (!r) {
+        setMsg(resp.status === 504 || resp.status === 502
+          ? 'O banco demorou demais para responder. As transações podem chegar em partes — aguarde 1 minuto e sincronize de novo.'
+          : `O servidor respondeu ${resp.status} sem dados. Tente novamente; se repetir, avise a equipe técnica.`)
+        setPlaidBusy(false); load(); return
+      }
+
+      setMsg(r.ok
+        ? `✓ Plaid: ${r.added} novas transações${r.ruled ? ` · ${r.ruled} reconhecidas pelas regras` : ''}${(r.details||[]).length ? ` (${(r.details||[]).join(' · ')})` : ''}`
+        : `Erro: ${r.error}`)
       if (r.ok) load()
-    } catch (e) { setMsg(`Erro: ${(e as Error).message}`) }
+    } catch (e) { setMsg(`Erro de rede: ${(e as Error).message}`) }
     setPlaidBusy(false)
   }
 
