@@ -1,5 +1,9 @@
-import { getUser, supabaseServer } from '@/lib/supabase-server'
+import { getUser } from '@/lib/supabase-server'
+import { createClient } from '@supabase/supabase-js'
+import { redirect } from 'next/navigation'
 import Link from 'next/link'
+
+export const dynamic = 'force-dynamic'
 
 // Etapas do pipeline: valor no banco → rótulo e cor na tela
 const STAGES: { key: string; label: string; color: string }[] = [
@@ -13,21 +17,28 @@ const STAGES: { key: string; label: string; color: string }[] = [
 
 export default async function DashboardPage() {
   const user = await getUser()
-  const sb   = await supabaseServer()
+  if (!user) redirect('/login')
+
+  // Página interna da equipe: lê pelo servidor, sem depender das políticas
+  // de acesso do portal do cliente (era o que zerava os números).
+  const sb = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY!
+  )
 
   const nowET   = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
   const todayET = new Date(nowET); todayET.setHours(0, 0, 0, 0)
   const tmrwET  = new Date(todayET); tmrwET.setDate(tmrwET.getDate() + 1)
 
   const [
-    { count: totalClients },
-    { count: pendingInvites },
-    { count: docsToReview },
-    { count: bookkeepingOpen },
-    { count: semResponsavel },
-    { data: recentClients },
-    { data: stageRows },
-    { data: todayBookings },
+    { count: totalClients, error: e1 },
+    { count: pendingInvites, error: e2 },
+    { count: docsToReview, error: e3 },
+    { count: bookkeepingOpen, error: e4 },
+    { count: semResponsavel, error: e5 },
+    { data: recentClients, error: e6 },
+    { data: stageRows, error: e7 },
+    { data: todayBookings, error: e8 },
   ] = await Promise.all([
     sb.from('clients').select('*', { count: 'exact', head: true }).eq('active', true),
     sb.from('client_invitations').select('*', { count: 'exact', head: true }).eq('status', 'sent'),
@@ -102,6 +113,26 @@ export default async function DashboardPage() {
           .dash-grid { grid-template-columns: 1fr; }
         }
       `}</style>
+
+      {(() => {
+        const falhas = [
+          ['clientes', e1], ['convites', e2], ['documentos', e3],
+          ['bookkeeping', e4], ['sem responsável', e5],
+          ['clientes recentes', e6], ['pipeline', e7], ['agenda', e8],
+        ].filter(([, e]) => e) as [string, any][]
+        return falhas.length === 0 ? null : (
+          <div style={{ background:'#FEE2E2', border:'1px solid #B0202040', borderRadius:12, padding:'12px 16px', marginBottom:18 }}>
+            <div style={{ fontSize:14, fontWeight:800, color:'#B02020', marginBottom:4 }}>
+              Alguns dados não carregaram
+            </div>
+            {falhas.map(([nome, e]) => (
+              <div key={nome} style={{ fontSize:13, color:'#7A2020', lineHeight:1.5 }}>
+                {nome}: {e.message}
+              </div>
+            ))}
+          </div>
+        )
+      })()}
 
       {/* Cabeçalho */}
       <header style={{ marginBottom: 22 }}>
