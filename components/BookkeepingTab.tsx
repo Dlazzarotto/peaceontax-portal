@@ -1633,20 +1633,33 @@ export default function BookkeepingTab({ clientId }: Props) {
                       </div>
                     )}
                     {(t.category === 'Transfer' || t.category === 'Credit Card Payment') && (
-                      t.transfer_match_id ? (
-                        <div style={{ fontSize:10.5, color:'#1a6b4a', marginTop:3, fontWeight:700 }}>
-                          🔗 conciliada
-                          <button onClick={() => desfazerMatch(t)}
-                            style={{ marginLeft:6, background:'none', border:'none', color:'#8a9ab0', fontSize:10.5, cursor:'pointer', textDecoration:'underline' }}>
-                            desfazer
+                      <>
+                        {/* Qual é a outra conta — a informação que faltava */}
+                        {(t as any).counterparty_account_id ? (
+                          <div style={{ fontSize:11, color:'#2D3278', marginTop:3, fontWeight:800 }}>
+                            {Number(t.amount) < 0 ? '→ para ' : '← de '}
+                            {accounts.find(a2 => a2.id === (t as any).counterparty_account_id)?.name || 'conta não cadastrada'}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize:10.5, color:'#c06010', marginTop:3, fontWeight:700 }}>
+                            ⚠️ sem conta de contrapartida
+                          </div>
+                        )}
+                        {t.transfer_match_id ? (
+                          <div style={{ fontSize:10.5, color:'#1a6b4a', marginTop:2, fontWeight:700 }}>
+                            🔗 conciliada
+                            <button onClick={() => desfazerMatch(t)}
+                              style={{ marginLeft:6, background:'none', border:'none', color:'#8a9ab0', fontSize:10.5, cursor:'pointer', textDecoration:'underline' }}>
+                              desfazer
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => abrirMatch(t)}
+                            style={{ marginTop:3, background:'#f0f4ff', color:'#2D3278', border:'1px solid #2D327830', borderRadius:7, padding:'3px 8px', fontSize:10.5, fontWeight:700, cursor:'pointer' }}>
+                            🔗 {(t as any).counterparty_account_id ? 'trocar a conta' : 'escolher a outra conta'}
                           </button>
-                        </div>
-                      ) : (
-                        <button onClick={() => abrirMatch(t)}
-                          style={{ marginTop:3, background:'#f0f4ff', color:'#2D3278', border:'1px solid #2D327830', borderRadius:7, padding:'3px 8px', fontSize:10.5, fontWeight:700, cursor:'pointer' }}>
-                          🔗 conciliar com a outra conta
-                        </button>
-                      )
+                        )}
+                      </>
                     )}
                   </td>
                   <td style={{ padding:'8px 10px', whiteSpace:'nowrap' as const }}>
