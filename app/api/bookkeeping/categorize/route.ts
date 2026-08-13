@@ -87,7 +87,11 @@ export async function POST(req: NextRequest) {
   rq = soDoCliente
     ? rq.eq('client_id', clientId)
     : rq.or(`client_id.eq.${clientId},client_id.is.null`)
-  const { data: rules } = await rq.order('priority', { ascending: true })
+  const { data: rulesRaw } = await rq.order('priority', { ascending: true })
+  // Regra do próprio cliente vence a regra geral quando ambas casam
+  const rules = (rulesRaw || []).slice().sort((a: any, b: any) =>
+    (Number(a.priority) - Number(b.priority)) ||
+    ((a.client_id ? 0 : 1) - (b.client_id ? 0 : 1)))
 
   const ruleMatches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
     // Conta (fundo): regra restrita a uma conta só vale naquela conta
@@ -149,7 +153,7 @@ export async function POST(req: NextRequest) {
   // quando há UM único candidato — e entra como 'auto', aguardando aprovação.
   let transfers = 0
   const { data: contasCli } = await db.from('bank_accounts')
-    .select('id, name, type').eq('client_id', clientId)
+    .select('id, name, type, account_hint').eq('client_id', clientId)
   const tipoConta = new Map((contasCli || []).map((a: any) => [a.id, String(a.type || '').toLowerCase()]))
 
   const dias = (a: string, b: string) =>
@@ -162,9 +166,74 @@ export async function POST(req: NextRequest) {
     porValor.get(k)!.push(t)
   }
 
+  // Os extratos dizem a conta na própria descrição:
+  // "Online Banking transfer from CHK 7495" → a outra ponta é a conta ...7495.
+  // Extrai apenas números de 4 dígitos precedidos por indicação de conta
+  // (CHK, SAV, account, card, ...) — nunca de confirmações tipo XXXXX32635.
+  const quatroDigitos = (texto: string): string[] => {
+    const achados: string[] = []
+    const re = /(?:chk|sav|checking|savings|acct|account|card|ending(?:\s+in)?|[x*•]{2,}|\.{3})\s*#?\s*(\d{4})(?!\d)/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(texto)) !== null) achados.push(m[1])
+    return achados
+  }
+
+  // Últimos 4 dígitos de cada conta do cliente (vêm do nome/apelido: "BofA ...7495")
+  const finalDaConta = new Map<string, string>()
+  for (const a of (contasCli || []) as any[]) {
+    const digs = String(`${a.name || ''} ${a.account_hint || ''}`).match(/(\d{4})(?!\d)/g)
+    if (digs && digs.length) finalDaConta.set(a.id, digs[digs.length - 1])
+  }
+
   const usados = new Set<string>()
   const naoCasadas: any[] = []
 
+  // Passo 1: casar pela conta citada na descrição
+  const porDescricao: any[] = []
+  for (const t of unresolved) {
+    if (t.transfer_match_id) continue
+    const tokens = quatroDigitos(String(t.description))
+    if (tokens.length === 0) continue
+    const alvos = (contasCli || []).filter((a: any) =>
+      a.id !== t.account_id && finalDaConta.get(a.id) && tokens.includes(finalDaConta.get(a.id)!))
+    if (alvos.length !== 1) continue
+    porDescricao.push({ tx: t, conta: alvos[0] })
+  }
+
+  for (const { tx: t, conta } of porDescricao) {
+    if (usados.has(t.id)) continue
+    const ehCartao = /credit|card|cart/.test(
+      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(conta.id) || ''))
+    const cat = ehCartao ? 'Credit Card Payment' : 'Transfer'
+
+    // Se houver o lançamento espelho naquela conta, vincula as duas pontas
+    const espelho = (porValor.get(Math.abs(Number(t.amount)).toFixed(2)) || []).find((o: any) =>
+      o.id !== t.id && !usados.has(o.id) && !o.transfer_match_id &&
+      o.account_id === conta.id &&
+      Math.abs(Number(o.amount) + Number(t.amount)) < 0.005 &&
+      dias(o.tx_date, t.tx_date) <= 7)
+
+    const base = {
+      category: cat, category_confidence: 100, categorized_by: 'rule',
+      status: 'auto', updated_at: new Date().toISOString(),
+    }
+    const { error: e1 } = await db.from('bank_transactions').update({
+      ...base,
+      counterparty_account_id: conta.id,
+      ...(espelho ? { transfer_match_id: espelho.id } : {}),
+    }).eq('id', t.id)
+    if (e1) { erros.push(`transferência: ${e1.message}`); continue }
+    usados.add(t.id); transfers++
+
+    if (espelho) {
+      await db.from('bank_transactions').update({
+        ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id,
+      }).eq('id', espelho.id)
+      usados.add(espelho.id); transfers++
+    }
+  }
+
+  // Passo 2: sem conta citada — tenta o espelho por valor
   for (const t of unresolved) {
     if (usados.has(t.id) || t.transfer_match_id) { naoCasadas.push(t); continue }
     const k = Math.abs(Number(t.amount)).toFixed(2)
