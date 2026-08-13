@@ -55,14 +55,26 @@ export async function POST(req: NextRequest) {
 
   // Pendentes + reconhecidas (regras têm prioridade e também reprocessam as 'auto';
   // aprovadas/registro nunca são tocadas)
-  let q = db.from('bank_transactions')
-    .select('id, description, amount, status, account_id')
-    .eq('client_id', clientId)
-    .in('status', ['pending', 'auto'])
-    .limit(800)
-  if (year) q = q.eq('fiscal_year', year)
-  const { data: txs } = await q
-  if (!txs || txs.length === 0) return NextResponse.json({ ok: true, ruled: 0, ai: 0, review: 0, message: 'Nada pendente' })
+  // Lê TODAS as transações em páginas, em ordem estável.
+  // (Antes havia um teto de 800 sem ordenação: em clientes com mais que isso,
+  //  parte dos lançamentos nunca era avaliada — mesmo vendor pegava uns e outros não.)
+  const PAGINA = 1000
+  const txs: any[] = []
+  for (let inicio = 0; ; inicio += PAGINA) {
+    let q = db.from('bank_transactions')
+      .select('id, description, amount, status, account_id')
+      .eq('client_id', clientId)
+      .in('status', ['pending', 'auto'])
+      .order('id', { ascending: true })
+      .range(inicio, inicio + PAGINA - 1)
+    if (year) q = q.eq('fiscal_year', year)
+    const { data: pagina, error: pErr } = await q
+    if (pErr) return NextResponse.json({ error: `Falha ao ler transações: ${pErr.message}` }, { status: 500 })
+    if (!pagina || pagina.length === 0) break
+    txs.push(...pagina)
+    if (pagina.length < PAGINA) break
+  }
+  if (txs.length === 0) return NextResponse.json({ ok: true, ruled: 0, ai: 0, review: 0, message: 'Nada pendente' })
 
   // Regras por prioridade. Em non-profit, SÓ as do próprio cliente:
   // cada entidade tem fundos/projetos únicos, regra global não se aplica.
@@ -100,22 +112,35 @@ export async function POST(req: NextRequest) {
   }
 
   let ruled = 0
-  const unresolved: typeof txs = []
+  const unresolved: any[] = []
+  const erros: string[] = []
+
+  // Agrupa por (categoria + payee) e grava em lote — antes era um UPDATE por
+  // lançamento, o que estourava o tempo em clientes com muitos movimentos.
+  const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
 
   for (const tx of txs) {
-    const desc = tx.description.toLowerCase()
-    const rule = (rules || []).find((r: any) => ruleMatches(r, desc, Number(tx.amount), (tx as any).account_id || null))
-    if (rule) {
-      const upd: Record<string, unknown> = {
-        category: rule.category, category_confidence: 100,
-        categorized_by: 'rule', status: 'auto',
-        updated_at: new Date().toISOString(),
-      }
-      if (rule.payee) upd.payee = rule.payee
-      await db.from('bank_transactions').update(upd).eq('id', tx.id)
-      ruled++
-    } else {
-      unresolved.push(tx)
+    const desc = String(tx.description).toLowerCase()
+    const rule = (rules || []).find((r: any) => ruleMatches(r, desc, Number(tx.amount), tx.account_id || null))
+    if (!rule) { unresolved.push(tx); continue }
+    const chave = `${rule.category}||${rule.payee || ''}`
+    const grupo = lotes.get(chave) || { category: rule.category as string, payee: (rule.payee || null) as string | null, ids: [] as string[] }
+    grupo.ids.push(tx.id)
+    lotes.set(chave, grupo)
+  }
+
+  for (const grupo of Array.from(lotes.values())) {
+    const upd: Record<string, unknown> = {
+      category: grupo.category, category_confidence: 100,
+      categorized_by: 'rule', status: 'auto',
+      updated_at: new Date().toISOString(),
+    }
+    if (grupo.payee) upd.payee = grupo.payee
+    for (let i = 0; i < grupo.ids.length; i += 400) {
+      const fatia = grupo.ids.slice(i, i + 400)
+      const { error } = await db.from('bank_transactions').update(upd).in('id', fatia)
+      if (error) erros.push(`${grupo.category}: ${error.message}`)
+      else ruled += fatia.length
     }
   }
 
@@ -215,5 +240,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, ruled, ai: aiAuto, review, payeesFilled })
+  return NextResponse.json({
+    ok: true, ruled, ai: aiAuto, review, payeesFilled,
+    avaliadas: txs.length,
+    erros: erros.length ? erros.slice(0, 5) : undefined,
+  })
 }

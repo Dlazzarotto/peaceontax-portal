@@ -36,25 +36,46 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     return true
   }
 
-  const { data: txs } = await db.from('bank_transactions')
-    .select('id, description, amount, account_id')
-    .eq('client_id', clientId)
-    .in('status', ['pending', 'auto'])
-    .limit(5000)
+  // Lê tudo em páginas (sem teto fixo) e em ordem estável
+  const PAGINA = 1000
+  const txs: any[] = []
+  for (let inicio = 0; ; inicio += PAGINA) {
+    const { data: pagina } = await db.from('bank_transactions')
+      .select('id, description, amount, account_id')
+      .eq('client_id', clientId)
+      .in('status', ['pending', 'auto'])
+      .order('id', { ascending: true })
+      .range(inicio, inicio + PAGINA - 1)
+    if (!pagina || pagina.length === 0) break
+    txs.push(...pagina)
+    if (pagina.length < PAGINA) break
+  }
+
+  // Agrupa por categoria+payee e grava em lote (evita 1 UPDATE por lançamento)
+  const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
+  for (const tx of txs) {
+    const desc = String(tx.description).toLowerCase()
+    const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount), tx.account_id || null))
+    if (!rule) continue
+    const chave = `${rule.category}||${rule.payee || ''}`
+    const grupo = lotes.get(chave) || { category: rule.category as string, payee: (rule.payee || null) as string | null, ids: [] as string[] }
+    grupo.ids.push(tx.id)
+    lotes.set(chave, grupo)
+  }
 
   let applied = 0
-  for (const tx of (txs || [])) {
-    const desc = String(tx.description).toLowerCase()
-    const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount), (tx as any).account_id || null))
-    if (!rule) continue
+  for (const grupo of Array.from(lotes.values())) {
     const upd: Record<string, unknown> = {
-      category: rule.category, category_confidence: 100,
+      category: grupo.category, category_confidence: 100,
       categorized_by: 'rule', status: 'auto',
       updated_at: new Date().toISOString(),
     }
-    if (rule.payee) upd.payee = rule.payee
-    const { error } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
-    if (!error) applied++
+    if (grupo.payee) upd.payee = grupo.payee
+    for (let i = 0; i < grupo.ids.length; i += 400) {
+      const fatia = grupo.ids.slice(i, i + 400)
+      const { error } = await db.from('bank_transactions').update(upd).in('id', fatia)
+      if (!error) applied += fatia.length
+    }
   }
   return applied
 }
