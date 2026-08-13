@@ -1,192 +1,278 @@
 import { getUser, supabaseServer } from '@/lib/supabase-server'
 import Link from 'next/link'
 
-const STAGE_COLOR: Record<string,string> = {
-  'Onboarding':'#6a7a9a','Gathering Docs':'#c06010','In Preparation':'#2D3278',
-  'Under Review':'#5a1a8a','Filed':'#1a6b4a','Complete':'#1a6b4a',
-}
-
-const MODE_LABEL: Record<string,string> = {
-  video:'📹 Vídeo', phone:'📞 Telefone', in_person:'🏢 Presencial',
-}
+// Etapas do pipeline: valor no banco → rótulo e cor na tela
+const STAGES: { key: string; label: string; color: string }[] = [
+  { key: 'Onboarding',     label: 'Início',        color: '#6A7A9A' },
+  { key: 'Gathering Docs', label: 'Documentos',    color: '#C06010' },
+  { key: 'In Preparation', label: 'Em preparação', color: '#2D3278' },
+  { key: 'Under Review',   label: 'Em revisão',    color: '#5A1A8A' },
+  { key: 'Filed',          label: 'Enviada',       color: '#1A6B4A' },
+  { key: 'Complete',       label: 'Concluída',     color: '#0F6B4A' },
+]
 
 export default async function DashboardPage() {
   const user = await getUser()
   const sb   = await supabaseServer()
 
-  // --- Data de hoje em ET (America/New_York) ---
-  const nowET   = new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}))
-  const todayET = new Date(nowET); todayET.setHours(0,0,0,0)
-  const tmrwET  = new Date(todayET); tmrwET.setDate(tmrwET.getDate()+1)
+  const nowET   = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }))
+  const todayET = new Date(nowET); todayET.setHours(0, 0, 0, 0)
+  const tmrwET  = new Date(todayET); tmrwET.setDate(tmrwET.getDate() + 1)
 
   const [
     { count: totalClients },
     { count: pendingInvites },
     { count: docsToReview },
+    { count: bookkeepingOpen },
+    { count: semResponsavel },
     { data: recentClients },
-    { data: stageCounts },
+    { data: stageRows },
     { data: todayBookings },
   ] = await Promise.all([
-    sb.from('clients').select('*',{count:'exact',head:true}).eq('active',true),
-    sb.from('client_invitations').select('*',{count:'exact',head:true}).eq('status','sent'),
-    // Documentos classificados pela IA com confiança < 95% aguardando revisão
-    sb.from('documents').select('*',{count:'exact',head:true})
-      .not('ai_confidence','is',null)
-      .lt('ai_confidence',0.95),
-    sb.from('clients').select('id,name,type,stage,assignee')
-      .eq('active',true).order('created_at',{ascending:false}).limit(8),
-    sb.from('clients').select('stage').eq('active',true),
-    // Reuniões de hoje (ET)
+    sb.from('clients').select('*', { count: 'exact', head: true }).eq('active', true),
+    sb.from('client_invitations').select('*', { count: 'exact', head: true }).eq('status', 'sent'),
+    sb.from('documents').select('*', { count: 'exact', head: true })
+      .not('ai_confidence', 'is', null).lt('ai_confidence', 0.95),
+    sb.from('bank_transactions').select('*', { count: 'exact', head: true })
+      .in('status', ['pending', 'auto']),
+    sb.from('clients').select('*', { count: 'exact', head: true })
+      .eq('active', true).is('assignee', null),
+    sb.from('clients').select('id,name,type,stage,assignee,created_at')
+      .eq('active', true).order('created_at', { ascending: false }).limit(6),
+    sb.from('clients').select('stage').eq('active', true),
     sb.from('bookings')
-      .select('id,guest_name,guest_email,guest_phone,starts_at,notes,meeting_types(name,mode)')
-      .eq('status','booked')
+      .select('id,guest_name,guest_phone,starts_at,notes,meeting_types(name,mode)')
+      .eq('status', 'booked')
       .gte('starts_at', todayET.toISOString())
-      .lt('starts_at',  tmrwET.toISOString())
+      .lt('starts_at', tmrwET.toISOString())
       .order('starts_at'),
   ])
 
-  const name    = user?.user_metadata?.full_name?.split(' ')[0] || 'there'
-  const byStage = (s: string) => (stageCounts||[]).filter((c: any) => c.stage===s).length
+  const nome = user?.user_metadata?.full_name?.split(' ')[0] || ''
+  const hora = nowET.getHours()
+  const saudacao = hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite'
+  const dataHoje = nowET.toLocaleDateString('pt-BR', {
+    weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/New_York',
+  })
 
-  const fmtTime = (iso: string) =>
-    new Date(iso).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:true})
+  const porEtapa = (k: string) => (stageRows || []).filter((c: any) => c.stage === k).length
+  const totalPipeline = (stageRows || []).length || 1
 
-  const hour = nowET.getHours()
-  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+  const hhmm = (iso: string) =>
+    new Date(iso).toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit', hour12: true,
+    })
+
+  const iniciais = (n: string) =>
+    (n || '?').trim().split(/\s+/).slice(0, 2).map(p => p[0]).join('').toUpperCase()
+
+  // Triagem: só aparece o que realmente precisa de ação
+  const triagem = [
+    {
+      n: bookkeepingOpen || 0, cor: '#F47B20',
+      titulo: 'lançamentos aguardando revisão',
+      acao: 'Classificar e aprovar no bookkeeping', href: '/clients',
+    },
+    {
+      n: docsToReview || 0, cor: '#C06010',
+      titulo: 'documentos com classificação incerta',
+      acao: 'Conferir o que a IA não reconheceu', href: '/clients',
+    },
+    {
+      n: pendingInvites || 0, cor: '#5A1A8A',
+      titulo: 'convites enviados sem resposta',
+      acao: 'Cobrar o primeiro acesso do cliente', href: '/invitations',
+    },
+    {
+      n: semResponsavel || 0, cor: '#2D3278',
+      titulo: 'clientes sem responsável',
+      acao: 'Atribuir alguém da equipe', href: '/clients',
+    },
+  ].filter(t => t.n > 0)
 
   return (
     <div>
-      {/* ---- Cabeçalho ---- */}
-      <div style={{ marginBottom:24 }}>
-        <h1 style={{ fontFamily:'Georgia,serif', fontSize:26, color:'#0f2340', margin:'0 0 4px' }}>
-          {greeting}, {name} 👋
+      <style>{`
+        .dash-grid { display:grid; gap:16px; grid-template-columns: 1.35fr 1fr; align-items:start; }
+        .dash-triagem { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+        .dash-card { background:#fff; border:1px solid #E2E8F4; border-radius:16px; }
+        .dash-link:focus-visible, .dash-row:focus-visible { outline:3px solid #2D3278; outline-offset:2px; }
+        .dash-row:hover { background:#EEF3FF !important; }
+        @media (max-width: 900px) {
+          .dash-grid { grid-template-columns: 1fr; }
+        }
+      `}</style>
+
+      {/* Cabeçalho */}
+      <header style={{ marginBottom: 22 }}>
+        <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 30, lineHeight: 1.15, color: '#0F2340', margin: '0 0 6px', fontWeight: 400 }}>
+          {saudacao}{nome ? `, ${nome}` : ''}
         </h1>
-        <p style={{ color:'#6a7a9a', fontSize:14, margin:0 }}>
-          {new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}
+        <p style={{ color: '#6A7A9A', fontSize: 15, margin: 0, textTransform: 'capitalize' as const }}>
+          {dataHoje} · horário de Nova York
         </p>
-      </div>
+      </header>
 
-      {/* ---- Cards de estatística ---- */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:14, marginBottom:24 }}>
-        {[
-          { label:'Active Clients',       value:totalClients||0,      icon:'👥', href:'/clients',           color:'#2D3278' },
-          { label:'Pending Invitations',  value:pendingInvites||0,    icon:'✉️',  href:'/invitations',       color:'#c06010' },
-          { label:'In Preparation',       value:byStage('In Preparation'), icon:'⚙️', href:'/clients',       color:'#2D3278' },
-          { label:'Filed This Season',    value:byStage('Filed'),     icon:'✅', href:'/clients',            color:'#1a6b4a' },
-        ].map(s => (
-          <Link key={s.label} href={s.href} style={{ textDecoration:'none' }}>
-            <div style={{ background:'#fff', borderRadius:14, padding:'16px 18px', border:'1px solid #e2e8f4', cursor:'pointer' }}>
-              <div style={{ fontSize:22, marginBottom:6 }}>{s.icon}</div>
-              <div style={{ fontFamily:'monospace', fontSize:28, fontWeight:800, color:s.color }}>{s.value}</div>
-              <div style={{ fontSize:12, color:'#6a7a9a', marginTop:2 }}>{s.label}</div>
+      {/* Triagem do dia — o elemento central da tela */}
+      <section style={{ marginBottom: 22 }}>
+        <h2 style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase' as const, color: '#6A7A9A', margin: '0 0 10px' }}>
+          Precisa de você
+        </h2>
+
+        {triagem.length === 0 ? (
+          <div className="dash-card" style={{ padding: '20px 22px', borderLeft: '5px solid #1A6B4A' }}>
+            <div style={{ fontFamily: 'Georgia,serif', fontSize: 19, color: '#1A6B4A', marginBottom: 4 }}>
+              Nada pendente agora.
             </div>
-          </Link>
-        ))}
-      </div>
-
-      {/* ---- Alerta de documentos para revisar ---- */}
-      {(docsToReview||0) > 0 && (
-        <div style={{ background:'#fff8e8', border:'1.5px solid #e0b84a', borderRadius:12, padding:'12px 18px', marginBottom:18, display:'flex', alignItems:'center', gap:12 }}>
-          <span style={{ fontSize:20 }}>⚠️</span>
-          <div style={{ flex:1 }}>
-            <span style={{ fontWeight:700, color:'#7a5a00', fontSize:14 }}>
-              {docsToReview} documento{(docsToReview||0)>1?'s':''} classificado{(docsToReview||0)>1?'s':''} pela IA com confiança abaixo de 95% aguardando revisão.
-            </span>
+            <p style={{ fontSize: 14.5, color: '#4A5A70', margin: 0, lineHeight: 1.5 }}>
+              Bom momento para revisar o pipeline ou adiantar os fechamentos do mês.
+            </p>
           </div>
-          <Link href="/clients" style={{ fontSize:12, fontWeight:700, color:'#c06010', textDecoration:'none', whiteSpace:'nowrap' }}>
-            Ver clientes →
-          </Link>
-        </div>
-      )}
-
-      {/* ---- Grid principal ---- */}
-      <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:18 }}>
-
-        {/* Recent Clients */}
-        <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-            <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:0 }}>Recent Clients</h2>
-            <Link href="/clients" style={{ fontSize:12, color:'#6a7a9a', textDecoration:'none' }}>View CRM →</Link>
-          </div>
-          {(recentClients||[]).length===0 ? (
-            <div style={{ textAlign:'center', padding:'20px 0', color:'#9aaab0' }}>
-              <div style={{ fontSize:32, marginBottom:8 }}>👥</div>
-              <div style={{ fontSize:13, marginBottom:12 }}>No clients yet</div>
-              <Link href="/invitations" style={{ background:'#2D3278', color:'#fff', padding:'8px 18px', borderRadius:8, fontSize:12, fontWeight:700, textDecoration:'none' }}>
-                Send First Invitation
+        ) : (
+          <div className="dash-triagem">
+            {triagem.map(t => (
+              <Link key={t.titulo} href={t.href} className="dash-link" style={{ textDecoration: 'none' }}>
+                <article className="dash-card" style={{ padding: '18px 20px', borderLeft: `5px solid ${t.cor}`, height: '100%' }}>
+                  <div style={{ fontSize: 40, fontWeight: 800, color: t.cor, lineHeight: 1, fontVariantNumeric: 'tabular-nums' as const }}>
+                    {t.n}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#0F2340', margin: '8px 0 4px', lineHeight: 1.3 }}>
+                    {t.titulo}
+                  </div>
+                  <div style={{ fontSize: 13.5, color: '#6A7A9A', lineHeight: 1.4 }}>{t.acao} →</div>
+                </article>
               </Link>
-            </div>
-          ) : (recentClients||[]).map((c: any) => (
-            <Link key={c.id} href={`/clients/${c.id}`} style={{ textDecoration:'none' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', borderRadius:10, background:'#f8faff', marginBottom:6 }}>
-                <div style={{ width:32, height:32, borderRadius:8, background: c.type==='business'?'#2D327815':'#5a1a8a15', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, flexShrink:0 }}>
-                  {c.type==='business' ? '🏢' : '👤'}
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:14, fontWeight:700, color:'#1a2a3a' }}>{c.name}</div>
-                  <div style={{ fontSize:11, color:'#6a7a9a' }}>{c.assignee||'—'}</div>
-                </div>
-                <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:700, color:STAGE_COLOR[c.stage]||'#6a7a9a', background:`${STAGE_COLOR[c.stage]||'#6a7a9a'}15` }}>
-                  {c.stage}
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
-
-        {/* Painel direito */}
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-
-          {/* Agenda de hoje */}
-          <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-              <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:0 }}>📅 Agenda de Hoje (ET)</h2>
-              <Link href="/dashboard/agenda" style={{ fontSize:12, color:'#6a7a9a', textDecoration:'none' }}>Ver tudo →</Link>
-            </div>
-            {(todayBookings||[]).length===0 ? (
-              <div style={{ textAlign:'center', padding:'14px 0', color:'#9aaab0' }}>
-                <div style={{ fontSize:13 }}>Nenhuma reunião hoje.</div>
-                <Link href="/agendar" style={{ fontSize:12, color:'#2D3278', fontWeight:700, textDecoration:'none', display:'block', marginTop:6 }}>
-                  🔗 Link de agendamento
-                </Link>
-              </div>
-            ) : (todayBookings||[]).map((b: any) => (
-              <div key={b.id} style={{ padding:'10px 12px', borderRadius:10, background:'#f0f4ff', marginBottom:8, borderLeft:'3px solid #2D3278' }}>
-                <div style={{ fontSize:13, fontWeight:700, color:'#2D3278' }}>
-                  {fmtTime(b.starts_at)} · {b.meeting_types?.name ?? 'Reunião'}
-                </div>
-                <div style={{ fontSize:12, color:'#4a5a6a', marginTop:2 }}>
-                  👤 {b.guest_name}
-                  {b.guest_phone && <span> · 📱 {b.guest_phone}</span>}
-                </div>
-                {b.notes && <div style={{ fontSize:11, color:'#6a7a9a', marginTop:2 }}>💬 {b.notes}</div>}
-              </div>
             ))}
           </div>
+        )}
+      </section>
 
-          {/* Quick Actions */}
-          <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>
-            <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 14px' }}>Quick Actions</h2>
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {[
-                { href:'/clients',          label:'CRM Pipeline',     icon:'🗂',  desc:'Kanban + list view' },
-                { href:'/invitations',      label:'Send Invitation',  icon:'✉️',  desc:'Email or bulk CSV' },
-                { href:'/dashboard/agenda', label:'Minha Agenda',     icon:'📅',  desc:'Reuniões e disponibilidade' },
-                { href:'/agendar',          label:'Link de Agendamento', icon:'🔗', desc:'Compartilhar com clientes' },
-              ].map(a => (
-                <Link key={a.label} href={a.href} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 12px', borderRadius:9, background:'#f8faff', textDecoration:'none' }}>
-                  <span style={{ fontSize:18 }}>{a.icon}</span>
-                  <div>
-                    <div style={{ fontSize:13.5, fontWeight:700, color:'#1a2a3a' }}>{a.label}</div>
-                    <div style={{ fontSize:11, color:'#6a7a9a' }}>{a.desc}</div>
-                  </div>
-                  <span style={{ marginLeft:'auto', color:'#9aaab0' }}>→</span>
-                </Link>
-              ))}
+      {/* Pipeline da temporada */}
+      <section className="dash-card" style={{ padding: '18px 20px', marginBottom: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+          <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: 0, fontWeight: 400 }}>
+            Pipeline · {totalClients || 0} clientes ativos
+          </h2>
+          <Link href="/clients" className="dash-link" style={{ fontSize: 14, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
+            Abrir CRM →
+          </Link>
+        </div>
+
+        <div style={{ display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: '#EEF1F7', marginBottom: 14 }}>
+          {STAGES.map(s => {
+            const n = porEtapa(s.key)
+            return n === 0 ? null : (
+              <div key={s.key} title={`${s.label}: ${n}`}
+                style={{ width: `${(n / totalPipeline) * 100}%`, background: s.color }} />
+            )
+          })}
+        </div>
+
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
+          {STAGES.map(s => (
+            <div key={s.key} style={{ minWidth: 96 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 3, background: s.color, display: 'inline-block' }} />
+                <span style={{ fontSize: 21, fontWeight: 800, color: '#0F2340', fontVariantNumeric: 'tabular-nums' as const }}>
+                  {porEtapa(s.key)}
+                </span>
+              </div>
+              <div style={{ fontSize: 13, color: '#6A7A9A', marginTop: 1 }}>{s.label}</div>
             </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="dash-grid">
+        {/* Agenda de hoje */}
+        <section className="dash-card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: 0, fontWeight: 400 }}>
+              Agenda de hoje
+            </h2>
+            <Link href="/dashboard/agenda" className="dash-link" style={{ fontSize: 14, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
+              Ver semana →
+            </Link>
           </div>
 
-        </div>
+          {(todayBookings || []).length === 0 ? (
+            <div style={{ padding: '14px 0' }}>
+              <p style={{ fontSize: 15, color: '#4A5A70', margin: '0 0 10px' }}>Nenhuma reunião marcada para hoje.</p>
+              <Link href="/agendar" className="dash-link" style={{ fontSize: 14, fontWeight: 700, color: '#2D3278', textDecoration: 'none' }}>
+                Compartilhar link de agendamento →
+              </Link>
+            </div>
+          ) : (todayBookings || []).map((b: any) => (
+            <div key={b.id} style={{ display: 'flex', gap: 14, padding: '12px 0', borderTop: '1px solid #F0F4FA' }}>
+              <div style={{ minWidth: 76, fontSize: 15, fontWeight: 800, color: '#2D3278', fontVariantNumeric: 'tabular-nums' as const }}>
+                {hhmm(b.starts_at)}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 15.5, fontWeight: 700, color: '#0F2340' }}>{b.guest_name}</div>
+                <div style={{ fontSize: 13.5, color: '#6A7A9A', marginTop: 2 }}>
+                  {b.meeting_types?.name ?? 'Reunião'}
+                  {b.guest_phone ? ` · ${b.guest_phone}` : ''}
+                </div>
+                {b.notes && (
+                  <div style={{ fontSize: 13.5, color: '#4A5A70', marginTop: 4, lineHeight: 1.45 }}>{b.notes}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        {/* Clientes recentes */}
+        <section className="dash-card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+            <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: 0, fontWeight: 400 }}>
+              Entraram por último
+            </h2>
+            <Link href="/invitations" className="dash-link" style={{ fontSize: 14, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
+              Convidar →
+            </Link>
+          </div>
+
+          {(recentClients || []).length === 0 ? (
+            <div style={{ padding: '14px 0' }}>
+              <p style={{ fontSize: 15, color: '#4A5A70', margin: '0 0 10px' }}>Nenhum cliente cadastrado ainda.</p>
+              <Link href="/invitations" className="dash-link" style={{ fontSize: 14, fontWeight: 700, color: '#2D3278', textDecoration: 'none' }}>
+                Enviar o primeiro convite →
+              </Link>
+            </div>
+          ) : (recentClients || []).map((c: any) => {
+            const st = STAGES.find(s => s.key === c.stage)
+            return (
+              <Link key={c.id} href={`/clients/${c.id}`} className="dash-link" style={{ textDecoration: 'none' }}>
+                <div className="dash-row" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 10px', borderRadius: 12, marginBottom: 2 }}>
+                  <div title={c.assignee || 'Sem responsável'}
+                    style={{
+                      width: 38, height: 38, borderRadius: 11, flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, fontWeight: 800,
+                      background: c.assignee ? '#2D327812' : '#FFF3E6',
+                      color: c.assignee ? '#2D3278' : '#C06010',
+                      border: c.assignee ? 'none' : '1px dashed #E0A860',
+                    }}>
+                    {c.assignee ? iniciais(c.assignee) : '—'}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15.5, fontWeight: 700, color: '#0F2340', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                      {c.type === 'business' ? '🏢 ' : ''}{c.name}
+                    </div>
+                    <div style={{ fontSize: 13, color: c.assignee ? '#6A7A9A' : '#C06010', marginTop: 1 }}>
+                      {c.assignee || 'sem responsável'}
+                    </div>
+                  </div>
+                  {st && (
+                    <span style={{ fontSize: 12.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20, whiteSpace: 'nowrap' as const, color: st.color, background: `${st.color}14` }}>
+                      {st.label}
+                    </span>
+                  )}
+                </div>
+              </Link>
+            )
+          })}
+        </section>
       </div>
     </div>
   )
