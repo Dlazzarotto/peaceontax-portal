@@ -22,7 +22,7 @@ Guidelines:
 - Positive amounts are deposits/credits; negative are payments/debits
 - "Income": customer payments, sales deposits. "Owner Contribution": owner putting personal money in
 - "Owner Draw": ATM withdrawals, transfers to owner. "Personal": clearly personal spending (groceries for home, personal shopping) in a business account
-- "Transfer": movements between the client's own accounts, Zelle to self — transfers are NEITHER income NOR expense
+- NEVER use "Transfer" or "Credit Card Payment". Movements between the client's own accounts are decided elsewhere by matching the account number. If a description mentions a transfer but reached you, the other account is NOT the client's — treat it as a normal deposit (income) or payment (expense) with the world outside
 - Payments FROM checking TO a credit card ("payment to chase card", "crcardpmt", "online payment thank you") = "Credit Card Payment" (liability payment, NOT an expense — the expenses live on the credit card statement itself)
 - On CREDIT CARD statements: purchases are the actual expenses (categorize normally); payments received on the card = "Credit Card Payment"
 - Restaurants/food during business = "Meals". Supermarkets are usually "Personal" unless clearly supplies
@@ -293,7 +293,7 @@ export async function POST(req: NextRequest) {
   }
 
   // IA em lote no que sobrou
-  let aiAuto = 0, review = 0
+  let aiAuto = 0, review = 0, transferenciaExterna = 0
   const aiCandidates = naoCasadas.filter((t: any) => t.status === 'pending' && !usados.has(t.id))
   if (useAI && aiCandidates.length > 0) {
     const txList = aiCandidates.map(t => JSON.stringify({ id: t.id, description: t.description, amount: t.amount })).join('\n')
@@ -329,10 +329,15 @@ export async function POST(req: NextRequest) {
         if (!r.id || !CATEGORIES.includes(r.category)) continue
         let conf = Math.max(0, Math.min(100, Number(r.confidence) || 0))
 
-        // Transfer exige ≥2 contas do cliente no sistema; Credit Card Payment exige um cartão cadastrado.
-        // Sem a contraparte "baixada", vira revisão manual (pode ser saída real, não transferência).
-        if (r.category === 'Transfer' && accountCount < 2) conf = Math.min(conf, 50)
-        if (r.category === 'Credit Card Payment' && !hasCreditCard) conf = Math.min(conf, 50)
+        // Transferência é decidida pelo motor determinístico (conta citada bater
+        // com uma conta cadastrada do cliente) — a IA não decide isso.
+        // Se chegou aqui, é porque NÃO houve casamento de conta: então é
+        // movimento com o mundo externo, ou seja, entrada/saída normal.
+        if (r.category === 'Transfer' || r.category === 'Credit Card Payment') {
+          transferenciaExterna++
+          continue   // deixa para regra/decisão manual, nunca como transferência
+        }
+        void accountCount; void hasCreditCard
 
         const isAuto = conf >= 95
         const payee = typeof (r as any).payee === 'string' && (r as any).payee.trim().length >= 2
@@ -391,6 +396,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true, ruled, ai: aiAuto, review, payeesFilled, transfers,
     contasDeFora: contasDeFora.size ? Array.from(contasDeFora) : undefined,
+    transferenciaExterna: transferenciaExterna || undefined,
     avaliadas: txs.length,
     erros: erros.length ? erros.slice(0, 5) : undefined,
   })
