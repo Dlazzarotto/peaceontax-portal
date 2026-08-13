@@ -166,6 +166,46 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     }
   }
 
+
+  // ── Pagamento DENTRO do cartão de crédito ──
+  // Na fatura, o pagamento recebido ("PAYMENT - THANK YOU") é quitação de
+  // dívida, nunca receita. A despesa real são as COMPRAS do cartão.
+  const ehPagamentoNoCartao = (desc: string, amount: number, contaId: string | null): boolean => {
+    if (amount <= 0) return false
+    if (!/credit|card|cart/.test(String(tipoConta.get(contaId || '') || ''))) return false
+    return /(^|[^a-z])(payment|pmt|autopay|crcardpmt)([^a-z]|$)|thank you/i.test(desc)
+  }
+
+  for (const t of txs) {
+    if (jaTransferencia.has(t.id) || t.transfer_match_id) continue
+    if (!ehPagamentoNoCartao(String(t.description), Number(t.amount), t.account_id)) continue
+
+    // Procura a saída correspondente na conta corrente (mesma quantia, até 7 dias)
+    const espelhoCC = (porValor.get(Math.abs(Number(t.amount)).toFixed(2)) || []).find((o: any) =>
+      o.id !== t.id && !jaTransferencia.has(o.id) && !o.transfer_match_id &&
+      o.account_id && o.account_id !== t.account_id &&
+      Math.abs(Number(o.amount) + Number(t.amount)) < 0.005 &&
+      dias(o.tx_date, t.tx_date) <= 7)
+
+    const base = {
+      category: 'Credit Card Payment', category_confidence: 100,
+      categorized_by: 'rule', status: 'auto', updated_at: new Date().toISOString(),
+    }
+    const { error: ec } = await db.from('bank_transactions').update({
+      ...base,
+      ...(espelhoCC ? { transfer_match_id: espelhoCC.id, counterparty_account_id: espelhoCC.account_id } : {}),
+    }).eq('id', t.id)
+    if (ec) continue
+    jaTransferencia.add(t.id); transferidas++
+
+    if (espelhoCC) {
+      await db.from('bank_transactions').update({
+        ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id,
+      }).eq('id', espelhoCC.id)
+      jaTransferencia.add(espelhoCC.id); transferidas++
+    }
+  }
+
   // Agrupa por categoria+payee e grava em lote (evita 1 UPDATE por lançamento)
   const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
   for (const tx of txs) {
