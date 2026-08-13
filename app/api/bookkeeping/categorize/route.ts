@@ -93,6 +93,16 @@ export async function POST(req: NextRequest) {
     (Number(a.priority) - Number(b.priority)) ||
     ((a.client_id ? 0 : 1) - (b.client_id ? 0 : 1)))
 
+  // Casamento por PALAVRA INTEIRA (não por pedaço).
+  // "mobil" não pode casar dentro de "Mobilizat", nem "bk" dentro de "BKOFAMERICA".
+  const escapar = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const casaTexto = (desc: string, v: string, tipo: string): boolean => {
+    if (!v) return false
+    return tipo === 'starts_with'
+      ? new RegExp('^' + escapar(v) + '([^a-z0-9]|$)', 'i').test(desc)
+      : new RegExp('(^|[^a-z0-9])' + escapar(v) + '([^a-z0-9]|$)', 'i').test(desc)
+  }
+
   const ruleMatches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
     // Conta (fundo): regra restrita a uma conta só vale naquela conta
     if (r.account_id && r.account_id !== accountId) return false
@@ -101,8 +111,8 @@ export async function POST(req: NextRequest) {
     if (r.direction === 'out' && amount >= 0) return false
     // Descrição — múltiplas variações separadas por | (OR)
     if (r.pattern) {
-      const variants = r.pattern.toLowerCase().split('|').map((v: string) => v.trim()).filter(Boolean)
-      const hit = variants.some((v: string) => r.match_type === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+      const variants = String(r.pattern).toLowerCase().split('|').map((v: string) => v.trim()).filter(Boolean)
+      const hit = variants.some((v: string) => casaTexto(desc, v, r.match_type))
       if (!hit) return false
     }
     // Valor (comparação pelo valor absoluto)

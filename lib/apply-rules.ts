@@ -22,13 +22,23 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     ((a.client_id ? 0 : 1) - (b.client_id ? 0 : 1)))
   if (!rules || rules.length === 0) return 0
 
+  // Casamento por PALAVRA INTEIRA (não por pedaço).
+  // "mobil" não pode casar dentro de "Mobilizat", nem "bk" dentro de "BKOFAMERICA".
+  const escapar = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const casaTexto = (desc: string, v: string, tipo: string): boolean => {
+    if (!v) return false
+    return tipo === 'starts_with'
+      ? new RegExp('^' + escapar(v) + '([^a-z0-9]|$)', 'i').test(desc)
+      : new RegExp('(^|[^a-z0-9])' + escapar(v) + '([^a-z0-9]|$)', 'i').test(desc)
+  }
+
   const matches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
     if (r.account_id && r.account_id !== accountId) return false   // regra restrita a uma conta
     if (r.direction === 'in' && amount <= 0) return false
     if (r.direction === 'out' && amount >= 0) return false
     if (r.pattern) {
       const variants = String(r.pattern).toLowerCase().split('|').map((v: string) => v.trim()).filter(Boolean)
-      const hit = variants.some((v: string) => r.match_type === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+      const hit = variants.some((v: string) => casaTexto(desc, v, r.match_type))
       if (!hit) return false
     }
     if (r.amount_op) {
