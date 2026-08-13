@@ -22,6 +22,13 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     ((a.client_id ? 0 : 1) - (b.client_id ? 0 : 1)))
   if (!rules || rules.length === 0) return 0
 
+  // Extratos de wire/ACH trazem metadados do banco que não são o comerciante:
+  // "BNF BK:ITAU UNIBANCO", "ORIG BK:", "ID:XXXX", "TRN:", "PMT DET:".
+  // Sem tirar isso, "BK:" casa com a regra do Burger King.
+  const limparRuido = (d: string): string =>
+    d.replace(/\b(bnf bk|orig bk|bnf|orig|id|trn|seq|fx|pmt det|ref|conf|confirmation)\s*[:#]\s*\S*/gi, ' ')
+     .replace(/\s+/g, ' ')
+
   // Casamento por PALAVRA INTEIRA (não por pedaço).
   // "mobil" não pode casar dentro de "Mobilizat", nem "bk" dentro de "BKOFAMERICA".
   const escapar = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -37,7 +44,10 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     if (r.direction === 'in' && amount <= 0) return false
     if (r.direction === 'out' && amount >= 0) return false
     if (r.pattern) {
-      const variants = String(r.pattern).toLowerCase().split('|').map((v: string) => v.trim()).filter(Boolean)
+      // Fragmentos com 1-2 letras ("bk", "gp") casam com metadados do banco
+      // e geram classificação errada — só valem com 3 caracteres ou mais.
+      const variants = String(r.pattern).toLowerCase().split('|')
+        .map((v: string) => v.trim()).filter((v: string) => v.length >= 3)
       const hit = variants.some((v: string) => casaTexto(desc, v, r.match_type))
       if (!hit) return false
     }
@@ -116,7 +126,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   // transferência não sobrepõe fornecedor identificado.
   const temRegra = new Set<string>()
   for (const t of txs) {
-    const d = String(t.description).toLowerCase()
+    const d = limparRuido(String(t.description).toLowerCase())
     if (rules.find((r: any) => matches(r, d, Number(t.amount), t.account_id || null))) temRegra.add(t.id)
   }
 
@@ -212,7 +222,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
   for (const tx of txs) {
     if (jaTransferencia.has(tx.id)) continue   // já resolvida como transferência
-    const desc = String(tx.description).toLowerCase()
+    const desc = limparRuido(String(tx.description).toLowerCase())
     const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount), tx.account_id || null))
     if (!rule) continue
     const chave = `${rule.category}||${rule.payee || ''}`
