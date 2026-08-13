@@ -151,6 +151,12 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatParent, setNewCatParent] = useState('')
   const [newCatIsSub, setNewCatIsSub] = useState(false)
   const [newCatRow, setNewCatRow] = useState<string | null>(null)   // id da transação com o form inline aberto
+  // Edição de conta bancária (sócio/gerente, com senha e motivo)
+  const [editAcc, setEditAcc] = useState<any | null>(null)
+  const [eaName, setEaName] = useState(''); const [eaType, setEaType] = useState('checking')
+  const [eaMoveTo, setEaMoveTo] = useState(''); const [eaPass, setEaPass] = useState('')
+  const [eaReason, setEaReason] = useState(''); const [eaBusy, setEaBusy] = useState(false)
+  const [eaErr, setEaErr] = useState('')
 
   // Painel de regras (estilo QuickBooks)
   const [rules, setRules] = useState<any[]>([])
@@ -315,6 +321,36 @@ export default function BookkeepingTab({ clientId }: Props) {
       .then(x => x.json()).catch(e => ({ error: String(e) }))
     if (!r?.ok) { setMsg(`Erro: ${r?.error}`); return }
     setMsg('Conciliação desfeita.')
+    load()
+  }
+
+  const salvarConta = async () => {
+    if (!editAcc) return
+    setEaErr('')
+    if (eaReason.trim().length < 5) { setEaErr('Descreva o motivo (mínimo 5 caracteres).'); return }
+    if (!eaPass) { setEaErr('Confirme com a sua senha.'); return }
+    if (eaMoveTo && !confirm(
+      `Mover TODOS os lançamentos de "${editAcc.name}" para outra conta?\n\n`
+      + `Isso muda onde ${editAcc.forReview + editAcc.inRegister} lançamento(s) estão registrados.`)) return
+
+    setEaBusy(true)
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/accounts', {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: editAcc.id,
+          ...(eaMoveTo ? { moveToAccountId: eaMoveTo } : { name: eaName, type: eaType }),
+          password: eaPass, reason: eaReason,
+        }),
+      })
+      const bruto = await resp.text()
+      try { r = JSON.parse(bruto) } catch { r = { error: `servidor respondeu ${resp.status}` } }
+    } catch (e) { r = { error: (e as Error).message } }
+    setEaBusy(false)
+    if (!r?.ok) { setEaErr(r?.error || 'Não foi possível salvar.'); return }
+    setMsg(`✓ ${r.message}`)
+    setEditAcc(null); setEaPass(''); setEaReason(''); setEaMoveTo('')
     load()
   }
 
@@ -980,6 +1016,15 @@ export default function BookkeepingTab({ clientId }: Props) {
                 {a.lastBalance != null && <>{a.type === 'credit_card' ? 'Saldo devedor' : 'Saldo'} (último extrato): <b>${Number(a.lastBalance).toFixed(2)}</b><br/></>}
                 Para revisar: <b style={{ color: accountFilter===a.id ? '#ffd9b0' : '#c06010' }}>{a.forReview}</b> · No registro: <b>{a.inRegister}</b>
               </div>
+              <button onClick={e => {
+                  e.stopPropagation()
+                  setEditAcc(a); setEaName(a.name); setEaType(a.type || 'checking')
+                  setEaMoveTo(''); setEaPass(''); setEaReason(''); setEaErr('')
+                }}
+                style={{ marginTop:6, background:'none', border:'none', padding:0, cursor:'pointer',
+                  fontSize:11, fontWeight:800, color: accountFilter===a.id ? '#ffd9b0' : '#2D3278' }}>
+                ✏️ Editar conta
+              </button>
             </div>
           ))}
         </div>
@@ -1269,6 +1314,78 @@ export default function BookkeepingTab({ clientId }: Props) {
 
       {view === 'reconcile' && (
         <ReconcileTab clientId={clientId} accounts={accounts} />
+      )}
+
+      {/* Modal: editar conta bancária */}
+      {editAcc && (
+        <div onClick={() => setEditAcc(null)}
+          style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.55)', zIndex:320, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:'#fff', borderRadius:16, padding:'22px 24px', maxWidth:520, width:'100%', maxHeight:'88vh', overflowY:'auto' as const }}>
+            <h3 style={{ fontFamily:'Georgia,serif', fontSize:17, color:'#0f2340', margin:'0 0 4px' }}>
+              ✏️ Editar conta bancária
+            </h3>
+            <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px', lineHeight:1.5 }}>
+              Alteração restrita a sócio e gerente. Fica registrada com seu nome, o motivo e a data.
+            </p>
+
+            <label style={{ display:'block', fontSize:11, fontWeight:800, color:'#6a7a9a', marginBottom:3 }}>Nome da conta</label>
+            <input value={eaName} onChange={e => setEaName(e.target.value)} disabled={!!eaMoveTo}
+              style={{ width:'100%', padding:'10px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:14, marginBottom:4, outline:'none', boxSizing:'border-box' as const }} />
+            <p style={{ fontSize:11, color:'#6a7a9a', margin:'0 0 10px' }}>
+              Inclua os 4 últimos dígitos (ex.: <b>Cambridge Savings ...1234</b>) — é assim que o sistema
+              reconhece "transfer to/from CHK 1234".
+            </p>
+
+            <label style={{ display:'block', fontSize:11, fontWeight:800, color:'#6a7a9a', marginBottom:3 }}>Tipo</label>
+            <select value={eaType} onChange={e => setEaType(e.target.value)} disabled={!!eaMoveTo}
+              style={{ ...sel, width:'100%', marginBottom:12 }}>
+              <option value="checking">Conta corrente</option>
+              <option value="savings">Poupança</option>
+              <option value="credit_card">Cartão de crédito</option>
+            </select>
+
+            <div style={{ borderTop:'1px solid #eef1f6', paddingTop:12, marginBottom:12 }}>
+              <label style={{ display:'block', fontSize:11, fontWeight:800, color:'#6a7a9a', marginBottom:3 }}>
+                Ou mover todos os lançamentos para outra conta
+              </label>
+              <select value={eaMoveTo} onChange={e => setEaMoveTo(e.target.value)} style={{ ...sel, width:'100%' }}>
+                <option value="">— não mover —</option>
+                {accounts.filter(a => a.id !== editAcc.id).map(a =>
+                  <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+              {eaMoveTo && (
+                <p style={{ fontSize:12, color:'#b02020', margin:'6px 0 0', fontWeight:700, lineHeight:1.45 }}>
+                  ⚠️ {editAcc.forReview + editAcc.inRegister} lançamento(s) sairão de "{editAcc.name}".
+                  Nome e tipo não são alterados nesta operação.
+                </p>
+              )}
+            </div>
+
+            <label style={{ display:'block', fontSize:11, fontWeight:800, color:'#6a7a9a', marginBottom:3 }}>Motivo</label>
+            <input value={eaReason} onChange={e => setEaReason(e.target.value)}
+              placeholder="Ex.: número da conta digitado errado na importação"
+              style={{ width:'100%', padding:'10px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:14, marginBottom:10, outline:'none', boxSizing:'border-box' as const }} />
+
+            <label style={{ display:'block', fontSize:11, fontWeight:800, color:'#6a7a9a', marginBottom:3 }}>Sua senha</label>
+            <input type="password" value={eaPass} onChange={e => setEaPass(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') salvarConta() }}
+              style={{ width:'100%', padding:'10px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:14, marginBottom:12, outline:'none', boxSizing:'border-box' as const }} />
+
+            {eaErr && (
+              <p style={{ background:'#fee2e2', color:'#b02020', padding:'9px 12px', borderRadius:9, fontSize:12.5, fontWeight:700, margin:'0 0 12px' }}>
+                ⚠️ {eaErr}
+              </p>
+            )}
+
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+              <button onClick={() => setEditAcc(null)} style={btn('#6a7a9a')}>Cancelar</button>
+              <button onClick={salvarConta} disabled={eaBusy} style={btn(eaMoveTo ? '#b02020' : '#1a6b4a', eaBusy)}>
+                {eaBusy ? 'Salvando…' : eaMoveTo ? 'Mover lançamentos' : 'Salvar alterações'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal: conciliar transferência entre contas */}
