@@ -74,6 +74,16 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
 
   // 4 dígitos só quando precedidos por indicação de conta — nunca de
   // números de confirmação (ex.: XXXXX32635 não vira conta).
+  // O extrato sempre diz "to" ou "from". O que decide se é transferência de
+  // verdade é a CONTA citada bater com uma conta do próprio cliente — o sinal
+  // do valor é apenas um alerta de incoerência, não um veto.
+  const sentidoTransferencia = (desc: string): 'to' | 'from' | 'card' | null => {
+    const m = /(^|[^a-z])(transfer|xfer|wire)[^a-z0-9]{0,4}(to|from)([^a-z]|$)/i.exec(desc)
+    if (m) return m[3].toLowerCase() as 'to' | 'from'
+    if (/(^|[^a-z])(autopay|card payment)([^a-z]|$)|payment to[^.]{0,25}card/i.test(desc)) return 'card'
+    return null
+  }
+
   const quatroDigitos = (texto: string): string[] => {
     const achados: string[] = []
     const re = /(?:chk|sav|checking|savings|acct|account|card|ending(?:\s+in)?|[x*•]{2,}|\.{3})\s*#?\s*(\d{4})(?!\d)/gi
@@ -98,15 +108,31 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     porValor.get(k)!.push(t)
   }
 
+  const contasDeFora = new Set<string>()
   const jaTransferencia = new Set<string>()
   let transferidas = 0
 
+  // Se existe regra para a descrição (ex.: "Peace on Tax"), ela manda —
+  // transferência não sobrepõe fornecedor identificado.
+  const temRegra = new Set<string>()
   for (const t of txs) {
-    if (jaTransferencia.has(t.id) || t.transfer_match_id) continue
+    const d = String(t.description).toLowerCase()
+    if (rules.find((r: any) => matches(r, d, Number(t.amount), t.account_id || null))) temRegra.add(t.id)
+  }
+
+  for (const t of txs) {
+    if (jaTransferencia.has(t.id) || t.transfer_match_id || temRegra.has(t.id)) continue
+    if (!sentidoTransferencia(String(t.description))) continue
     const tokens = quatroDigitos(String(t.description))
     if (tokens.length === 0) continue
     const alvos = (contasCli || []).filter((a: any) =>
       a.id !== t.account_id && finalDaConta.get(a.id) && tokens.includes(finalDaConta.get(a.id)!))
+    if (alvos.length === 0) {
+      // Cita uma conta que NÃO é deste cliente: dinheiro de fora, não é
+      // movimentação interna. Fica para decisão manual (pode ser receita).
+      for (const d of tokens) contasDeFora.add(d)
+      continue
+    }
     if (alvos.length !== 1) continue
     const conta: any = alvos[0]
 

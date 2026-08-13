@@ -434,7 +434,12 @@ export default function BookkeepingTab({ clientId }: Props) {
     const d = await r.json()
     if (d.ok) setMsg(mode === 'ai'
       ? `✓ ${d.ruled} por regra · ${d.ai} sugeridas pela IA (≥95%) · ${d.review} sem sugestão`
-      : `✓ ${d.ruled} lançamento(s) reconhecido(s) por regra · ${(d.review ?? 0) + (d.ai ?? 0)} sem regra (para sua decisão)`)
+      : `✓ ${d.ruled} lançamento(s) reconhecido(s) por regra`
+        + (d.transfers ? ` · ${d.transfers} ponta(s) de transferência conciliada(s)` : '')
+        + ` · ${(d.review ?? 0) + (d.ai ?? 0)} sem regra (para sua decisão)`
+        + (d.contasDeFora?.length
+            ? ` · ⚠️ lançamentos citam a(s) conta(s) ${d.contasDeFora.join(', ')}, que não estão cadastradas neste cliente — se forem dele, cadastre; se não, isso é dinheiro de fora (receita), não transferência.`
+            : ''))
     else setMsg(`Erro: ${d.error}`)
     setCategorizing(false); load()
   }

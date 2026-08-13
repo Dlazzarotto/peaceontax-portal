@@ -180,6 +180,16 @@ export async function POST(req: NextRequest) {
   // "Online Banking transfer from CHK 7495" → a outra ponta é a conta ...7495.
   // Extrai apenas números de 4 dígitos precedidos por indicação de conta
   // (CHK, SAV, account, card, ...) — nunca de confirmações tipo XXXXX32635.
+  // O extrato sempre diz "to" ou "from". O que decide se é transferência de
+  // verdade é a CONTA citada bater com uma conta do próprio cliente — o sinal
+  // do valor é apenas um alerta de incoerência, não um veto.
+  const sentidoTransferencia = (desc: string): 'to' | 'from' | 'card' | null => {
+    const m = /(^|[^a-z])(transfer|xfer|wire)[^a-z0-9]{0,4}(to|from)([^a-z]|$)/i.exec(desc)
+    if (m) return m[3].toLowerCase() as 'to' | 'from'
+    if (/(^|[^a-z])(autopay|card payment)([^a-z]|$)|payment to[^.]{0,25}card/i.test(desc)) return 'card'
+    return null
+  }
+
   const quatroDigitos = (texto: string): string[] => {
     const achados: string[] = []
     const re = /(?:chk|sav|checking|savings|acct|account|card|ending(?:\s+in)?|[x*•]{2,}|\.{3})\s*#?\s*(\d{4})(?!\d)/gi
@@ -195,6 +205,7 @@ export async function POST(req: NextRequest) {
     if (digs && digs.length) finalDaConta.set(a.id, digs[digs.length - 1])
   }
 
+  const contasDeFora = new Set<string>()
   const usados = new Set<string>()
   const naoCasadas: any[] = []
 
@@ -202,10 +213,17 @@ export async function POST(req: NextRequest) {
   const porDescricao: any[] = []
   for (const t of unresolved) {
     if (t.transfer_match_id) continue
+    if (!sentidoTransferencia(String(t.description))) continue
     const tokens = quatroDigitos(String(t.description))
     if (tokens.length === 0) continue
     const alvos = (contasCli || []).filter((a: any) =>
       a.id !== t.account_id && finalDaConta.get(a.id) && tokens.includes(finalDaConta.get(a.id)!))
+    if (alvos.length === 0) {
+      // Cita uma conta que NÃO é deste cliente: dinheiro de fora, não é
+      // movimentação interna. Fica para decisão manual (pode ser receita).
+      for (const d of tokens) contasDeFora.add(d)
+      continue
+    }
     if (alvos.length !== 1) continue
     porDescricao.push({ tx: t, conta: alvos[0] })
   }
@@ -243,9 +261,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Passo 2: sem conta citada — tenta o espelho por valor
+  // Passo 2: sem conta citada — espelho por valor, MAS só quando a descrição
+  // indica movimentação entre contas. Valor igual, sozinho, é evidência fraca:
+  // "Peace On Tax −$100" com um +$100 em outra conta NÃO é transferência.
   for (const t of unresolved) {
     if (usados.has(t.id) || t.transfer_match_id) { naoCasadas.push(t); continue }
+    if (!sentidoTransferencia(String(t.description))) { naoCasadas.push(t); continue }
     const k = Math.abs(Number(t.amount)).toFixed(2)
     const cands = (porValor.get(k) || []).filter((o: any) =>
       o.id !== t.id && !usados.has(o.id) && !o.transfer_match_id &&
@@ -369,6 +390,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true, ruled, ai: aiAuto, review, payeesFilled, transfers,
+    contasDeFora: contasDeFora.size ? Array.from(contasDeFora) : undefined,
     avaliadas: txs.length,
     erros: erros.length ? erros.slice(0, 5) : undefined,
   })
