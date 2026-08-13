@@ -7,6 +7,22 @@ import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 
+
+// Mesmo motor de casamento das demais rotas: palavra inteira, sem fragmentos
+// de 1-2 letras e sem os metadados técnicos de wire/ACH.
+const limparRuido = (d: string): string =>
+  d.replace(/\b(bnf bk|orig bk|bnf|orig|id|trn|seq|fx|pmt det|ref|conf|confirmation)\s*[:#]\s*\S*/gi, ' ')
+   .replace(/\s+/g, ' ')
+
+const escaparRegra = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const casaTexto = (desc: string, v: string, tipo: string): boolean => {
+  if (!v || v.length < 3) return false
+  return tipo === 'starts_with'
+    ? new RegExp('^' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
+    : new RegExp('(^|[^a-z0-9])' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
+}
+
 async function requireManager(userId: string) {
   const level = await getStaffLevel(userId)
   return level === 'owner' || level === 'manager'
@@ -142,13 +158,13 @@ export async function POST(req: NextRequest) {
 
     for (const tx of (txs || [])) {
       if (ruleAccount && (tx as any).account_id !== ruleAccount) continue
-      const desc = tx.description.toLowerCase()
+      const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
       if (direction === 'out' && amount >= 0) continue
       if (pattern) {
         const variants = pattern.split('|')
-        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
         if (!hit) continue
       }
       if (amountOp) {
@@ -244,13 +260,13 @@ export async function PATCH(req: NextRequest) {
       .limit(5000)
     for (const tx of (txs || [])) {
       if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
-      const desc = tx.description.toLowerCase()
+      const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
       if (direction === 'out' && amount >= 0) continue
       if (pattern) {
         const variants = pattern.split('|')
-        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
         if (!hit) continue
       }
       if (amountOp) {
@@ -297,13 +313,13 @@ export async function PATCH(req: NextRequest) {
       .limit(5000)
     for (const tx of (regTxs || [])) {
       if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
-      const desc = tx.description.toLowerCase()
+      const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
       if (direction === 'out' && amount >= 0) continue
       if (pattern) {
         const variants = pattern.split('|')
-        const hit = variants.some((v: string) => matchType === 'starts_with' ? desc.startsWith(v) : desc.includes(v))
+        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
         if (!hit) continue
       }
       if (amountOp) {
