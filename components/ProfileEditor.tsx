@@ -20,6 +20,7 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     filing_status: client.filing_status || '',
     business_name: client.business_name || '', ein: client.ein || '',
     business_type: client.business_type || '', industry: client.industry || '',
+    business_kind: client.business_kind || 'regular',
   })
   const [saving, setSaving]   = useState(false)
   const [msg, setMsg]         = useState('')
@@ -226,6 +227,18 @@ export default function ProfileEditor({ client, onSaved }: Props) {
               {field('EIN', 'ein')}
               {field('Tipo de entidade', 'business_type')}
               {field('Setor', 'industry')}
+              <div>
+                <label style={label}>Tipo de contabilidade</label>
+                <select value={f.business_kind} onChange={e => set('business_kind', e.target.value)} style={input}>
+                  <option value="regular">Empresa comum</option>
+                  <option value="nonprofit">Sem fins lucrativos (igreja, ONG)</option>
+                </select>
+                <p style={{ fontSize:11.5, color:'#6a7a9a', margin:'4px 0 0', lineHeight:1.45 }}>
+                  {f.business_kind === 'nonprofit'
+                    ? 'Motor de fundos: cada conta bancária é um projeto/fundo, as regras valem só para esta entidade e os relatórios saem por fundo.'
+                    : 'Contabilidade comum: DRE, balanço e regras compartilháveis entre clientes.'}
+                </p>
+              </div>
             </>
           ) : (
             <div>
