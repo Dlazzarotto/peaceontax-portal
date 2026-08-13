@@ -39,6 +39,12 @@ export default function ClientsPage() {
     fetch(`/api/clients?${params}`).then(r => r.json()).then(d => { setClients(d.clients || []); setLoading(false) })
   }
 
+  useEffect(() => {
+    fetch('/api/team').then(r => r.json())
+      .then(d => setTeam((d.members || []).map((x: any) => x.name)))
+      .catch(() => null)
+  }, [])
+
   useEffect(() => { load(search) }, [search, filter])
 
   const updateStage = async (clientId: string, newStage: string) => {
@@ -193,6 +199,7 @@ export default function ClientsPage() {
 }
 
 function NewClientModal({ onSave, onClose }: { onSave: () => void; onClose: () => void }) {
+  const [team, setTeam] = useState<string[]>([])
   const [form, setForm]     = useState({ name:'', email:'', phone:'', type:'individual', assignee:'', stage:'Onboarding', business_name:'', ein:'', business_type:'', filing_status:'', address_line1:'', city:'', state:'MA', zip:'', notes:'' })
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState('')
@@ -236,7 +243,8 @@ function NewClientModal({ onSave, onClose }: { onSave: () => void; onClose: () =
               <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, letterSpacing:0.5, marginBottom:4 }}>Assignee</label>
               <select value={form.assignee} onChange={e => set('assignee',e.target.value)} style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }}>
                 <option value="">— Select —</option>
-                {['David L.','Sarah K.','Maria R.'].map(a => <option key={a}>{a}</option>)}
+                {team.map(a => <option key={a}>{a}</option>)}
+                {team.length === 0 && <option disabled>Cadastre a equipe em Equipe →</option>}
               </select>
             </div>
           </div>

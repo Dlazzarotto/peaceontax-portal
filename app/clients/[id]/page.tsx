@@ -37,6 +37,13 @@ export default function ClientDetailPage() {
   useEffect(() => { load() }, [id])
   useEffect(() => { msgRef.current?.scrollIntoView({ behavior:'smooth' }) }, [messages])
 
+  const [team, setTeam] = useState<string[]>([])
+  useEffect(() => {
+    fetch('/api/team').then(r => r.json())
+      .then(d => setTeam((d.members || []).map((x: any) => x.name)))
+      .catch(() => null)
+  }, [])
+
   const updateField = async (field: string, value: string) => {
     setClient((p: any) => ({...p, [field]:value}))
     await fetch(`/api/clients/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ [field]:value }) })
@@ -108,7 +115,10 @@ export default function ClientDetailPage() {
           <select value={client.assignee||''} onChange={e => updateField('assignee', e.target.value)}
             style={{ padding:'7px 14px', border:'1px solid #e2e8f4', borderRadius:9, fontSize:13, color:'#6a7a9a', outline:'none', background:'#fff', cursor:'pointer' }}>
             <option value="">— Assignee —</option>
-            {['David L.','Sarah K.','Maria R.'].map(a => <option key={a}>{a}</option>)}
+            {team.map(a => <option key={a}>{a}</option>)}
+            {client.assignee && !team.includes(client.assignee) && (
+              <option value={client.assignee}>{client.assignee} (fora da equipe)</option>
+            )}
           </select>
         </div>
       </div>
