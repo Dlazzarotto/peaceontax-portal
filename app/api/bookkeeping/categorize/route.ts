@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
   const txs: any[] = []
   for (let inicio = 0; ; inicio += PAGINA) {
     let q = db.from('bank_transactions')
-      .select('id, description, amount, status, account_id')
+      .select('id, description, amount, status, account_id, tx_date, transfer_match_id')
       .eq('client_id', clientId)
       .in('status', ['pending', 'auto'])
       .order('id', { ascending: true })
@@ -144,9 +144,57 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Transferências entre contas do próprio cliente ──
+  // Espelho exato (valor oposto, contas diferentes, até 7 dias). Só vincula
+  // quando há UM único candidato — e entra como 'auto', aguardando aprovação.
+  let transfers = 0
+  const { data: contasCli } = await db.from('bank_accounts')
+    .select('id, name, type').eq('client_id', clientId)
+  const tipoConta = new Map((contasCli || []).map((a: any) => [a.id, String(a.type || '').toLowerCase()]))
+
+  const dias = (a: string, b: string) =>
+    Math.abs((new Date(a).getTime() - new Date(b).getTime()) / 86400000)
+
+  const porValor = new Map<string, any[]>()
+  for (const t of txs) {
+    const k = Math.abs(Number(t.amount)).toFixed(2)
+    if (!porValor.has(k)) porValor.set(k, [])
+    porValor.get(k)!.push(t)
+  }
+
+  const usados = new Set<string>()
+  const naoCasadas: any[] = []
+
+  for (const t of unresolved) {
+    if (usados.has(t.id) || t.transfer_match_id) { naoCasadas.push(t); continue }
+    const k = Math.abs(Number(t.amount)).toFixed(2)
+    const cands = (porValor.get(k) || []).filter((o: any) =>
+      o.id !== t.id && !usados.has(o.id) && !o.transfer_match_id &&
+      o.account_id && t.account_id && o.account_id !== t.account_id &&
+      Math.abs(Number(o.amount) + Number(t.amount)) < 0.005 &&
+      dias(o.tx_date, t.tx_date) <= 7)
+
+    if (cands.length !== 1) { naoCasadas.push(t); continue }
+    const par = cands[0]
+    const ehCartao = /credit|card|cart/.test(
+      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(par.account_id) || ''))
+    const cat = ehCartao ? 'Credit Card Payment' : 'Transfer'
+    const base = {
+      category: cat, category_confidence: 100, categorized_by: 'rule',
+      status: 'auto', updated_at: new Date().toISOString(),
+    }
+    const { error: t1 } = await db.from('bank_transactions')
+      .update({ ...base, transfer_match_id: par.id, counterparty_account_id: par.account_id }).eq('id', t.id)
+    const { error: t2 } = await db.from('bank_transactions')
+      .update({ ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id }).eq('id', par.id)
+    if (t1 || t2) { erros.push(`transferência: ${(t1 || t2)!.message}`); naoCasadas.push(t); continue }
+    usados.add(t.id); usados.add(par.id)
+    transfers += 2
+  }
+
   // IA em lote no que sobrou
   let aiAuto = 0, review = 0
-  const aiCandidates = unresolved.filter(t => (t as any).status === 'pending')
+  const aiCandidates = naoCasadas.filter((t: any) => t.status === 'pending' && !usados.has(t.id))
   if (useAI && aiCandidates.length > 0) {
     const txList = aiCandidates.map(t => JSON.stringify({ id: t.id, description: t.description, amount: t.amount })).join('\n')
 
@@ -241,7 +289,7 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
-    ok: true, ruled, ai: aiAuto, review, payeesFilled,
+    ok: true, ruled, ai: aiAuto, review, payeesFilled, transfers,
     avaliadas: txs.length,
     erros: erros.length ? erros.slice(0, 5) : undefined,
   })

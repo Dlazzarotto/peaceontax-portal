@@ -247,6 +247,31 @@ export default function BookkeepingTab({ clientId }: Props) {
     load()
   }
 
+  // Escolheu a outra conta no dropdown: procura o lançamento espelho e vincula.
+  // Achou um só → concilia na hora. Vários → abre a escolha. Nenhum → avisa.
+  const transferirPara = async (tx: Tx, accountId: string) => {
+    setMsg('Procurando a outra ponta…')
+    let r: any
+    try {
+      r = await fetch(`/api/bookkeeping/transfer-match?txId=${tx.id}&accountId=${accountId}`).then(x => x.json())
+    } catch (e) { r = { error: (e as Error).message } }
+    if (!r?.ok) { setMsg(`Erro: ${r?.error}`); return }
+
+    const cands = r.candidatos || []
+    if (cands.length === 1) {
+      await ligarMatch(cands[0].id, tx)
+      return
+    }
+    if (cands.length > 1) {
+      setMatchTx(tx); setMatchAcc(accountId); setMatchCand(cands)
+      setMsg('')
+      return
+    }
+    const conta = accounts.find(a => a.id === accountId)?.name || 'a outra conta'
+    setMsg(`Nenhum lançamento espelho em ${conta} (mesmo valor, sinal oposto, até 7 dias). `
+      + 'Importe os lançamentos dessa conta e tente de novo.')
+  }
+
   const abrirMatch = (tx: Tx) => {
     setMatchTx(tx); setMatchAcc(''); setMatchCand(null)
   }
@@ -265,15 +290,16 @@ export default function BookkeepingTab({ clientId }: Props) {
     if ((r.candidatos || []).length === 1) ligarMatch(r.candidatos[0].id)
   }
 
-  const ligarMatch = async (matchId: string) => {
-    if (!matchTx) return
+  const ligarMatch = async (matchId: string, txArg?: Tx) => {
+    const alvo = txArg || matchTx
+    if (!alvo) return
     setMatchBusy(true)
-    const cat = matchTx.category === 'Credit Card Payment' ? 'Credit Card Payment' : 'Transfer'
+    const cat = alvo.category === 'Credit Card Payment' ? 'Credit Card Payment' : 'Transfer'
     let r: any
     try {
       r = await fetch('/api/bookkeeping/transfer-match', {
         method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ txId: matchTx.id, matchId, category: cat }),
+        body: JSON.stringify({ txId: alvo.id, matchId, category: cat }),
       }).then(x => x.json())
     } catch (e) { r = { error: (e as Error).message } }
     setMatchBusy(false)
@@ -1516,6 +1542,9 @@ export default function BookkeepingTab({ clientId }: Props) {
                     <select value={t.category || ''}
                       onChange={e => {
                         if (e.target.value === '__new__') { setNewCatOpen(true); return }
+                        if (e.target.value.startsWith('__acct__:')) {
+                          transferirPara(t, e.target.value.slice(9)); return
+                        }
                         setTxCategory(t, e.target.value)
                       }}
                       style={{ padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:11.5,
@@ -1530,6 +1559,15 @@ export default function BookkeepingTab({ clientId }: Props) {
                             <option key={c.name} value={c.name}>{c.name.includes(':') ? `\u00A0\u00A0\u21B3 ${c.name.split(': ')[1]}` : c.name}</option>)}
                         </optgroup>
                       ))}
+                      {accounts.filter(a => a.id !== (t as any).account_id).length > 0 && (
+                        <optgroup label="🔁 Transferência entre contas">
+                          {accounts.filter(a => a.id !== (t as any).account_id).map(a => (
+                            <option key={a.id} value={`__acct__:${a.id}`}>
+                              {Number(t.amount) < 0 ? 'Para: ' : 'De: '}{a.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                       <option value="__new__">➕ Criar nova categoria…</option>
                     </select>
                     {t.category_confidence != null && t.categorized_by !== 'staff' && (
