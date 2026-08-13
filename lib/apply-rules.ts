@@ -15,7 +15,11 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   rq = soDoCliente
     ? rq.eq('client_id', clientId)
     : rq.or(`client_id.eq.${clientId},client_id.is.null`)
-  const { data: rules } = await rq.order('priority', { ascending: true })
+  const { data: rulesRaw } = await rq.order('priority', { ascending: true })
+  // Regra do próprio cliente vence a regra geral quando ambas casam
+  const rules = (rulesRaw || []).slice().sort((a: any, b: any) =>
+    (Number(a.priority) - Number(b.priority)) ||
+    ((a.client_id ? 0 : 1) - (b.client_id ? 0 : 1)))
   if (!rules || rules.length === 0) return 0
 
   const matches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
@@ -41,7 +45,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   const txs: any[] = []
   for (let inicio = 0; ; inicio += PAGINA) {
     const { data: pagina } = await db.from('bank_transactions')
-      .select('id, description, amount, account_id')
+      .select('id, description, amount, account_id, tx_date, transfer_match_id')
       .eq('client_id', clientId)
       .in('status', ['pending', 'auto'])
       .order('id', { ascending: true })
@@ -51,9 +55,85 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     if (pagina.length < PAGINA) break
   }
 
+  // ── Transferências entre contas do próprio cliente ──
+  // O extrato costuma dizer a conta na descrição:
+  // "Online Banking transfer from CHK 7495" → a outra ponta é a conta ...7495.
+  const { data: contasCli } = await db.from('bank_accounts')
+    .select('id, name, type, account_hint').eq('client_id', clientId)
+  const tipoConta = new Map((contasCli || []).map((a: any) => [a.id, String(a.type || '').toLowerCase()]))
+
+  // 4 dígitos só quando precedidos por indicação de conta — nunca de
+  // números de confirmação (ex.: XXXXX32635 não vira conta).
+  const quatroDigitos = (texto: string): string[] => {
+    const achados: string[] = []
+    const re = /(?:chk|sav|checking|savings|acct|account|card|ending(?:\s+in)?|[x*•]{2,}|\.{3})\s*#?\s*(\d{4})(?!\d)/gi
+    let m: RegExpExecArray | null
+    while ((m = re.exec(texto)) !== null) achados.push(m[1])
+    return achados
+  }
+
+  const finalDaConta = new Map<string, string>()
+  for (const a of (contasCli || []) as any[]) {
+    const digs = String(`${a.name || ''} ${a.account_hint || ''}`).match(/(\d{4})(?!\d)/g)
+    if (digs && digs.length) finalDaConta.set(a.id, digs[digs.length - 1])
+  }
+
+  const dias = (a: string, b: string) =>
+    Math.abs((new Date(a).getTime() - new Date(b).getTime()) / 86400000)
+
+  const porValor = new Map<string, any[]>()
+  for (const t of txs) {
+    const k = Math.abs(Number(t.amount)).toFixed(2)
+    if (!porValor.has(k)) porValor.set(k, [])
+    porValor.get(k)!.push(t)
+  }
+
+  const jaTransferencia = new Set<string>()
+  let transferidas = 0
+
+  for (const t of txs) {
+    if (jaTransferencia.has(t.id) || t.transfer_match_id) continue
+    const tokens = quatroDigitos(String(t.description))
+    if (tokens.length === 0) continue
+    const alvos = (contasCli || []).filter((a: any) =>
+      a.id !== t.account_id && finalDaConta.get(a.id) && tokens.includes(finalDaConta.get(a.id)!))
+    if (alvos.length !== 1) continue
+    const conta: any = alvos[0]
+
+    const ehCartao = /credit|card|cart/.test(
+      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(conta.id) || ''))
+    const base = {
+      category: ehCartao ? 'Credit Card Payment' : 'Transfer',
+      category_confidence: 100, categorized_by: 'rule',
+      status: 'auto', updated_at: new Date().toISOString(),
+    }
+
+    const espelho = (porValor.get(Math.abs(Number(t.amount)).toFixed(2)) || []).find((o: any) =>
+      o.id !== t.id && !jaTransferencia.has(o.id) && !o.transfer_match_id &&
+      o.account_id === conta.id &&
+      Math.abs(Number(o.amount) + Number(t.amount)) < 0.005 &&
+      dias(o.tx_date, t.tx_date) <= 7)
+
+    const { error: e1 } = await db.from('bank_transactions').update({
+      ...base,
+      counterparty_account_id: conta.id,
+      ...(espelho ? { transfer_match_id: espelho.id } : {}),
+    }).eq('id', t.id)
+    if (e1) continue
+    jaTransferencia.add(t.id); transferidas++
+
+    if (espelho) {
+      await db.from('bank_transactions').update({
+        ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id,
+      }).eq('id', espelho.id)
+      jaTransferencia.add(espelho.id); transferidas++
+    }
+  }
+
   // Agrupa por categoria+payee e grava em lote (evita 1 UPDATE por lançamento)
   const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
   for (const tx of txs) {
+    if (jaTransferencia.has(tx.id)) continue   // já resolvida como transferência
     const desc = String(tx.description).toLowerCase()
     const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount), tx.account_id || null))
     if (!rule) continue
@@ -77,5 +157,5 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
       if (!error) applied += fatia.length
     }
   }
-  return applied
+  return applied + transferidas
 }

@@ -16,9 +16,17 @@ export async function GET(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   const clientId = req.nextUrl.searchParams.get('clientId')
-  if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
-
   const db0 = serviceDb()
+
+  // Biblioteca geral: regras que valem para todos os clientes
+  if (!clientId && req.nextUrl.searchParams.get('scope') === 'global') {
+    const { data, error } = await db0.from('bookkeeping_rules')
+      .select('*').is('client_id', null)
+      .order('name', { ascending: true })
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ rules: data || [], businessKind: 'regular', scope: 'global' })
+  }
+  if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   const { data: cli } = await db0.from('clients')
     .select('business_kind').eq('id', clientId).maybeSingle()
   const soDoCliente = cli?.business_kind === 'nonprofit'
@@ -87,16 +95,21 @@ export async function POST(req: NextRequest) {
 
   // Duplicata: mesma direção + mesmo conjunto de variações do texto
   if (pattern) {
-    const { data: existing } = await db.from('bookkeeping_rules')
+    // Compara apenas com regras do MESMO escopo: uma regra do cliente pode
+    // repetir o texto de uma regra geral — ela sobrepõe a geral naquele cliente.
+    let eq = db.from('bookkeeping_rules')
       .select('id, name, pattern, direction, account_id')
-      .or(global ? 'client_id.is.null' : `client_id.eq.${b.clientId},client_id.is.null`)
+    eq = global ? eq.is('client_id', null) : eq.eq('client_id', b.clientId)
+    const { data: existing } = await eq
     const norm = (p2: string | null) => (p2 || '').split('|').map(x => x.trim()).filter(Boolean).sort().join('|')
     const dup = (existing || []).find((r: any) =>
       (r.direction === direction || r.direction === 'both' || direction === 'both') &&
       norm(r.pattern) === norm(pattern) &&
       String(r.account_id || '') === String(ruleAccount || ''))
     if (dup) {
-      return NextResponse.json({ error: `Já existe uma regra com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.` }, { status: 409 })
+      return NextResponse.json({
+        error: `Já existe uma regra ${global ? 'geral' : 'deste cliente'} com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.`,
+      }, { status: 409 })
     }
   }
 
