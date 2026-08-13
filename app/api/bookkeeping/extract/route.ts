@@ -162,6 +162,7 @@ export async function POST(req: NextRequest) {
       description: String(t.description).slice(0, 500),
       amount: Math.round(t.amount * 100) / 100,
       balance: typeof t.balance === 'number' ? Math.round(t.balance * 100) / 100 : null,
+      fiscal_year: parseInt(String(t.date).slice(0, 4)),   // sem isso o lançamento fica fora do ano
       status: 'pending',
     }))
 

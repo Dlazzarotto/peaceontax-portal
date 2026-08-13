@@ -239,6 +239,7 @@ export async function POST(req: NextRequest) {
       description: p.description,
       amount: p.amount,
       balance: p.balance,
+      fiscal_year: parseInt(String(p.date).slice(0, 4)),   // sem isso o lançamento fica fora do ano
       status: 'pending',
     }))
 
