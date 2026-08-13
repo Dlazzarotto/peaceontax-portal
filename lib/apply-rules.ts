@@ -4,10 +4,18 @@
 // e pelo botão "Aplicar regras".
 
 export async function applyRulesToClient(db: any, clientId: string): Promise<number> {
-  const { data: rules } = await db.from('bookkeeping_rules')
+  // Non-profit: cada entidade tem projetos/fundos próprios — regras globais
+  // do sistema NÃO se aplicam. Só valem as regras do próprio cliente.
+  const { data: cli } = await db.from('clients')
+    .select('business_kind').eq('id', clientId).maybeSingle()
+  const soDoCliente = cli?.business_kind === 'nonprofit'
+
+  let rq = db.from('bookkeeping_rules')
     .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
-    .or(`client_id.eq.${clientId},client_id.is.null`)
-    .order('priority', { ascending: true })
+  rq = soDoCliente
+    ? rq.eq('client_id', clientId)
+    : rq.or(`client_id.eq.${clientId},client_id.is.null`)
+  const { data: rules } = await rq.order('priority', { ascending: true })
   if (!rules || rules.length === 0) return 0
 
   const matches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {

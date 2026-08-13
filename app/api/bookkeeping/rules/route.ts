@@ -18,14 +18,23 @@ export async function GET(req: NextRequest) {
   const clientId = req.nextUrl.searchParams.get('clientId')
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
 
-  const { data, error } = await serviceDb()
-    .from('bookkeeping_rules')
-    .select('*')
-    .or(`client_id.eq.${clientId},client_id.is.null`)
+  const db0 = serviceDb()
+  const { data: cli } = await db0.from('clients')
+    .select('business_kind').eq('id', clientId).maybeSingle()
+  const soDoCliente = cli?.business_kind === 'nonprofit'
+
+  let q = db0.from('bookkeeping_rules').select('*')
+  q = soDoCliente
+    ? q.eq('client_id', clientId)                                   // non-profit: nada global
+    : q.or(`client_id.eq.${clientId},client_id.is.null`)
+  const { data, error } = await q
     .order('priority', { ascending: true })
     .order('created_at', { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ rules: data || [] })
+  return NextResponse.json({
+    rules: data || [],
+    businessKind: cli?.business_kind || 'regular',
+  })
 }
 
 export async function POST(req: NextRequest) {
@@ -46,7 +55,21 @@ export async function POST(req: NextRequest) {
   const amountOp = ['gt','lt','eq'].includes(b.amountOp) ? b.amountOp : null
   const amountValue = amountOp ? Number(b.amountValue) : null
   const payee = String(b.payee || '').trim() || null
-  const global = b.scope === 'global'
+  let global = b.scope === 'global'
+
+  // Non-profit: a regra é SEMPRE da própria entidade (fundos/projetos únicos)
+  if (b.clientId) {
+    const { data: cliPost } = await serviceDb().from('clients')
+      .select('business_kind').eq('id', b.clientId).maybeSingle()
+    if (cliPost?.business_kind === 'nonprofit') {
+      if (global) {
+        return NextResponse.json({
+          error: 'Este cliente é uma organização sem fins lucrativos — as regras valem apenas para ela. Escolha "Só este cliente".',
+        }, { status: 400 })
+      }
+      global = false
+    }
+  }
 
   if (name.length < 2) return NextResponse.json({ error: 'Nome da regra obrigatório' }, { status: 400 })
   if (!category) return NextResponse.json({ error: 'Categoria obrigatória' }, { status: 400 })

@@ -163,6 +163,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rCategory, setRCategory] = useState('')
   const [rScope, setRScope] = useState('client')
   const [rAccount, setRAccount] = useState('')   // conta/fundo da regra ('' = todas)
+  const [businessKind, setBusinessKind] = useState<'regular'|'nonprofit'>('regular')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
   // Importação de CSV do banco (bancos fora do Plaid)
@@ -412,6 +413,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   const loadRules = async () => {
     const r = await fetch(`/api/bookkeeping/rules?clientId=${clientId}`).then(x => x.json())
     setRules(r.rules || [])
+    if (r.businessKind) {
+      setBusinessKind(r.businessKind)
+      // Non-profit: regra é sempre da própria entidade
+      if (r.businessKind === 'nonprofit') setRScope('client')
+    }
   }
 
   const createRule = async () => {
@@ -1039,10 +1045,15 @@ export default function BookkeepingTab({ clientId }: Props) {
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Escopo</label>
                 <select value={rScope} onChange={e => { setRScope(e.target.value); if (e.target.value === 'global') setRAccount('') }}
-                  style={{ ...sel, width:'100%' }}>
+                  disabled={businessKind === 'nonprofit'} style={{ ...sel, width:'100%' }}>
                   <option value="client">Só este cliente</option>
-                  <option value="global">Todos os clientes</option>
+                  {businessKind !== 'nonprofit' && <option value="global">Todos os clientes</option>}
                 </select>
+                {businessKind === 'nonprofit' && (
+                  <div style={{ fontSize:10.5, color:'#5a1a8a', marginTop:3, fontWeight:700 }}>
+                    Organização sem fins lucrativos — regras valem só para ela.
+                  </div>
+                )}
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>

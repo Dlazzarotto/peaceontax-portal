@@ -64,11 +64,18 @@ export async function POST(req: NextRequest) {
   const { data: txs } = await q
   if (!txs || txs.length === 0) return NextResponse.json({ ok: true, ruled: 0, ai: 0, review: 0, message: 'Nada pendente' })
 
-  // Regras: do cliente + globais, por prioridade
-  const { data: rules } = await db.from('bookkeeping_rules')
+  // Regras por prioridade. Em non-profit, SÓ as do próprio cliente:
+  // cada entidade tem fundos/projetos únicos, regra global não se aplica.
+  const { data: cli } = await db.from('clients')
+    .select('business_kind').eq('id', clientId).maybeSingle()
+  const soDoCliente = cli?.business_kind === 'nonprofit'
+
+  let rq = db.from('bookkeeping_rules')
     .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
-    .or(`client_id.eq.${clientId},client_id.is.null`)
-    .order('priority', { ascending: true })
+  rq = soDoCliente
+    ? rq.eq('client_id', clientId)
+    : rq.or(`client_id.eq.${clientId},client_id.is.null`)
+  const { data: rules } = await rq.order('priority', { ascending: true })
 
   const ruleMatches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
     // Conta (fundo): regra restrita a uma conta só vale naquela conta
