@@ -1,4 +1,4 @@
-// POST /api/plaid/sync { clientId } — sincroniza TODAS as conexões do cliente (equipe)
+﻿// POST /api/plaid/sync { clientId } â€” sincroniza TODAS as conexÃµes do cliente (equipe)
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { syncPlaidItem } from '@/lib/plaid-sync'
@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const { clientId } = await req.json()
-  if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
+  if (!clientId) return NextResponse.json({ error: 'clientId obrigatÃ³rio' }, { status: 400 })
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
   const db = serviceDb()
@@ -35,3 +35,4 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, added: totalAdded, details: results })
 }
+
