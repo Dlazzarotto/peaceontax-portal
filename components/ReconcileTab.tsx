@@ -8,6 +8,13 @@ import { useState, useEffect } from 'react'
 interface Acc { id: string; name: string }
 interface Props { clientId: string; accounts: Acc[] }
 
+// Datas no padrão dos EUA (MM/DD/YYYY)
+const fmtDate = (d: string | null | undefined) => {
+  if (!d) return '—'
+  const [y, m, day] = String(d).slice(0, 10).split('-')
+  return (y && m && day) ? `${m}/${day}/${y}` : String(d)
+}
+
 const money = (v: number) =>
   `${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -74,7 +81,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
       }).then(r => r.json())
       if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); setBusy(false); return }
       setMsg(action === 'finish'
-        ? `✅ Conciliação de ${statementDate} fechada com ${cleared.size} lançamentos — diferença zero.`
+        ? `✅ Conciliação de ${fmtDate(statementDate)} fechada com ${cleared.size} lançamentos — diferença zero.`
         : `Progresso salvo (${cleared.size} marcados). Você pode continuar depois.`)
       if (action === 'finish') { setTxs([]); setCleared(new Set()); setCarregado(false) }
       carregarHistorico()
@@ -226,7 +233,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
                         <input type="checkbox" checked={on} onChange={() => toggle(t.id)}
                           onClick={e => e.stopPropagation()} style={{ width:17, height:17, cursor:'pointer' }} />
                       </td>
-                      <td style={{ padding:'8px 12px', whiteSpace:'nowrap' as const, color:'#4a5a70' }}>{t.tx_date}</td>
+                      <td style={{ padding:'8px 12px', whiteSpace:'nowrap' as const, color:'#4a5a70' }}>{fmtDate(t.tx_date)}</td>
                       <td style={{ padding:'8px 12px' }}>{String(t.description).slice(0, 70)}</td>
                       <td style={{ padding:'8px 12px', color:'#6a7a9a' }}>{t.payee || '—'}</td>
                       <td style={{ padding:'8px 12px', textAlign:'right' as const, fontWeight:700,
@@ -252,7 +259,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:10 }}>📚 Conciliações desta conta</div>
           {historico.map(h => (
             <div key={h.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'1px solid #f0f4fa', fontSize:13 }}>
-              <span style={{ fontWeight:700, color:'#0f2340', minWidth:96 }}>{h.statement_date}</span>
+              <span style={{ fontWeight:700, color:'#0f2340', minWidth:96 }}>{fmtDate(h.statement_date)}</span>
               <span style={{ color:'#6a7a9a' }}>
                 {h.status === 'completed' ? '✅ fechada' : '↻ em andamento'} · {h.cleared_count} lançamentos
               </span>

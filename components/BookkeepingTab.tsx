@@ -6,6 +6,13 @@
 import { useState, useEffect, useRef } from 'react'
 import ReconcileTab from '@/components/ReconcileTab'
 
+// Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
+const fmtDate = (d: string | null | undefined) => {
+  if (!d) return '—'
+  const [y, m, day] = String(d).slice(0, 10).split('-')
+  return (y && m && day) ? `${m}/${day}/${y}` : String(d)
+}
+
 // ── Célula de Payee com autocomplete do cadastro (Vendors/Customers) ──
 function PayeeCell({ value, amount, registry, onSave }: {
   value: string
@@ -769,7 +776,7 @@ export default function BookkeepingTab({ clientId }: Props) {
               {csvFile?.name}
             </div>
             <div style={{ fontSize:13, color:'#4a5a70', lineHeight:1.7, marginBottom:10 }}>
-              <b>{csvPrev.resumo.total}</b> lançamentos · {csvPrev.resumo.de} a {csvPrev.resumo.ate}<br />
+              <b>{csvPrev.resumo.total}</b> lançamentos · {fmtDate(csvPrev.resumo.de)} a {fmtDate(csvPrev.resumo.ate)}<br />
               {csvPrev.resumo.entradas} entradas · {csvPrev.resumo.saidas} saídas
               {csvPrev.resumo.ignoradas > 0 && <> · <span style={{ color:'#b02020' }}>{csvPrev.resumo.ignoradas} linha(s) ignorada(s)</span></>}
               <br />
@@ -783,7 +790,7 @@ export default function BookkeepingTab({ clientId }: Props) {
               <tbody>
                 {(csvPrev.amostra || []).map((a: any, i: number) => (
                   <tr key={i} style={{ borderBottom:'1px solid #eef1f6' }}>
-                    <td style={{ padding:'5px 6px', whiteSpace:'nowrap' as const, color:'#6a7a9a' }}>{a.date}</td>
+                    <td style={{ padding:'5px 6px', whiteSpace:'nowrap' as const, color:'#6a7a9a' }}>{fmtDate(a.date)}</td>
                     <td style={{ padding:'5px 6px' }}>{String(a.description).slice(0, 60)}</td>
                     <td style={{ padding:'5px 6px', textAlign:'right' as const, fontWeight:700,
                       color: a.amount < 0 ? '#b02020' : '#1a6b4a' }}>
@@ -802,7 +809,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                 <div style={{ fontSize:12.5, color:'#6a5a10', lineHeight:1.6 }}>
                   {(csvPrev.existentes.contas || []).map((c: any) => (
                     <div key={c.accountId} style={{ marginBottom:4 }}>
-                      • <b>{c.nome}</b>: {c.total} lançamentos (até {c.ultimaData}) —{' '}
+                      • <b>{c.nome}</b>: {c.total} lançamentos (até {fmtDate(c.ultimaData)}) —{' '}
                       {Object.entries(c.fontes || {}).map(([k, v]: any) => `${v} via ${k}`).join(', ')}
                       {c.accountId === csvAcc && (
                         <button onClick={() => { const d = new Date(c.ultimaData); d.setDate(d.getDate() + 1); setCsvFrom(d.toISOString().slice(0,10)); setCsvTo('') }}
@@ -1224,7 +1231,7 @@ export default function BookkeepingTab({ clientId }: Props) {
               🔗 Conciliar {matchTx.category === 'Credit Card Payment' ? 'pagamento de cartão' : 'transferência'}
             </h3>
             <p style={{ fontSize:13, color:'#4a5a70', margin:'0 0 14px', lineHeight:1.5 }}>
-              {matchTx.tx_date} · <b>{Number(matchTx.amount) < 0 ? '−' : ''}${Math.abs(Number(matchTx.amount)).toFixed(2)}</b>
+              {fmtDate(matchTx.tx_date)} · <b>{Number(matchTx.amount) < 0 ? '−' : ''}${Math.abs(Number(matchTx.amount)).toFixed(2)}</b>
               {' '}· {String(matchTx.description).slice(0, 60)}
               <br />
               Escolha a conta da outra ponta — o sistema procura o lançamento espelho (mesmo valor, sinal oposto, até 7 dias de diferença).
@@ -1254,7 +1261,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                 {matchCand.map(c => (
                   <div key={c.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 11px', border:'1px solid #e2e8f4', borderRadius:10, marginBottom:6 }}>
                     <div style={{ flex:1, fontSize:12.5 }}>
-                      <b>{c.tx_date}</b> ({c.dias === 0 ? 'mesmo dia' : `${c.dias} dia(s)`})<br />
+                      <b>{fmtDate(c.tx_date)}</b> ({c.dias === 0 ? 'mesmo dia' : `${c.dias} dia(s)`})<br />
                       <span style={{ color:'#6a7a9a' }}>{String(c.description).slice(0, 50)}</span>
                     </div>
                     <div style={{ fontWeight:700, fontSize:13, color: Number(c.amount) < 0 ? '#b02020' : '#1a6b4a' }}>
@@ -1479,7 +1486,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                       style={{ width:17, height:17, cursor:'pointer' }} />
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:12.5, color:'#3a4a5a', whiteSpace:'nowrap' as const }}>
-                    {new Date(t.tx_date + 'T12:00:00Z').toLocaleDateString('pt-BR')}
+                    {fmtDate(t.tx_date)}
                   </td>
                   <td style={{ padding:'8px 14px', fontSize:12.5, color:'#1a2a3a', maxWidth:320 }}>
                     {t.description}

@@ -100,6 +100,12 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Datas no padrão dos EUA (MM/DD/YYYY)
+  const fmtDate = (d: string) => {
+    const [y, m, day] = String(d).slice(0, 10).split('-')
+    return (y && m && day) ? `${m}/${day}/${y}` : String(d)
+  }
+
   const money = (v: number) => {
     const abs = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     return v < 0 ? `-$${abs}` : `$${abs}`
@@ -151,7 +157,7 @@ export async function GET(req: NextRequest) {
       const amt = Number(t.amount)
       const minority = (positives > 0 && negatives > 0) && ((negatives >= positives && amt > 0) || (positives > negatives && amt < 0))
       return `<tr${minority ? ' class="odd"' : ''}>
-        <td style="white-space:nowrap">${t.tx_date}</td>
+        <td style="white-space:nowrap">${fmtDate(t.tx_date)}</td>
         <td>${String(t.description).slice(0, 90)}</td>
         <td>${t.payee || '<span class="muted">—</span>'}</td>
         <td class="muted">${nomeConta.get((t as any).account_id) || '—'}</td>
