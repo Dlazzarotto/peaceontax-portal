@@ -180,13 +180,13 @@ export async function POST(req: NextRequest) {
   // "Online Banking transfer from CHK 7495" → a outra ponta é a conta ...7495.
   // Extrai apenas números de 4 dígitos precedidos por indicação de conta
   // (CHK, SAV, account, card, ...) — nunca de confirmações tipo XXXXX32635.
-  // O extrato sempre diz "to" ou "from". O que decide se é transferência de
-  // verdade é a CONTA citada bater com uma conta do próprio cliente — o sinal
-  // do valor é apenas um alerta de incoerência, não um veto.
+  // SÓ é transferência quando o extrato diz literalmente "transfer to" ou
+  // "transfer from" (ou pagamento de cartão citando um cartão cadastrado).
+  // Nada de espelho por valor: valor igual em duas contas não prova nada.
   const sentidoTransferencia = (desc: string): 'to' | 'from' | 'card' | null => {
-    const m = /(^|[^a-z])(transfer|xfer|wire)[^a-z0-9]{0,4}(to|from)([^a-z]|$)/i.exec(desc)
-    if (m) return m[3].toLowerCase() as 'to' | 'from'
-    if (/(^|[^a-z])(autopay|card payment)([^a-z]|$)|payment to[^.]{0,25}card/i.test(desc)) return 'card'
+    const m = /(^|[^a-z])transfer(?:s|red)?[^a-z0-9]{1,3}(to|from)([^a-z]|$)/i.exec(desc)
+    if (m) return m[2].toLowerCase() as 'to' | 'from'
+    if (/(^|[^a-z])(payment|autopay|crcardpmt|pmt)([^a-z]|$)/i.test(desc)) return 'card'
     return null
   }
 
@@ -231,7 +231,9 @@ export async function POST(req: NextRequest) {
   for (const { tx: t, conta } of porDescricao) {
     if (usados.has(t.id)) continue
     const ehCartao = /credit|card|cart/.test(
-      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(conta.id) || ''))
+      String(tipoConta.get(t.account_id) || '') + ' ' + String(tipoConta.get(conta.id) || ''))
+    // "payment ..." só conta como transferência se a conta citada for um cartão
+    if (sentidoTransferencia(String(t.description)) === 'card' && !ehCartao) continue
     const cat = ehCartao ? 'Credit Card Payment' : 'Transfer'
 
     // Se houver o lançamento espelho naquela conta, vincula as duas pontas
@@ -301,35 +303,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Passo 2: sem conta citada — espelho por valor, MAS só quando a descrição
-  // indica movimentação entre contas. Valor igual, sozinho, é evidência fraca:
-  // "Peace On Tax −$100" com um +$100 em outra conta NÃO é transferência.
+  // (Removido) Espelho por valor sem a conta citada: gerava falsos positivos
+  // — Zelle de $12,34 casando com outra conta, wire devolvido virando transferência.
   for (const t of unresolved) {
-    if (usados.has(t.id) || t.transfer_match_id) { naoCasadas.push(t); continue }
-    if (!sentidoTransferencia(String(t.description))) { naoCasadas.push(t); continue }
-    const k = Math.abs(Number(t.amount)).toFixed(2)
-    const cands = (porValor.get(k) || []).filter((o: any) =>
-      o.id !== t.id && !usados.has(o.id) && !o.transfer_match_id &&
-      o.account_id && t.account_id && o.account_id !== t.account_id &&
-      Math.abs(Number(o.amount) + Number(t.amount)) < 0.005 &&
-      dias(o.tx_date, t.tx_date) <= 7)
-
-    if (cands.length !== 1) { naoCasadas.push(t); continue }
-    const par = cands[0]
-    const ehCartao = /credit|card|cart/.test(
-      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(par.account_id) || ''))
-    const cat = ehCartao ? 'Credit Card Payment' : 'Transfer'
-    const base = {
-      category: cat, category_confidence: 100, categorized_by: 'rule',
-      status: 'auto', updated_at: new Date().toISOString(),
-    }
-    const { error: t1 } = await db.from('bank_transactions')
-      .update({ ...base, transfer_match_id: par.id, counterparty_account_id: par.account_id }).eq('id', t.id)
-    const { error: t2 } = await db.from('bank_transactions')
-      .update({ ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id }).eq('id', par.id)
-    if (t1 || t2) { erros.push(`transferência: ${(t1 || t2)!.message}`); naoCasadas.push(t); continue }
-    usados.add(t.id); usados.add(par.id)
-    transfers += 2
+    if (!usados.has(t.id)) naoCasadas.push(t)
   }
 
   // IA em lote no que sobrou

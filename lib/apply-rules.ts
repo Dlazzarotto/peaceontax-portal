@@ -74,13 +74,13 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
 
   // 4 dígitos só quando precedidos por indicação de conta — nunca de
   // números de confirmação (ex.: XXXXX32635 não vira conta).
-  // O extrato sempre diz "to" ou "from". O que decide se é transferência de
-  // verdade é a CONTA citada bater com uma conta do próprio cliente — o sinal
-  // do valor é apenas um alerta de incoerência, não um veto.
+  // SÓ é transferência quando o extrato diz literalmente "transfer to" ou
+  // "transfer from" (ou pagamento de cartão citando um cartão cadastrado).
+  // Nada de espelho por valor: valor igual em duas contas não prova nada.
   const sentidoTransferencia = (desc: string): 'to' | 'from' | 'card' | null => {
-    const m = /(^|[^a-z])(transfer|xfer|wire)[^a-z0-9]{0,4}(to|from)([^a-z]|$)/i.exec(desc)
-    if (m) return m[3].toLowerCase() as 'to' | 'from'
-    if (/(^|[^a-z])(autopay|card payment)([^a-z]|$)|payment to[^.]{0,25}card/i.test(desc)) return 'card'
+    const m = /(^|[^a-z])transfer(?:s|red)?[^a-z0-9]{1,3}(to|from)([^a-z]|$)/i.exec(desc)
+    if (m) return m[2].toLowerCase() as 'to' | 'from'
+    if (/(^|[^a-z])(payment|autopay|crcardpmt|pmt)([^a-z]|$)/i.test(desc)) return 'card'
     return null
   }
 
@@ -137,7 +137,9 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     const conta: any = alvos[0]
 
     const ehCartao = /credit|card|cart/.test(
-      (tipoConta.get(t.account_id) || '') + ' ' + (tipoConta.get(conta.id) || ''))
+      String(tipoConta.get(t.account_id) || '') + ' ' + String(tipoConta.get(conta.id) || ''))
+    // "payment ..." só conta como transferência se a conta citada for um cartão
+    if (sentidoTransferencia(String(t.description)) === 'card' && !ehCartao) continue
     const base = {
       category: ehCartao ? 'Credit Card Payment' : 'Transfer',
       category_confidence: 100, categorized_by: 'rule',
