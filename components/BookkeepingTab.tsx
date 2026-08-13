@@ -150,6 +150,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatKind, setNewCatKind] = useState('expense')
   const [newCatParent, setNewCatParent] = useState('')
   const [newCatIsSub, setNewCatIsSub] = useState(false)
+  const [newCatRow, setNewCatRow] = useState<string | null>(null)   // id da transação com o form inline aberto
 
   // Painel de regras (estilo QuickBooks)
   const [rules, setRules] = useState<any[]>([])
@@ -394,9 +395,16 @@ export default function BookkeepingTab({ clientId }: Props) {
     const d = await r.json()
     if (d.ok) {
       const fullName = newCatParent ? `${newCatParent}: ${newCatName.trim()}` : newCatName.trim()
-      setMsg(`✓ Categoria "${fullName}" criada.`)
       setCategories(c => [...c, { name: fullName, kind: newCatKind }])
+      // Criada a partir de uma linha: já aplica nela e fecha ali mesmo,
+      // sem tirar você do lugar onde estava na lista.
+      const linha = newCatRow ? txs.find(t => t.id === newCatRow) : null
+      setMsg(linha
+        ? `✓ Categoria "${fullName}" criada e aplicada a este lançamento.`
+        : `✓ Categoria "${fullName}" criada.`)
       setNewCatOpen(false); setNewCatName(''); setNewCatParent(''); setNewCatIsSub(false)
+      setNewCatRow(null)
+      if (linha) setTxCategory(linha, fullName)
     } else setMsg(`Erro: ${d.error}`)
   }
 
@@ -1541,7 +1549,11 @@ export default function BookkeepingTab({ clientId }: Props) {
                   <td style={{ padding:'8px 14px', fontSize:12 }}>
                     <select value={t.category || ''}
                       onChange={e => {
-                        if (e.target.value === '__new__') { setNewCatOpen(true); return }
+                        if (e.target.value === '__new__') {
+                          setNewCatRow(t.id); setNewCatName(''); setNewCatParent('')
+                          setNewCatIsSub(false); setNewCatKind(Number(t.amount) > 0 ? 'income' : 'expense')
+                          return
+                        }
                         if (e.target.value.startsWith('__acct__:')) {
                           transferirPara(t, e.target.value.slice(9)); return
                         }
@@ -1570,6 +1582,51 @@ export default function BookkeepingTab({ clientId }: Props) {
                       )}
                       <option value="__new__">➕ Criar nova categoria…</option>
                     </select>
+                    {newCatRow === t.id && (
+                      <div style={{ marginTop:6, padding:'10px 11px', background:'#f8fafc',
+                        border:'1.5px solid #2D327840', borderRadius:10, minWidth:250 }}>
+                        <div style={{ fontSize:11, fontWeight:800, color:'#2D3278', marginBottom:6 }}>
+                          ➕ Nova conta contábil
+                        </div>
+                        <input autoFocus value={newCatName} onChange={e => setNewCatName(e.target.value)}
+                          placeholder="Nome da conta"
+                          onKeyDown={e => { if (e.key === 'Enter') createCategory(); if (e.key === 'Escape') setNewCatRow(null) }}
+                          style={{ width:'100%', padding:'7px 9px', border:'1.5px solid #e2e8f4', borderRadius:7,
+                            fontSize:12.5, marginBottom:6, outline:'none', boxSizing:'border-box' as const }} />
+                        <select value={newCatKind} onChange={e => { setNewCatKind(e.target.value); setNewCatParent('') }}
+                          style={{ width:'100%', padding:'6px 9px', border:'1.5px solid #e2e8f4', borderRadius:7,
+                            fontSize:12, marginBottom:6, outline:'none', cursor:'pointer' }}>
+                          {GROUP_ORDER.map(g => <option key={g} value={g}>{GROUP_LABEL[g]}</option>)}
+                        </select>
+                        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:11.5, color:'#4a5a70', marginBottom:6, cursor:'pointer' }}>
+                          <input type="checkbox" checked={newCatIsSub}
+                            onChange={e => { setNewCatIsSub(e.target.checked); if (!e.target.checked) setNewCatParent('') }} />
+                          Sub-conta de outra
+                        </label>
+                        {newCatIsSub && (
+                          <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)}
+                            style={{ width:'100%', padding:'6px 9px', border:'1.5px solid #e2e8f4', borderRadius:7,
+                              fontSize:12, marginBottom:6, outline:'none', cursor:'pointer' }}>
+                            <option value="">— conta mãe —</option>
+                            {categories.filter(c => c.kind === newCatKind && !c.name.includes(':'))
+                              .sort((a, b) => a.name.localeCompare(b.name))
+                              .map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                          </select>
+                        )}
+                        <div style={{ display:'flex', gap:6 }}>
+                          <button onClick={createCategory}
+                            style={{ flex:1, padding:'7px', background:'#1a6b4a', color:'#fff', border:'none',
+                              borderRadius:7, fontSize:12, fontWeight:800, cursor:'pointer' }}>
+                            Criar e usar
+                          </button>
+                          <button onClick={() => setNewCatRow(null)}
+                            style={{ padding:'7px 11px', background:'#e2e8f4', color:'#4a5a70', border:'none',
+                              borderRadius:7, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {t.category_confidence != null && t.categorized_by !== 'staff' && (
                       <div style={{ fontSize:10, color: Number(t.category_confidence) >= 95 ? '#1a6b4a' : '#c06010', marginTop:2 }}>
                         {t.categorized_by === 'rule' ? 'regra' : `IA ${Number(t.category_confidence).toFixed(0)}%`}
