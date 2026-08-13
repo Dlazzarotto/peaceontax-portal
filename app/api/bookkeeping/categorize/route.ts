@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   // Pendentes + reconhecidas (regras têm prioridade e também reprocessam as 'auto';
   // aprovadas/registro nunca são tocadas)
   let q = db.from('bank_transactions')
-    .select('id, description, amount, status')
+    .select('id, description, amount, status, account_id')
     .eq('client_id', clientId)
     .in('status', ['pending', 'auto'])
     .limit(800)
@@ -66,11 +66,13 @@ export async function POST(req: NextRequest) {
 
   // Regras: do cliente + globais, por prioridade
   const { data: rules } = await db.from('bookkeeping_rules')
-    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee')
+    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
     .or(`client_id.eq.${clientId},client_id.is.null`)
     .order('priority', { ascending: true })
 
-  const ruleMatches = (r: any, desc: string, amount: number): boolean => {
+  const ruleMatches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
+    // Conta (fundo): regra restrita a uma conta só vale naquela conta
+    if (r.account_id && r.account_id !== accountId) return false
     // Direção
     if (r.direction === 'in' && amount <= 0) return false
     if (r.direction === 'out' && amount >= 0) return false
@@ -95,7 +97,7 @@ export async function POST(req: NextRequest) {
 
   for (const tx of txs) {
     const desc = tx.description.toLowerCase()
-    const rule = (rules || []).find(r => ruleMatches(r, desc, Number(tx.amount)))
+    const rule = (rules || []).find((r: any) => ruleMatches(r, desc, Number(tx.amount), (tx as any).account_id || null))
     if (rule) {
       const upd: Record<string, unknown> = {
         category: rule.category, category_confidence: 100,

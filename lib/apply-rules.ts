@@ -5,12 +5,13 @@
 
 export async function applyRulesToClient(db: any, clientId: string): Promise<number> {
   const { data: rules } = await db.from('bookkeeping_rules')
-    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee')
+    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
     .or(`client_id.eq.${clientId},client_id.is.null`)
     .order('priority', { ascending: true })
   if (!rules || rules.length === 0) return 0
 
-  const matches = (r: any, desc: string, amount: number): boolean => {
+  const matches = (r: any, desc: string, amount: number, accountId: string | null): boolean => {
+    if (r.account_id && r.account_id !== accountId) return false   // regra restrita a uma conta
     if (r.direction === 'in' && amount <= 0) return false
     if (r.direction === 'out' && amount >= 0) return false
     if (r.pattern) {
@@ -28,7 +29,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   }
 
   const { data: txs } = await db.from('bank_transactions')
-    .select('id, description, amount')
+    .select('id, description, amount, account_id')
     .eq('client_id', clientId)
     .in('status', ['pending', 'auto'])
     .limit(5000)
@@ -36,7 +37,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   let applied = 0
   for (const tx of (txs || [])) {
     const desc = String(tx.description).toLowerCase()
-    const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount)))
+    const rule = rules.find((r: any) => matches(r, desc, Number(tx.amount), (tx as any).account_id || null))
     if (!rule) continue
     const upd: Record<string, unknown> = {
       category: rule.category, category_confidence: 100,

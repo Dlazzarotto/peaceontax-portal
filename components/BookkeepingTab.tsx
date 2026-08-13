@@ -155,6 +155,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [rPayee, setRPayee] = useState('')
   const [rCategory, setRCategory] = useState('')
   const [rScope, setRScope] = useState('client')
+  const [rAccount, setRAccount] = useState('')   // conta/fundo da regra ('' = todas)
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
   // Importação de CSV do banco (bancos fora do Plaid)
@@ -424,7 +425,8 @@ export default function BookkeepingTab({ clientId }: Props) {
     }
 
     const payload: any = {
-      clientId, scope: rScope, name: rName.trim(), direction: rDirection,
+      clientId, scope: rScope, accountId: rAccount || null,
+      name: rName.trim(), direction: rDirection,
       pattern: rPattern.trim(), matchType: rMatchType,
       amountOp: rAmountOp || '', amountValue: rAmountVal ? Number(rAmountVal) : undefined,
       payee: rPayee.trim(), category: rCategory,
@@ -460,7 +462,7 @@ export default function BookkeepingTab({ clientId }: Props) {
       setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações${r.registerChanged ? ` · 🔒 ${r.registerChanged} do REGISTRO reclassificadas` : ''}.`)
       setReclassOn(false); setReclassPwd(''); setReclassReason('')
       setView('banking')
-      setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setEditRuleId(null)
+      setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRAccount(''); setEditRuleId(null)
       loadRules(); loadPayees(); load()
     } else setMsg(`Erro: ${r.error}`)
   }
@@ -1029,10 +1031,26 @@ export default function BookkeepingTab({ clientId }: Props) {
               </div>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Escopo</label>
-                <select value={rScope} onChange={e => setRScope(e.target.value)} style={{ ...sel, width:'100%' }}>
+                <select value={rScope} onChange={e => { setRScope(e.target.value); if (e.target.value === 'global') setRAccount('') }}
+                  style={{ ...sel, width:'100%' }}>
                   <option value="client">Só este cliente</option>
                   <option value="global">Todos os clientes</option>
                 </select>
+              </div>
+              <div>
+                <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>
+                  Conta / fundo
+                </label>
+                <select value={rAccount} onChange={e => setRAccount(e.target.value)}
+                  disabled={rScope === 'global'} style={{ ...sel, width:'100%' }}>
+                  <option value="">Todas as contas deste cliente</option>
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                {rAccount && (
+                  <div style={{ fontSize:10.5, color:'#1a6b4a', marginTop:3, fontWeight:700 }}>
+                    Vale só nesta conta — a mesma loja pode ter outra categoria em outro fundo.
+                  </div>
+                )}
               </div>
             </div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:10, marginBottom:10 }}>
@@ -1136,7 +1154,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                   {editRuleId ? '💾 Salvar alterações' : '✓ Criar regra'}
                 </button>
                 {editRuleId && (
-                  <button onClick={() => { setEditRuleId(null); setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRCategory('') }}
+                  <button onClick={() => { setEditRuleId(null); setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRCategory(''); setRAccount('') }}
                     style={{ padding:'9px 14px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
                     Cancelar edição
                   </button>
@@ -1176,6 +1194,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                     setRAmountOp(r.amount_op || ''); setRAmountVal(r.amount_value != null ? String(r.amount_value) : '')
                     setRPayee(r.payee || ''); setRCategory(r.category || '')
                     setRScope(r.client_id ? 'client' : 'global')
+    setRAccount(r.account_id || '')
                   }}
                   style={{ marginLeft:'auto', background:'none', border:'none', color:'#2D3278', cursor:'pointer', fontSize:13, fontWeight:700 }}>✏️ Editar</button>
                 <button onClick={() => deleteRule(r.id)}

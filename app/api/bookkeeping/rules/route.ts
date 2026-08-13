@@ -59,15 +59,19 @@ export async function POST(req: NextRequest) {
 
   const db = serviceDb()
 
+  // Regra pode ser restrita a uma conta (fundo/projeto). null = todas as contas.
+  const ruleAccount: string | null = b.accountId || null
+
   // Duplicata: mesma direção + mesmo conjunto de variações do texto
   if (pattern) {
     const { data: existing } = await db.from('bookkeeping_rules')
-      .select('id, name, pattern, direction')
+      .select('id, name, pattern, direction, account_id')
       .or(global ? 'client_id.is.null' : `client_id.eq.${b.clientId},client_id.is.null`)
     const norm = (p2: string | null) => (p2 || '').split('|').map(x => x.trim()).filter(Boolean).sort().join('|')
-    const dup = (existing || []).find(r =>
+    const dup = (existing || []).find((r: any) =>
       (r.direction === direction || r.direction === 'both' || direction === 'both') &&
-      norm(r.pattern) === norm(pattern))
+      norm(r.pattern) === norm(pattern) &&
+      String(r.account_id || '') === String(ruleAccount || ''))
     if (dup) {
       return NextResponse.json({ error: `Já existe uma regra com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.` }, { status: 409 })
     }
@@ -75,6 +79,7 @@ export async function POST(req: NextRequest) {
 
   const { error } = await db.from('bookkeeping_rules').insert({
     client_id: global ? null : b.clientId,
+    account_id: ruleAccount,
     name, pattern, category, direction,
     match_type: matchType, amount_op: amountOp, amount_value: amountValue,
     payee, priority: 30, created_by: 'staff',
@@ -94,12 +99,13 @@ export async function POST(req: NextRequest) {
   let applied = 0
   if (b.clientId) {
     const { data: txs } = await db.from('bank_transactions')
-      .select('id, description, amount')
+      .select('id, description, amount, account_id')
       .eq('client_id', b.clientId)
       .in('status', ['pending', 'auto'])
       .limit(5000)
 
     for (const tx of (txs || [])) {
+      if (ruleAccount && (tx as any).account_id !== ruleAccount) continue
       const desc = tx.description.toLowerCase()
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -167,6 +173,10 @@ export async function PATCH(req: NextRequest) {
   const { data: existing } = await db.from('bookkeeping_rules').select('*').eq('id', b.id).single()
   if (!existing) return NextResponse.json({ error: 'Regra não encontrada' }, { status: 404 })
 
+  // Conta (fundo) da regra: usa a enviada; se não vier, mantém a atual
+  const ruleAccountP: string | null =
+    b.accountId !== undefined ? (b.accountId || null) : (existing.account_id ?? null)
+
   const name = String(b.name ?? existing.name ?? '').trim()
   const pattern = b.pattern !== undefined
     ? (String(b.pattern).split('|').map((x: string) => x.trim().toLowerCase()).filter((x: string) => x.length >= 2).join('|') || null)
@@ -181,6 +191,7 @@ export async function PATCH(req: NextRequest) {
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
 
   const { error } = await db.from('bookkeeping_rules').update({
+    account_id: ruleAccountP,
     name, pattern, category, direction,
     match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
   }).eq('id', b.id)
@@ -191,11 +202,12 @@ export async function PATCH(req: NextRequest) {
   const targetClient = b.clientId || existing.client_id
   if (targetClient) {
     const { data: txs } = await db.from('bank_transactions')
-      .select('id, description, amount')
+      .select('id, description, amount, account_id')
       .eq('client_id', targetClient)
       .in('status', ['pending', 'auto'])
       .limit(5000)
     for (const tx of (txs || [])) {
+      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
       const desc = tx.description.toLowerCase()
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -243,11 +255,12 @@ export async function PATCH(req: NextRequest) {
     if (pwErr) return NextResponse.json({ error: 'Senha incorreta' }, { status: 403 })
 
     const { data: regTxs } = await db.from('bank_transactions')
-      .select('id, description, amount')
+      .select('id, description, amount, account_id')
       .eq('client_id', targetClient)
       .in('status', ['approved', 'reviewed'])
       .limit(5000)
     for (const tx of (regTxs || [])) {
+      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
       const desc = tx.description.toLowerCase()
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
