@@ -214,6 +214,30 @@ export default async function DashboardPage() {
         </div>
       </section>
 
+      {/* Listas — cadastros que valem para todos os clientes */}
+      <section style={{ marginBottom: 22 }}>
+        <h2 style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase' as const, color: '#6A7A9A', margin: '0 0 10px' }}>
+          Listas
+        </h2>
+        <div className="dash-triagem">
+          {[
+            { href: '/accounts', titulo: 'Plano de contas',
+              desc: 'Criar, renomear, mudar de grupo e apagar contas contábeis' },
+            { href: '/payees', titulo: 'Fornecedores e clientes',
+              desc: 'Vendors e customers de todos os clientes, com renomear e apagar' },
+          ].map(l => (
+            <Link key={l.href} href={l.href} className="dash-link" style={{ textDecoration: 'none' }}>
+              <article className="dash-card" style={{ padding: '16px 18px', height: '100%' }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#0F2340', marginBottom: 4 }}>
+                  {l.titulo}
+                </div>
+                <div style={{ fontSize: 13.5, color: '#6A7A9A', lineHeight: 1.45 }}>{l.desc} →</div>
+              </article>
+            </Link>
+          ))}
+        </div>
+      </section>
+
       <div className="dash-grid">
         {/* Agenda de hoje */}
         <section className="dash-card" style={{ padding: '18px 20px' }}>
