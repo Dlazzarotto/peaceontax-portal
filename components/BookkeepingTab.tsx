@@ -274,9 +274,17 @@ export default function BookkeepingTab({ clientId }: Props) {
       setMsg('')
       return
     }
-    const conta = accounts.find(a => a.id === accountId)?.name || 'a outra conta'
-    setMsg(`Nenhum lançamento espelho em ${conta} (mesmo valor, sinal oposto, até 7 dias). `
-      + 'Importe os lançamentos dessa conta e tente de novo.')
+    // Sem espelho: classifica assim mesmo, com a conta que VOCÊ escolheu.
+    let r2: any
+    try {
+      r2 = await fetch('/api/bookkeeping/transfer-match', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ txId: tx.id, accountId }),
+      }).then(x => x.json())
+    } catch (e) { r2 = { error: (e as Error).message } }
+    if (!r2?.ok) { setMsg(`Erro: ${r2?.error}`); return }
+    setMsg(`✓ ${r2.message} Quando ela for importada, use 🔗 para conciliar as duas pontas.`)
+    load()
   }
 
   const abrirMatch = (tx: Tx) => {
@@ -1755,7 +1763,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                         {t.categorized_by === 'rule' ? 'regra' : `IA ${Number(t.category_confidence).toFixed(0)}%`}
                       </div>
                     )}
-                    {(t.category === 'Transfer' || t.category === 'Credit Card Payment') && (
+                    {(t.category === 'Transfer' || t.category === 'Credit Card Payment' || (t as any).transfer_match_id) && (
                       <>
                         {/* Qual é a outra conta — a informação que faltava */}
                         {(t as any).counterparty_account_id ? (
