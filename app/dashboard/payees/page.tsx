@@ -150,7 +150,7 @@ export default function PayeesPage() {
         </div>
       )}
 
-      <Link href="/accounts" style={{ fontSize: 14.5, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
+      <Link href="/dashboard/accounts" style={{ fontSize: 14.5, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
         Plano de contas →
       </Link>
     </div>

@@ -221,9 +221,9 @@ export default async function DashboardPage() {
         </h2>
         <div className="dash-triagem">
           {[
-            { href: '/accounts', titulo: 'Plano de contas',
+            { href: '/dashboard/accounts', titulo: 'Plano de contas',
               desc: 'Criar, renomear, mudar de grupo e apagar contas contábeis' },
-            { href: '/payees', titulo: 'Fornecedores e clientes',
+            { href: '/dashboard/payees', titulo: 'Fornecedores e clientes',
               desc: 'Vendors e customers de todos os clientes, com renomear e apagar' },
           ].map(l => (
             <Link key={l.href} href={l.href} className="dash-link" style={{ textDecoration: 'none' }}>
