@@ -301,10 +301,26 @@ export async function PATCH(req: NextRequest) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       { auth: { persistSession: false } }
     )
+    // getAuth() devolve só userId/isStaff — o e-mail vem do próprio auth.
+    // (Antes usava auth.email, que não existe: a senha era sempre recusada.)
+    const { data: quem } = await db.auth.admin.getUserById(auth.userId)
+    const emailLogado = quem?.user?.email
+    if (!emailLogado) {
+      return NextResponse.json({ error: 'Não foi possível identificar seu login para confirmar a senha.' }, { status: 400 })
+    }
+
     const { error: pwErr } = await authClient.auth.signInWithPassword({
-      email: auth.email!, password,
+      email: emailLogado, password: password.trim(),
     })
-    if (pwErr) return NextResponse.json({ error: 'Senha incorreta' }, { status: 403 })
+    if (pwErr) {
+      const m = pwErr.message || ''
+      if (/rate|too many|429/i.test(m)) {
+        return NextResponse.json({ error: 'Muitas tentativas em pouco tempo. Aguarde 1 minuto.' }, { status: 429 })
+      }
+      return NextResponse.json({
+        error: `Senha não confere para ${emailLogado}. Use a mesma senha com que você entra no sistema.`,
+      }, { status: 403 })
+    }
 
     const { data: regTxs } = await db.from('bank_transactions')
       .select('id, description, amount, account_id')
@@ -339,7 +355,7 @@ export async function PATCH(req: NextRequest) {
 
     await db.from('bookkeeping_reclass_log').insert({
       rule_id: b.id, client_id: targetClient,
-      changed_by: auth.userId, changed_by_email: auth.email || null,
+      changed_by: auth.userId, changed_by_email: emailLogado,
       reason, affected_register: registerChanged,
       new_category: category, new_payee: payee || null,
     })
