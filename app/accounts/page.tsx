@@ -5,7 +5,7 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 
-interface Cat { id: string; name: string; kind: string; active: boolean }
+interface Cat { id: string; name: string; kind: string; active: boolean; usos?: number }
 
 const GRUPOS: { key: string; label: string; cor: string }[] = [
   { key: 'income',        label: 'Receitas',            cor: '#1A6B4A' },
@@ -28,6 +28,9 @@ export default function ChartOfAccountsPage() {
   const [editName, setEditName] = useState('')
   const [editKind, setEditKind] = useState('expense')
   const [busy, setBusy] = useState(false)
+  const [novoNome, setNovoNome] = useState('')
+  const [novoKind, setNovoKind] = useState('expense')
+  const [novoPai, setNovoPai] = useState('')
 
   const load = async () => {
     setLoading(true)
@@ -50,6 +53,40 @@ export default function ChartOfAccountsPage() {
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
     setEditId(null); load()
+  }
+
+  const criar = async () => {
+    if (novoNome.trim().length < 2) { setMsg('⚠️ Informe o nome da conta.'); return }
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/bookkeeping/categories', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: novoNome, kind: novoKind, parent: novoPai || undefined }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ Conta "${novoNome}" criada.`)
+    setNovoNome(''); setNovoPai(''); load()
+  }
+
+  const apagar = async (c: Cat) => {
+    const usos = c.usos || 0
+    let destino = ''
+    if (usos > 0) {
+      const opcoes = cats.filter(x => x.kind === c.kind && x.id !== c.id && x.active).map(x => x.name)
+      destino = window.prompt(
+        `"${c.name}" está em ${usos} lançamento(s).\n\n` +
+        `Para qual conta mover antes de apagar? Copie um nome da lista:\n\n` +
+        opcoes.slice(0, 30).join('\n'), opcoes[0] || '') || ''
+      if (!destino.trim()) return
+    } else if (!confirm(`Apagar "${c.name}" definitivamente?`)) return
+
+    setBusy(true); setMsg('')
+    const url = `/api/bookkeeping/categories?id=${c.id}` + (destino ? `&moveTo=${encodeURIComponent(destino.trim())}` : '')
+    const d = await fetch(url, { method: 'DELETE' }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    load()
   }
 
   const q = busca.trim().toLowerCase()
@@ -87,6 +124,27 @@ export default function ChartOfAccountsPage() {
           <button onClick={() => setMsg('')} style={{ float: 'right', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, color: 'inherit', fontWeight: 800 }}>✕</button>
         </div>
       )}
+
+      <section style={card}>
+        <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 17, color: '#0F2340', margin: '0 0 10px', fontWeight: 400 }}>
+          Nova conta
+        </h2>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <input value={novoNome} onChange={e => setNovoNome(e.target.value)} placeholder="Nome da conta"
+            style={{ ...inp, flex: '2 1 200px' }} />
+          <select value={novoKind} onChange={e => { setNovoKind(e.target.value); setNovoPai('') }}
+            style={{ ...inp, flex: '1 1 150px', cursor: 'pointer' }}>
+            {GRUPOS.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
+          </select>
+          <select value={novoPai} onChange={e => setNovoPai(e.target.value)}
+            style={{ ...inp, flex: '1 1 170px', cursor: 'pointer' }}>
+            <option value="">Conta principal</option>
+            {cats.filter(c => c.kind === novoKind && c.active && !c.name.includes(':'))
+              .map(c => <option key={c.id} value={c.name}>sub de: {c.name}</option>)}
+          </select>
+          <button onClick={criar} disabled={busy} style={btn('#2D3278', busy)}>Criar</button>
+        </div>
+      </section>
 
       <div style={{ ...card, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar conta"
@@ -134,9 +192,16 @@ export default function ChartOfAccountsPage() {
                         {g.label}
                       </span>
                     )}
+                    <span style={{ fontSize: 12.5, color: '#6A7A9A', minWidth: 78, textAlign: 'right' as const }}>
+                      {(c.usos ?? 0) > 0 ? `${c.usos} lanç.` : 'sem uso'}
+                    </span>
                     <button onClick={() => { setEditId(c.id); setEditName(c.name.includes(':') ? c.name.split(':')[1].trim() : c.name); setEditKind(c.kind) }}
                       style={{ background: 'none', border: 'none', color: '#2D3278', fontSize: 13.5, fontWeight: 700, cursor: 'pointer' }}>
                       Renomear
+                    </button>
+                    <button onClick={() => apagar(c)} disabled={busy}
+                      style={{ background: 'none', border: 'none', color: '#B02020', fontSize: 13.5, fontWeight: 700, cursor: 'pointer' }}>
+                      Apagar
                     </button>
                     {c.active ? (
                       <button onClick={() => patch({ id: c.id, active: false })} disabled={busy}

@@ -16,7 +16,25 @@ export async function GET(req: NextRequest) {
   if (!todas) q = q.eq('active', true)
   const { data, error } = await q.order('kind').order('name')
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ categories: data || [] })
+
+  // Quantos lançamentos usam cada conta — é o que diz se dá para apagar
+  const uso: Record<string, number> = {}
+  const db = serviceDb()
+  for (let i = 0; ; i += 10000) {
+    const { data: pag } = await db.from('bank_transactions')
+      .select('category').not('category', 'is', null)
+      .range(i, i + 9999)
+    if (!pag || pag.length === 0) break
+    for (const t of pag) {
+      const c = String((t as any).category)
+      uso[c] = (uso[c] || 0) + 1
+    }
+    if (pag.length < 10000) break
+  }
+
+  return NextResponse.json({
+    categories: (data || []).map((c: any) => ({ ...c, usos: uso[c.name] || 0 })),
+  })
 }
 
 export async function POST(req: NextRequest) {
@@ -153,5 +171,77 @@ export async function PATCH(req: NextRequest) {
       + (lancamentos ? ` · ${lancamentos} lançamento(s) atualizados` : '')
       + (regras ? ` · ${regras} regra(s)` : '')
       + (subcontas ? ` · ${subcontas} sub-conta(s)` : ''),
+  })
+}
+
+// DELETE /api/bookkeeping/categories?id=...&moveTo=<nome da conta destino>
+//
+// Apaga de vez. Se a conta estiver em uso, exige o destino: os lançamentos
+// e as regras são movidos para lá antes de apagar — nada fica órfão.
+export async function DELETE(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const level = await getStaffLevel(auth.userId)
+  if (level !== 'owner' && level !== 'manager') {
+    return NextResponse.json({ error: 'Somente sócio ou gerente apaga contas do plano.' }, { status: 403 })
+  }
+
+  const id = req.nextUrl.searchParams.get('id')
+  const moveTo = (req.nextUrl.searchParams.get('moveTo') || '').trim()
+  if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+
+  const db = serviceDb()
+  const { data: alvo } = await db.from('bookkeeping_categories')
+    .select('id, name, kind').eq('id', id).single()
+  if (!alvo) return NextResponse.json({ error: 'Conta não encontrada' }, { status: 404 })
+
+  // Sub-contas impedem: apague ou mova as filhas antes
+  const { data: filhas } = await db.from('bookkeeping_categories')
+    .select('id').like('name', `${alvo.name}: %`)
+  if ((filhas || []).length > 0) {
+    return NextResponse.json({
+      error: `"${alvo.name}" tem ${(filhas || []).length} sub-conta(s). Apague ou mova as sub-contas primeiro.`,
+    }, { status: 409 })
+  }
+
+  const { count } = await db.from('bank_transactions')
+    .select('id', { count: 'exact', head: true }).eq('category', alvo.name)
+  const emUso = count ?? 0
+
+  if (emUso > 0 && !moveTo) {
+    return NextResponse.json({
+      error: `"${alvo.name}" está em ${emUso} lançamento(s). Escolha para qual conta mover antes de apagar.`,
+      emUso,
+    }, { status: 409 })
+  }
+
+  let movidos = 0, regras = 0
+  if (emUso > 0) {
+    const { data: destino } = await db.from('bookkeeping_categories')
+      .select('name, kind').eq('name', moveTo).single()
+    if (!destino) return NextResponse.json({ error: 'Conta de destino não encontrada' }, { status: 400 })
+    if (destino.kind !== alvo.kind) {
+      return NextResponse.json({
+        error: `A conta de destino é de outro grupo (${destino.kind}). Escolha uma do mesmo grupo para não distorcer os relatórios.`,
+      }, { status: 400 })
+    }
+    const { data: t } = await db.from('bank_transactions')
+      .update({ category: moveTo, updated_at: new Date().toISOString() })
+      .eq('category', alvo.name).select('id')
+    movidos = (t || []).length
+  }
+
+  const { data: r } = await db.from('bookkeeping_rules')
+    .update({ category: moveTo || null }).eq('category', alvo.name).select('id')
+  regras = (r || []).length
+
+  const { error } = await db.from('bookkeeping_categories').delete().eq('id', id)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  return NextResponse.json({
+    ok: true,
+    message: `"${alvo.name}" apagada`
+      + (movidos ? ` · ${movidos} lançamento(s) movidos para "${moveTo}"` : '')
+      + (regras ? ` · ${regras} regra(s) ajustadas` : ''),
   })
 }
