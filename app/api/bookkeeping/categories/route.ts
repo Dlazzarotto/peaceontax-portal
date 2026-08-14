@@ -6,14 +6,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
-  const { data, error } = await serviceDb()
+  const todas = req.nextUrl.searchParams.get('all') === '1'
+  let q = serviceDb()
     .from('bookkeeping_categories')
     .select('id, name, kind, active')
-    .eq('active', true)
-    .order('kind').order('name')
+  if (!todas) q = q.eq('active', true)
+  const { data, error } = await q.order('kind').order('name')
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ categories: data || [] })
 }
@@ -49,4 +50,108 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
   return NextResponse.json({ ok: true })
+}
+
+// PATCH /api/bookkeeping/categories { id, name?, kind?, active? }
+//
+// Renomear propaga para os lançamentos e para as regras que usam a conta —
+// senão o livro fica apontando para um nome que não existe mais.
+// Sub-contas ("Pai: Filho") acompanham a mãe.
+export async function PATCH(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const level = await getStaffLevel(auth.userId)
+  if (level !== 'owner' && level !== 'manager') {
+    return NextResponse.json({ error: 'Somente sócio ou gerente altera o plano de contas.' }, { status: 403 })
+  }
+
+  const b = await req.json()
+  if (!b.id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+
+  const db = serviceDb()
+  const { data: atual } = await db.from('bookkeeping_categories')
+    .select('id, name, kind, active').eq('id', b.id).single()
+  if (!atual) return NextResponse.json({ error: 'Conta não encontrada' }, { status: 404 })
+
+  // Desativar: só quando ninguém está usando
+  if (b.active === false) {
+    const { count } = await db.from('bank_transactions')
+      .select('id', { count: 'exact', head: true }).eq('category', atual.name)
+    if ((count ?? 0) > 0) {
+      return NextResponse.json({
+        error: `Esta conta está em ${count} lançamento(s). Reclassifique-os antes de desativar.`,
+      }, { status: 409 })
+    }
+    const { error } = await db.from('bookkeeping_categories')
+      .update({ active: false }).eq('id', b.id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ ok: true, message: `"${atual.name}" desativada.` })
+  }
+
+  if (b.active === true) {
+    await db.from('bookkeeping_categories').update({ active: true }).eq('id', b.id)
+    return NextResponse.json({ ok: true, message: `"${atual.name}" reativada.` })
+  }
+
+  const upd: Record<string, unknown> = {}
+  let novoNome = atual.name
+
+  if (b.name !== undefined) {
+    const limpo = String(b.name).trim()
+    if (limpo.length < 2 || limpo.length > 60) {
+      return NextResponse.json({ error: 'Nome: 2 a 60 caracteres' }, { status: 400 })
+    }
+    // Mantém o prefixo da mãe quando for sub-conta
+    const prefixo = atual.name.includes(':') ? atual.name.split(':')[0].trim() + ': ' : ''
+    novoNome = prefixo + limpo.replace(/^.*:\s*/, '')
+    if (novoNome !== atual.name) upd.name = novoNome
+  }
+  if (b.kind !== undefined) {
+    if (!['income','cogs','expense','other_income','other_expense','liability','asset','non_pnl'].includes(b.kind)) {
+      return NextResponse.json({ error: 'Tipo inválido' }, { status: 400 })
+    }
+    upd.kind = b.kind
+  }
+  if (Object.keys(upd).length === 0) {
+    return NextResponse.json({ error: 'Nada para alterar.' }, { status: 400 })
+  }
+
+  const { error } = await db.from('bookkeeping_categories').update(upd).eq('id', b.id)
+  if (error) {
+    if ((error as any).code === '23505') return NextResponse.json({ error: 'Já existe uma conta com esse nome.' }, { status: 409 })
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  let lancamentos = 0, regras = 0, subcontas = 0
+  if (upd.name) {
+    const { data: t } = await db.from('bank_transactions')
+      .update({ category: novoNome, updated_at: new Date().toISOString() })
+      .eq('category', atual.name).select('id')
+    lancamentos = (t || []).length
+
+    const { data: r } = await db.from('bookkeeping_rules')
+      .update({ category: novoNome }).eq('category', atual.name).select('id')
+    regras = (r || []).length
+
+    // Sub-contas acompanham a mãe
+    if (!atual.name.includes(':')) {
+      const { data: filhas } = await db.from('bookkeeping_categories')
+        .select('id, name').like('name', `${atual.name}: %`)
+      for (const f of (filhas || [])) {
+        const nomeFilha = String((f as any).name).replace(`${atual.name}: `, `${novoNome}: `)
+        await db.from('bookkeeping_categories').update({ name: nomeFilha }).eq('id', (f as any).id)
+        await db.from('bank_transactions').update({ category: nomeFilha }).eq('category', (f as any).name)
+        await db.from('bookkeeping_rules').update({ category: nomeFilha }).eq('category', (f as any).name)
+        subcontas++
+      }
+    }
+  }
+
+  return NextResponse.json({
+    ok: true, name: novoNome,
+    message: `Conta atualizada${upd.name ? ` para "${novoNome}"` : ''}`
+      + (lancamentos ? ` · ${lancamentos} lançamento(s) atualizados` : '')
+      + (regras ? ` · ${regras} regra(s)` : '')
+      + (subcontas ? ` · ${subcontas} sub-conta(s)` : ''),
+  })
 }

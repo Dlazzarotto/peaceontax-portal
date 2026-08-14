@@ -700,7 +700,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     const r = await fetch('/api/bookkeeping/rules', {
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify({
-        clientId, scope: mScope,
+        clientId, scope: 'client',
         name: mPattern.trim().slice(0, 40),
         direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
         pattern: mPattern.replace(/ \/ /g, '|').trim(), matchType: 'contains',
@@ -1493,10 +1493,11 @@ export default function BookkeepingTab({ clientId }: Props) {
                 style={{ background:'#fff', color:'#1a6b4a', border:'1.5px dashed #1a6b4a70', borderRadius:8, padding:'6px 12px', fontSize:12, fontWeight:700, cursor:'pointer', marginBottom:8 }}>
                 ➕ Adicionar linha
               </button>
-              <select value={mScope} onChange={e => setMScope(e.target.value)} style={{ ...sel, width:'100%' }}>
-                <option value="client">Só este cliente</option>
-                <option value="global">Todos os clientes</option>
-              </select>
+              <div style={{ fontSize:11.5, color:'#4a5a70', background:'#f0f4ff', border:'1px solid #2D327825',
+                borderRadius:8, padding:'8px 11px', lineHeight:1.45 }}>
+                🔒 A regra vale <b>somente para este cliente</b>. Regras que valem para todos são
+                mantidas em <b>Plano de contas → Regras gerais</b>.
+              </div>
             </div>
 
             {mErr && (
