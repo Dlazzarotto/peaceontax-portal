@@ -51,8 +51,23 @@ export async function PATCH(req: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   )
-  const { error: senhaErr } = await sbAuth.auth.signInWithPassword({ email, password })
-  if (senhaErr) return NextResponse.json({ error: 'Senha incorreta.' }, { status: 401 })
+  const { error: senhaErr } = await sbAuth.auth.signInWithPassword({
+    email, password: String(password).trim(),   // espaço colado pelo navegador não derruba
+  })
+  if (senhaErr) {
+    const m = senhaErr.message || ''
+    if (/rate|too many|429/i.test(m)) {
+      return NextResponse.json({
+        error: 'Muitas tentativas de confirmação em pouco tempo. Aguarde 1 minuto e tente de novo.',
+      }, { status: 429 })
+    }
+    if (/not confirmed/i.test(m)) {
+      return NextResponse.json({ error: `Seu login (${email}) não está confirmado.` }, { status: 401 })
+    }
+    return NextResponse.json({
+      error: `Senha não confere para ${email}. Use a mesma senha com que você entrou no sistema. (${m})`,
+    }, { status: 401 })
+  }
 
   // 3. A conta existe e é de um cliente que você acessa
   const { data: conta } = await db.from('bank_accounts')
