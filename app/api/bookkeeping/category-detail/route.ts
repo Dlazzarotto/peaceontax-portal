@@ -118,23 +118,18 @@ export async function GET(req: NextRequest) {
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${category} — ${period}</title>
   <style>
-    body { font-family: Georgia, serif; max-width: 860px; margin: 34px auto; color: #1a2a3a; padding: 0 20px; }
-    h1 { font-size: 18px; color: #2D3278; margin-bottom: 2px; }
-    h2 { font-size: 14px; color: #0f2340; margin: 2px 0 18px; font-weight: normal; }
+    body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
+    h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; text-align: center; }
+    h2 { font-size: 14px; margin: 2px 0 20px; font-weight: normal; text-align: center; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { text-align: left; padding: 8px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
-         color: #fff; background: #2D3278; }
-    td { padding: 7px 8px; border-bottom: 1px solid #eef1f6; vertical-align: top; }
-    .r { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .neg { color: #b02020; }
-    .pos { color: #1a6b4a; }
-    .odd { background: #fff7e0; }
-    .total td { border-top: 2px solid #2D3278; font-weight: 800; font-size: 14px; }
-    .muted { color: #8a9ab0; font-size: 11.5px; }
-    .badge { display:inline-block; padding: 2px 10px; border-radius: 14px; font-size: 11px; font-weight: 700; }
-    .warn { background: #fff7e0; border: 1px solid #e0c060; border-radius: 8px; padding: 10px 14px;
-            font-size: 12.5px; margin: 14px 0; color: #6a5a10; }
-    .footer { margin-top: 26px; font-size: 11px; color: #9aaab0; border-top: 1px solid #e2e8f4; padding-top: 10px; }
+    th { text-align: left; padding: 7px 8px; font-size: 11px; font-weight: 700; border-bottom: 1px solid #000; }
+    td { padding: 5px 8px; border-bottom: 1px solid #e8e8e8; }
+    .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .muted { font-size: 11.5px; }
+    .total td { border-top: 1px solid #000; border-bottom: 3px double #000; font-weight: 700; }
+    .warn { border: 1px solid #000; padding: 9px 12px; font-size: 12px; margin: 14px 0; }
+    .badge { display:inline-block; font-size:11px; border:1px solid #000; padding:1px 8px; margin-right:5px; }
+    .footer { margin-top: 30px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
     @media print { body { margin: 14px auto; } }
   </style></head><body>
   <div class="muted">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
@@ -142,9 +137,9 @@ export async function GET(req: NextRequest) {
   <h2>Account detail: <b>${category}</b> — ${period} <span class="muted">(register only: approved entries)</span></h2>
 
   <div style="margin-bottom:12px">
-    <span class="badge" style="background:#f0f4ff;color:#2D3278">${list.length} entries</span>
-    <span class="badge" style="background:#e8f5ee;color:#1a6b4a">${positives} money in (+)</span>
-    <span class="badge" style="background:#fee2e2;color:#b02020">${negatives} money out (−)</span>
+    <span class="badge">${list.length} entries</span>
+    <span class="badge">${positives} money in (+)</span>
+    <span class="badge">${negatives} money out (−)</span>
   </div>
 
   ${positives > 0 && negatives > 0 ? `<div class="warn">⚠️ Esta conta mistura valores positivos e negativos — as linhas destacadas em amarelo têm o sinal MENOS comum nesta conta. Confira se são estornos/reembolsos legítimos ou lançamentos com sinal errado.</div>` : ''}
@@ -167,7 +162,7 @@ export async function GET(req: NextRequest) {
     <tr class="total"><td colspan="4">Total ${category}</td><td class="r ${total < 0 ? 'neg' : 'pos'}">${money(total)}</td></tr>
   </table>
 
-  <div class="footer">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document — verify before filing</div>
+  <div class="footer">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148 · (833) 732-2327<br>Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document — verify before filing</div>
   </body></html>`
 
   const output = isClient

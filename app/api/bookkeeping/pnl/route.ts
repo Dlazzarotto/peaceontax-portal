@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { getUser } from '@/lib/supabase-server'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -23,14 +24,24 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
   const year = parseInt(sp.get('year') || '')
   const month = sp.get('month') ? parseInt(sp.get('month')!) : null
   if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
-  if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
+  let isClient = false
+  if (auth?.isStaff) {
+    if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  } else {
+    const user = await getUser()
+    if (!user) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    const { data: own } = await serviceDb().from('clients').select('id, type').eq('user_id', user.id)
+    const mine = (own || []).find(c => c.id === clientId)
+    if (!mine || mine.type !== 'business') return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    isClient = true
+  }
 
   const db = serviceDb()
   const kindMap = await loadKindMap(db)
@@ -90,12 +101,12 @@ export async function GET(req: NextRequest) {
     withSubs(items).map(g => {
       if (g.subs.length === 0) return row(g.cat, g.direct, true, g.cat)
       const subRows = g.subs.sort((a, b) => a.cat.localeCompare(b.cat, undefined, { sensitivity: 'base' }))
-        .map(sb => `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
+        .map(sb => `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
       const directRow = g.direct !== 0
-        ? `<tr><td style="padding:5px 14px 5px 46px; color:#4a5a70">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
+        ? `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
       return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${g.cat}</td><td></td></tr>`
         + subRows + directRow
-        + `<tr><td style="padding:2px 14px 8px 30px; color:#6a7a9a; font-size:12px">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
+        + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
     }).join('')
 
   const income   = group('income')
@@ -120,7 +131,12 @@ export async function GET(req: NextRequest) {
   const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
   const period = month ? `${MONTHS[month-1]} ${year}` : `Year ${year}`
   const displayName = client?.business_name || client?.name || ''
-  const money = (n: number) => `${n < 0 ? '(' : ''}$${Math.abs(n).toFixed(2)}${n < 0 ? ')' : ''}`
+  // Padrão QuickBooks: despesas aparecem como valor positivo na coluna;
+  // o sinal de menos fica só para valores realmente negativos (ex.: prejuízo).
+  const money = (n: number) => {
+    const v = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return `${n < 0 ? '-' : ''}$${v}`
+  }
 
   const detailUrl = (cat: string) =>
     `/api/bookkeeping/category-detail?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}&category=${encodeURIComponent(cat)}`
@@ -134,27 +150,29 @@ export async function GET(req: NextRequest) {
 <title>P&L ${period} — ${displayName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: Georgia, serif; color:#1a2a3a; background:#f0f4fa; padding:24px; font-size:15px; }
-  .sheet { max-width:760px; margin:0 auto; background:#fff; padding:44px 52px; border-radius:8px; box-shadow:0 2px 24px rgba(45,50,120,0.12); }
-  h1 { font-size:22px; color:#2D3278; text-align:center; }
-  h2 { font-size:15px; text-align:center; color:#5a6a7a; font-weight:400; margin:4px 0 24px; }
-  .firm { text-align:center; font-size:12px; color:#8a9ab0; margin-bottom:8px; }
+  body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
+  .sheet { max-width:760px; margin:0 auto; background:#fff; padding:40px 48px; }
+  h1 { font-size:19px; font-weight:700; text-align:center; }
+  h2 { font-size:15px; text-align:center; font-weight:400; margin:2px 0 2px; }
+  h3 { font-size:13px; text-align:center; font-weight:400; margin:0 0 22px; }
   table { width:100%; border-collapse:collapse; }
-  td.r { text-align:right; padding-right:14px; font-variant-numeric: tabular-nums; }
-  tr.section td { background:#2D3278; color:#fff; font-weight:700; padding:8px 14px; font-size:13px; text-transform:uppercase; letter-spacing:0.5px; }
-  tr.subtotal td { border-top:1.5px solid #2D3278; font-weight:700; padding:8px 14px; }
-  tr.net td { background:${netProfit >= 0 ? '#e8f5ee' : '#fee2e2'}; color:${netProfit >= 0 ? '#1a6b4a' : '#b02020'}; font-weight:800; font-size:17px; padding:12px 14px; }
-  tr.nonpnl td { color:#8a9ab0; font-size:13px; }
-  .warn { margin-top:18px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
-  .foot { margin-top:26px; text-align:center; font-size:11px; color:#9aaab0; }
-  .printbtn { position:fixed; top:18px; right:18px; background:#F47B20; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:10px; cursor:pointer; min-height:48px; }
-  @media print { body { background:#fff; padding:0; } .sheet { box-shadow:none; } .printbtn { display:none; } }
+  td { padding:4px 14px; }
+  td.r { text-align:right; padding-right:0; font-variant-numeric: tabular-nums; white-space:nowrap; }
+  tr.section td { font-weight:700; padding:14px 14px 4px; border-bottom:1px solid #000; }
+  tr.subtotal td { border-top:1px solid #000; font-weight:700; padding:5px 14px; }
+  tr.net td { border-top:1px solid #000; border-bottom:3px double #000; font-weight:700; padding:8px 14px; font-size:15px; }
+  tr.nonpnl td { font-size:13px; }
+  .warn { margin-top:18px; border:1px solid #000; padding:9px 12px; font-size:12px; }
+  .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
+  .printbtn { position:fixed; top:18px; right:18px; background:#2D3278; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:8px; cursor:pointer; min-height:48px; }
+  a { color:#000; }
+  @media print { body { padding:0; } .sheet { padding:0; } .printbtn { display:none; } }
 </style></head><body>
 <button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
 <div class="sheet">
-  <div class="firm">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
   <h1>${displayName}</h1>
-  <h2>Profit &amp; Loss (Cash Basis) — ${period}</h2>
+  <h2>Profit and Loss</h2>
+  <h3>${period} &middot; Cash Basis</h3>
 
   <table>
     <tr class="section"><td colspan="2">Income</td></tr>
@@ -187,9 +205,16 @@ export async function GET(req: NextRequest) {
 
   ${(pendingCount ?? 0) > 0 ? `<div class="warn">⚠️ ${pendingCount} transactions are still uncategorized for ${year} — this P&amp;L is preliminary.</div>` : ''}
 
-  <div class="foot">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US', { timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })} · Cash basis — reflects bank activity only</div>
+  <div class="foot">
+    ${FIRM.name} &middot; ${FIRM.address} &middot; ${FIRM.phone}<br>
+    Prepared ${new Date().toLocaleDateString('en-US', { timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })}
+    &middot; Cash basis — reflects bank activity only
+  </div>
 </div>
 </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
+  const output = isClient
+    ? html.replace(/Internal working document[^<]*/g, 'Relatório preliminar — sujeito a revisão da nossa equipe')
+    : html
+  return new NextResponse(output, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }

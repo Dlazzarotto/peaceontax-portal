@@ -7,17 +7,28 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { getUser } from '@/lib/supabase-server'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const clientId = req.nextUrl.searchParams.get('clientId')
   const year = parseInt(req.nextUrl.searchParams.get('year') || '')
   if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
-  if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
+  let isClient = false
+  if (auth?.isStaff) {
+    if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  } else {
+    const user = await getUser()
+    if (!user) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    const { data: own } = await serviceDb().from('clients').select('id, type').eq('user_id', user.id)
+    const mine = (own || []).find(c => c.id === clientId)
+    if (!mine || mine.type !== 'business') return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    isClient = true
+  }
 
   const db = serviceDb()
   const [{ data: client }, { data: accounts }, { data: txs }, { data: cats }] = await Promise.all([
@@ -65,21 +76,20 @@ export async function GET(req: NextRequest) {
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Balance Sheet ${year} — ${name}</title>
   <style>
-    body { font-family: Georgia, serif; max-width: 700px; margin: 40px auto; color: #1a2a3a; padding: 0 20px; }
-    h1 { font-size: 19px; color: #2D3278; margin-bottom: 2px; }
-    h2 { font-size: 15px; color: #0f2340; margin: 4px 0 20px; font-weight: normal; }
-    h3 { font-size: 13px; color: #2D3278; text-transform: uppercase; letter-spacing: 1px; border-bottom: 2px solid #2D3278; padding-bottom: 4px; margin-top: 26px; }
+    body { font-family: Georgia, "Times New Roman", serif; max-width: 700px; margin: 40px auto; color: #000; padding: 0 20px; }
+    h1 { font-size: 19px; font-weight: 700; margin-bottom: 2px; text-align: center; }
+    h2 { font-size: 15px; margin: 2px 0 22px; font-weight: normal; text-align: center; }
+    h3 { font-size: 13px; font-weight: 700; border-bottom: 1px solid #000; padding-bottom: 4px; margin-top: 26px; }
     table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-    td { padding: 6px 8px; border-bottom: 1px solid #eef1f6; }
-    .r { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
-    .total td { border-top: 2px solid #2D3278; font-weight: 800; font-size: 14px; }
-    .muted { color: #8a9ab0; font-size: 11.5px; }
-    .net { background: #f0f4ff; }
-    .warn { background: #fff7e0; border: 1px solid #e0c060; border-radius: 8px; padding: 10px 14px; font-size: 12px; margin-top: 22px; color: #6a5a10; }
-    .footer { margin-top: 30px; font-size: 11px; color: #9aaab0; border-top: 1px solid #e2e8f4; padding-top: 10px; }
+    td { padding: 5px 8px; }
+    .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .total td { border-top: 1px solid #000; font-weight: 700; }
+    .muted { font-size: 11.5px; }
+    .net td { border-top: 1px solid #000; border-bottom: 3px double #000; font-weight: 700; }
+    .warn { border: 1px solid #000; padding: 9px 12px; font-size: 12px; margin-top: 22px; }
+    .footer { margin-top: 32px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
     @media print { body { margin: 16px auto; } }
   </style></head><body>
-  <div class="muted">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148 · (833) 732-2327</div>
   <h1>${name}</h1>
   <h2>Balance Sheet (simplified) — as of December 31, ${year}</h2>
 
@@ -107,8 +117,11 @@ export async function GET(req: NextRequest) {
   <div class="warn">⚠️ Simplified statement compiled from bank statement balances and categorized transactions available in the portal.
   It may not include all assets/liabilities (loans, receivables, payables, equipment basis, depreciation). For internal review — not a formal financial statement.</div>
 
-  <div class="footer">Prepared by Peace on Tax Corp · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document</div>
+  <div class="footer">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148 · (833) 732-2327<br>Prepared by Peace on Tax Corp · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document</div>
   </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
+  const output = isClient
+    ? html.replace(/Internal working document[^<]*/g, 'Relatório preliminar — sujeito a revisão da nossa equipe')
+    : html
+  return new NextResponse(output, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }

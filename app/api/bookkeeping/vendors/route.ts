@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { getUser } from '@/lib/supabase-server'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -18,14 +19,24 @@ export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
   const year = parseInt(sp.get('year') || '')
   const report = sp.get('report') === '1099' ? '1099' : 'vendors'
   if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
-  if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
+  let isClient = false
+  if (auth?.isStaff) {
+    if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+  } else {
+    const user = await getUser()
+    if (!user) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    const { data: own } = await serviceDb().from('clients').select('id, type').eq('user_id', user.id)
+    const mine = (own || []).find(c => c.id === clientId)
+    if (!mine || mine.type !== 'business') return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    isClient = true
+  }
 
   const db = serviceDb()
   const { data: client } = await db.from('clients')
@@ -77,26 +88,25 @@ export async function GET(req: NextRequest) {
 <title>Vendors ${year} — ${displayName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: Georgia, serif; color:#1a2a3a; background:#f0f4fa; padding:24px; font-size:14px; }
-  .sheet { max-width:820px; margin:0 auto; background:#fff; padding:44px 52px; border-radius:8px; box-shadow:0 2px 24px rgba(45,50,120,0.12); }
-  h1 { font-size:21px; color:#2D3278; text-align:center; }
+  body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
+  .sheet { max-width:820px; margin:0 auto; background:#fff; padding:44px 52px; border-radius:8px;  }
+  h1 { font-size:19px; font-weight:700; text-align:center; }
   h2 { font-size:14px; text-align:center; color:#5a6a7a; font-weight:400; margin:4px 0 24px; }
-  h3 { font-size:15px; color:#2D3278; margin:26px 0 10px; }
+  h3 { font-size:14px; font-weight:700; margin:26px 0 8px; border-bottom:1px solid #000; padding-bottom:4px; }
   .firm { text-align:center; font-size:12px; color:#8a9ab0; margin-bottom:8px; }
   table { width:100%; border-collapse:collapse; }
-  th { background:#2D3278; color:#fff; text-align:left; padding:8px 12px; font-size:12px; text-transform:uppercase; }
+  th { text-align:left; padding:7px 12px; font-size:11px; font-weight:700; border-bottom:1px solid #000; }
   td { padding:7px 12px; border-bottom:1px solid #eef2f8; font-size:13px; }
   td.r { text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
-  .badge { display:inline-block; font-size:10.5px; background:#f0f4ff; color:#2D3278; border-radius:12px; padding:1px 8px; margin-right:4px; }
+  .badge { display:inline-block; font-size:10.5px; border:1px solid #000; padding:1px 8px; margin-right:4px; }
   .k1099 { background:#fff7e0; }
   .warn { margin-top:14px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
-  .foot { margin-top:26px; text-align:center; font-size:11px; color:#9aaab0; }
-  .printbtn { position:fixed; top:18px; right:18px; background:#F47B20; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:10px; cursor:pointer; min-height:48px; }
+  .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
+  .printbtn { position:fixed; top:18px; right:18px; background:#2D3278; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:10px; cursor:pointer; min-height:48px; }
   @media print { body { background:#fff; padding:0; } .sheet { box-shadow:none; } .printbtn { display:none; } }
 </style></head><body>
 <button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
 <div class="sheet">
-  <div class="firm">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
   <h1>${displayName}</h1>
   <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${year} (cash basis, payments only)</h2>
 
@@ -137,9 +147,12 @@ export async function GET(req: NextRequest) {
 
   ${noPayeeCount > 0 ? `<div class="warn">📌 ${noPayeeCount} payment(s) totaling ${money(noPayeeTotal)} have no payee identified — run "Categorizar pendentes" to extract payees, or fill manually.</div>` : ''}
 
-  <div class="foot">Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US',{ timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })} · Internal working document — verify before filing</div>
+  <div class="foot">${FIRM.name} &middot; ${FIRM.address} &middot; ${FIRM.phone}<br>Prepared · Generated ${new Date().toLocaleDateString('en-US',{ timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })} · Internal working document — verify before filing</div>
 </div>
 </body></html>`
 
-  return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
+  const output = isClient
+    ? html.replace(/Internal working document[^<]*/g, 'Relatório preliminar — sujeito a revisão da nossa equipe')
+    : html
+  return new NextResponse(output, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })
 }
