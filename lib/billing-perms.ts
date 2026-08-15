@@ -1,9 +1,11 @@
 // lib/billing-perms.ts — quem pode o quê no financeiro
 //
-// Assistente: cria fatura, recebe pagamento, cancela — nunca apaga,
-//             e nunca vê totais de faturamento.
-// Gerente:    tudo acima + apagar fatura.
-// Sócio:      tudo, incluindo os números do negócio.
+// Assistente: SOMENTE emite estimate e invoice. Não recebe, não cancela,
+//             não duplica, não dá desconto e não vê relatórios.
+//             (Separação de funções: quem emite não dá baixa no pagamento.)
+// Gerente:    emite, recebe pagamento, duplica fatura emitida, cancela,
+//             apaga e concede desconto — mas NUNCA acessa relatórios.
+// Sócio:      tudo, incluindo relatórios e totais do negócio.
 //
 // A checagem é sempre no SERVIDOR. Esconder botão na tela não é controle
 // de acesso: sem isto, bastaria chamar a rota direto.
@@ -12,12 +14,14 @@ import { getStaffLevel, type StaffLevel } from '@/lib/staff-perms'
 
 export interface PermissoesFinanceiro {
   nivel: StaffLevel
-  criar: boolean
-  receber: boolean
+  criar: boolean          // emitir estimate/invoice
+  receber: boolean        // dar baixa em pagamento
+  duplicar: boolean       // copiar uma fatura já emitida
   cancelar: boolean
   apagar: boolean
-  verTotais: boolean
-  darDesconto: boolean   // sem PIN
+  darDesconto: boolean
+  verRelatorios: boolean  // relatórios de faturamento
+  verTotais: boolean      // números consolidados do negócio
 }
 
 export async function permissoesFinanceiro(userId: string): Promise<PermissoesFinanceiro> {
@@ -25,12 +29,16 @@ export async function permissoesFinanceiro(userId: string): Promise<PermissoesFi
   const senior = nivel === 'owner' || nivel === 'manager'
   return {
     nivel,
-    criar: true,
-    receber: true,
-    cancelar: true,
+    criar: true,             // todos emitem
+    receber: senior,         // baixa de pagamento: gerente ou sócio
+    duplicar: senior,
+    cancelar: senior,
     apagar: senior,
-    verTotais: nivel === 'owner',
+    // Desconto: só gerente ou sócio. Diferente dos orçamentos, aqui NÃO existe
+    // liberação por PIN — assistente não concede desconto de forma alguma.
     darDesconto: senior,
+    verRelatorios: nivel === 'owner',
+    verTotais: nivel === 'owner',
   }
 }
 
@@ -38,5 +46,9 @@ export async function permissoesFinanceiro(userId: string): Promise<PermissoesFi
 export const RECUSA = {
   apagar: 'Apagar fatura é permitido apenas a sócio ou gerente. Cancele a fatura — ela continua no histórico.',
   totais: 'Os totais de faturamento são visíveis apenas ao sócio.',
-  desconto: 'Desconto exige aprovação de um gerente (PIN).',
+  relatorios: 'Relatórios de faturamento são exclusivos do sócio.',
+  receber: 'Dar baixa em pagamento é permitido a gerente ou sócio.',
+  duplicar: 'Duplicar fatura emitida é permitido a gerente ou sócio.',
+  cancelar: 'Cancelar fatura é permitido a gerente ou sócio.',
+  desconto: 'Desconto só pode ser concedido por gerente ou sócio.',
 }
