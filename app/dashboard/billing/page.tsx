@@ -46,6 +46,7 @@ export default function BillingPage() {
   const [filtroDoc, setFiltroDoc] = useState('')
   const [filtroStatus, setFiltroStatus] = useState('')
   const [busca, setBusca] = useState('')
+  const [soAbertas, setSoAbertas] = useState(false)
 
   // formulário
   const [abrirNovo, setAbrirNovo] = useState(false)
@@ -147,8 +148,9 @@ export default function BillingPage() {
   })
 
   const q = busca.trim().toLowerCase()
-  const lista: Inv[] = (dados.invoices || []).filter((i: Inv) =>
-    !q || i.number.toLowerCase().includes(q) || i.cliente.toLowerCase().includes(q))
+  const lista: Inv[] = (dados.invoices || [])
+    .filter((i: Inv) => !q || i.number.toLowerCase().includes(q) || i.cliente.toLowerCase().includes(q))
+    .filter((i: Inv) => !soAbertas || (Number(i.saldo) > 0 && !['void', 'draft'].includes(i.status)))
 
   return (
     <div>
@@ -173,6 +175,45 @@ export default function BillingPage() {
         </div>
       )}
 
+      {/* Fluxo do faturamento — estilo QuickBooks Desktop */}
+      <section style={{ ...card, padding: '20px 22px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+          {[
+            { id: 'estimate', rotulo: 'Orçamento', desc: 'Proposta ao cliente', cor: '#0A6A8A',
+              icone: <><path d="M14 3v5h5" /><path d="M19 8v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7z" /><path d="M9 13h6M9 17h4" /></>,
+              onClick: () => { setFTipo('estimate'); setAbrirNovo(true) } },
+            { id: 'invoice', rotulo: 'Fatura', desc: 'Emitir cobrança', cor: '#2D3278',
+              icone: <><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z" /><path d="M9 8h6M9 12h6" /></>,
+              onClick: () => { setFTipo('invoice'); setAbrirNovo(true) } },
+            { id: 'receive', rotulo: 'Receber', desc: 'Dar baixa em pagamento', cor: '#1A6B4A',
+              icone: <><circle cx="12" cy="12" r="9" /><path d="M12 7v10M9.5 9.5c0-1 1-1.5 2.5-1.5s2.5.6 2.5 1.6c0 2.2-5 1.4-5 3.8 0 1 1 1.6 2.5 1.6s2.5-.5 2.5-1.5" /></>,
+              onClick: () => { setSoAbertas(true); setFiltroDoc('invoice'); setAbrirNovo(false) } },
+            { id: 'reports', rotulo: 'Relatórios', desc: 'Faturamento e recebimentos', cor: '#5A1A8A',
+              somenteSocio: true,
+              icone: <><path d="M3 3v18h18" /><path d="M7 15v3M12 10v8M17 6v12" /></>,
+              onClick: () => setMsg('Relatórios de faturamento entram na próxima etapa.') },
+          ].filter(b => !b.somenteSocio || perms?.verRelatorios).map((b, idx, arr) => (
+            <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button onClick={b.onClick}
+                style={{ background: '#fff', border: '1.5px solid #E2E8F4', borderRadius: 12,
+                  padding: '14px 16px', minWidth: 132, cursor: 'pointer', textAlign: 'center' as const }}>
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke={b.cor}
+                  strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ display: 'block', margin: '0 auto 8px' }}>
+                  {b.icone}
+                </svg>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: '#0F2340' }}>{b.rotulo}</div>
+                <div style={{ fontSize: 11.5, color: '#6A7A9A', marginTop: 2 }}>{b.desc}</div>
+              </button>
+              {idx < arr.length - 1 && (
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#B8C4D8" strokeWidth="2"
+                  strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h13M13 6l6 6-6 6" /></svg>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
       <div style={{ ...card, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar número ou cliente"
           style={{ ...inp, flex: '1 1 220px' }} />
@@ -185,6 +226,12 @@ export default function BillingPage() {
           <option value="">Todas as situações</option>
           {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.rotulo}</option>)}
         </select>
+        {soAbertas && (
+          <button onClick={() => setSoAbertas(false)}
+            style={{ ...btn('#1A6B4A'), fontSize: 13 }}>
+            Só em aberto ✕
+          </button>
+        )}
         <button onClick={() => setAbrirNovo(v => !v)} style={btn('#2D3278')}>
           {abrirNovo ? 'Fechar' : '➕ Novo documento'}
         </button>
