@@ -107,6 +107,38 @@ export async function POST(req: NextRequest) {
   const { error: itErr } = await db.from('invoice_items').insert(linhas)
   if (itErr) return NextResponse.json({ error: itErr.message }, { status: 500 })
 
+  // ── Parcelamento: gera o cronograma ──
+  let parcelas = 0
+  if (b.paymentPlan === 'installments') {
+    const n = Math.max(2, Math.min(36, Number(b.installments) || 0))
+    if (!b.firstDueDate) {
+      return NextResponse.json({ error: 'Informe o vencimento da primeira parcela.' }, { status: 400 })
+    }
+    if (!['card', 'ach'].includes(String(b.expectedMethod || ''))) {
+      return NextResponse.json({
+        error: 'Parcelamento exige cartão ou débito em conta (ACH). Dinheiro, Zelle e Venmo são à vista.',
+      }, { status: 400 })
+    }
+
+    const base = Math.floor((total / n) * 100) / 100
+    const linhas: any[] = []
+    for (let i = 0; i < n; i++) {
+      const d = new Date(`${b.firstDueDate}T12:00:00Z`)
+      d.setMonth(d.getMonth() + i)
+      linhas.push({
+        invoice_id: inv.id,
+        seq: i + 1,
+        due_date: d.toISOString().slice(0, 10),
+        // a última parcela absorve o centavo da divisão
+        amount: i === n - 1 ? round2(total - base * (n - 1)) : base,
+      })
+    }
+    const { error: pErr } = await db.from('invoice_installments').insert(linhas)
+    if (pErr) return NextResponse.json({ error: `Parcelas: ${pErr.message}` }, { status: 500 })
+    parcelas = n
+    await db.from('invoices').update({ due_date: linhas[0].due_date }).eq('id', inv.id)
+  }
+
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'created', performed_by: auth.userId,
     staff_level: perms.nivel, next: { number: inv.number, total },
@@ -114,7 +146,8 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true, id: inv.id, number: inv.number,
-    message: `${docType === 'estimate' ? 'Orçamento' : 'Fatura'} ${inv.number} criado como rascunho.`,
+    message: `${docType === 'estimate' ? 'Orçamento' : 'Fatura'} ${inv.number} criado como rascunho`
+      + (parcelas ? ` · ${parcelas} parcelas geradas` : '') + '.',
   })
 }
 

@@ -38,6 +38,19 @@ const dataUS = (d: string | null) => {
   return `${m}/${dia}/${y}`
 }
 
+
+// A resposta pode não ser JSON (rota ausente, build em andamento, erro 500).
+// Ler como texto primeiro evita o erro críptico "Unexpected token '<'".
+async function jsonSeguro(resp: Response) {
+  const bruto = await resp.text()
+  try { return JSON.parse(bruto) } catch {
+    if (resp.status === 404) {
+      return { error: 'Rota /api/billing não encontrada. O deploy ainda não terminou, ou os arquivos da API não subiram.' }
+    }
+    return { error: `O servidor respondeu ${resp.status} sem dados. Verifique o build no Vercel.` }
+  }
+}
+
 export default function BillingPage() {
   const [dados, setDados] = useState<any>({ invoices: [], clients: [], services: [], perms: null })
   const [loading, setLoading] = useState(true)
@@ -47,6 +60,14 @@ export default function BillingPage() {
   const [filtroStatus, setFiltroStatus] = useState('')
   const [busca, setBusca] = useState('')
   const [soAbertas, setSoAbertas] = useState(false)
+  const [aba, setAba] = useState<'docs' | 'contratos'>('docs')
+  const [fParcelas, setFParcelas] = useState('3')
+  const [fPrimeiroVenc, setFPrimeiroVenc] = useState('')
+  // contratos recorrentes
+  const [planos, setPlanos] = useState<any[]>([])
+  const [cCliente, setCCliente] = useState(''); const [cDesc, setCDesc] = useState('')
+  const [cValor, setCValor] = useState(''); const [cDia, setCDia] = useState('5')
+  const [cAuto, setCAuto] = useState(false)
 
   // formulário
   const [abrirNovo, setAbrirNovo] = useState(false)
@@ -73,13 +94,60 @@ export default function BillingPage() {
       const qs = new URLSearchParams()
       if (filtroDoc) qs.set('doc', filtroDoc)
       if (filtroStatus) qs.set('status', filtroStatus)
-      const d = await fetch(`/api/billing/invoices?${qs}`).then(r => r.json())
+      const d = await jsonSeguro(await fetch(`/api/billing/invoices?${qs}`))
       if (d?.invoices) setDados(d)
       else setMsg(`⚠️ ${d?.error || 'Não foi possível carregar.'}`)
     } catch (e) { setMsg(`⚠️ ${(e as Error).message}`) }
     setLoading(false)
   }
+  const loadPlanos = async () => {
+    const d = await jsonSeguro(await fetch('/api/billing/recurring'))
+    if (d?.plans) setPlanos(d.plans)
+    else if (d?.error) setMsg(`⚠️ ${d.error}`)
+  }
   useEffect(() => { load() }, [filtroDoc, filtroStatus])
+  useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
+
+  const criarContrato = async () => {
+    if (!cCliente || !cDesc.trim() || !Number(cValor)) { setMsg('⚠️ Preencha cliente, descrição e valor.'); return }
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/recurring', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId: cCliente, description: cDesc, amount: Number(cValor),
+        interval: 'monthly', dayOfMonth: Number(cDia), autoCharge: cAuto,
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`); setCDesc(''); setCValor(''); loadPlanos()
+  }
+
+  const alternarContrato = async (pl: any) => {
+    const d = await fetch('/api/billing/recurring', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: pl.id, active: !pl.active }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`); loadPlanos()
+  }
+
+  // Prévia das parcelas, calculada na tela antes de gravar
+  const previaParcelas = () => {
+    const n = Math.max(2, Math.min(36, Number(fParcelas) || 0))
+    const totalDoc = itens.reduce((s2, i) => s2 + (i.qty || 1) * (i.unitPrice || 0), 0) - (Number(fDesconto) || 0)
+    if (!fPrimeiroVenc || totalDoc <= 0) return []
+    const base = Math.floor((totalDoc / n) * 100) / 100
+    return Array.from({ length: n }, (_, i) => {
+      const d = new Date(`${fPrimeiroVenc}T12:00:00Z`)
+      d.setMonth(d.getMonth() + i)
+      return {
+        seq: i + 1,
+        data: d.toISOString().slice(0, 10),
+        valor: i === n - 1 ? Math.round((totalDoc - base * (n - 1)) * 100) / 100 : base,
+      }
+    })
+  }
 
   const criar = async () => {
     if (!fCliente) { setMsg('⚠️ Escolha o cliente.'); return }
@@ -90,8 +158,9 @@ export default function BillingPage() {
         clientId: fCliente, docType: fTipo, dueDate: fVenc || null,
         paymentPlan: fPlano, expectedMethod: fForma || null,
         discount: Number(fDesconto) || 0, notes: fNotas, items: itens,
+        installments: Number(fParcelas) || 0, firstDueDate: fPrimeiroVenc || null,
       }),
-    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
@@ -106,7 +175,7 @@ export default function BillingPage() {
     const d = await fetch('/api/billing/invoices', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: inv.id, action }),
-    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`); load()
@@ -116,7 +185,7 @@ export default function BillingPage() {
     if (!confirm(`Apagar ${inv.number} definitivamente?\n\nSe quiser manter no histórico, use Cancelar.`)) return
     setBusy(true); setMsg('')
     const d = await fetch(`/api/billing/invoices?id=${inv.id}`, { method: 'DELETE' })
-      .then(r => r.json()).catch(e => ({ error: String(e) }))
+      .then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`); load()
@@ -130,7 +199,7 @@ export default function BillingPage() {
       body: JSON.stringify({
         invoiceId: receber.id, amount: Number(rValor), method: rForma, reference: rRef,
       }),
-    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
@@ -214,6 +283,18 @@ export default function BillingPage() {
         </div>
       </section>
 
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #E2E8F4' }}>
+        {([['docs', 'Orçamentos e faturas'], ['contratos', 'Contratos recorrentes']] as const).map(([k, r]) => (
+          <button key={k} onClick={() => setAba(k)}
+            style={{ background: 'none', border: 'none', borderBottom: aba === k ? '3px solid #2D3278' : '3px solid transparent',
+              padding: '10px 16px', fontSize: 14.5, fontWeight: 700, cursor: 'pointer',
+              color: aba === k ? '#0F2340' : '#6A7A9A' }}>
+            {r}
+          </button>
+        ))}
+      </div>
+
+      {aba === 'docs' && (<>
       <div style={{ ...card, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar número ou cliente"
           style={{ ...inp, flex: '1 1 220px' }} />
@@ -263,6 +344,39 @@ export default function BillingPage() {
               {FORMAS.map(([k, r]) => <option key={k} value={k}>{r}</option>)}
             </select>
           </div>
+
+          {fPlano === 'installments' && (
+            <div style={{ background:'#F8FAFC', border:'1px solid #E2E8F4', borderRadius:12, padding:'14px 16px', marginBottom:12 }}>
+              <div style={{ fontSize:12.5, fontWeight:800, color:'#2D3278', marginBottom:8 }}>
+                PARCELAMENTO
+              </div>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginBottom:10 }}>
+                <label style={{ fontSize:13.5, color:'#4A5A70' }}>
+                  Parcelas{' '}
+                  <input type="number" min={2} max={36} value={fParcelas}
+                    onChange={e => setFParcelas(e.target.value)} style={{ ...inp, width:90 }} />
+                </label>
+                <label style={{ fontSize:13.5, color:'#4A5A70' }}>
+                  1º vencimento{' '}
+                  <input type="date" value={fPrimeiroVenc}
+                    onChange={e => setFPrimeiroVenc(e.target.value)} style={inp} />
+                </label>
+                <span style={{ fontSize:12.5, color:'#6A7A9A' }}>
+                  mensais · exige cartão ou ACH
+                </span>
+              </div>
+              {previaParcelas().length > 0 && (
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                  {previaParcelas().map(pp => (
+                    <span key={pp.seq} style={{ fontSize:12.5, background:'#fff', border:'1px solid #E2E8F4',
+                      borderRadius:8, padding:'5px 10px', fontVariantNumeric:'tabular-nums' as const }}>
+                      {pp.seq}ª · {dataUS(pp.data)} · {money(pp.valor)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {itens.map((it, idx) => (
             <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -359,6 +473,84 @@ export default function BillingPage() {
             </table>
           )}
         </div>
+      )}
+
+      </>)}
+
+      {aba === 'contratos' && (
+        <>
+          {perms?.receber && (
+            <section style={card}>
+              <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+                Novo contrato
+              </h2>
+              <p style={{ fontSize: 13, color: '#6A7A9A', margin: '0 0 12px' }}>
+                Gera fatura sozinho no dia escolhido. Cobrança automática exige cartão ou ACH
+                autorizado pelo cliente — sem isso, a fatura é emitida e a baixa é manual.
+              </p>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select value={cCliente} onChange={e => setCCliente(e.target.value)} style={{ ...inp, flex: '2 1 220px', cursor: 'pointer' }}>
+                  <option value="">— cliente —</option>
+                  {(dados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                </select>
+                <input value={cDesc} onChange={e => setCDesc(e.target.value)} placeholder="Ex.: Bookkeeping mensal"
+                  style={{ ...inp, flex: '2 1 200px' }} />
+                <input type="number" step="0.01" value={cValor} onChange={e => setCValor(e.target.value)}
+                  placeholder="Valor" style={{ ...inp, width: 120 }} />
+                <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
+                  Dia{' '}
+                  <input type="number" min={1} max={28} value={cDia} onChange={e => setCDia(e.target.value)}
+                    style={{ ...inp, width: 80 }} />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5, color: '#4A5A70', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={cAuto} onChange={e => setCAuto(e.target.checked)} />
+                  Cobrar automaticamente
+                </label>
+                <button onClick={criarContrato} disabled={busy} style={btn('#1A6B4A', busy)}>Criar contrato</button>
+              </div>
+            </section>
+          )}
+
+          <div style={{ ...card, overflowX: 'auto' as const }}>
+            {planos.length === 0 ? (
+              <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>Nenhum contrato cadastrado.</p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 720 }}>
+                <thead><tr>
+                  {['Cliente', 'Serviço', 'Valor', 'Dia', 'Próxima', 'Cobrança', 'Situação', ''].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
+                      color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4', whiteSpace: 'nowrap' as const }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {planos.map((pl: any) => (
+                    <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA', opacity: pl.active ? 1 : 0.55 }}>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{pl.cliente}</td>
+                      <td style={{ padding: '10px', fontSize: 14 }}>{pl.description}</td>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>{money(pl.amount)}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5 }}>{pl.day_of_month}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>{dataUS(pl.next_run)}</td>
+                      <td style={{ padding: '10px', fontSize: 13 }}>
+                        {pl.auto_charge
+                          ? <span style={{ color: '#1A6B4A', fontWeight: 700 }}>automática</span>
+                          : <span style={{ color: '#6A7A9A' }}>manual</span>}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700,
+                        color: pl.active ? '#1A6B4A' : '#9AAAB0' }}>{pl.active ? 'ativo' : 'pausado'}</td>
+                      <td style={{ padding: '10px' }}>
+                        {perms?.receber && (
+                          <button onClick={() => alternarContrato(pl)} style={acaoBtn(pl.active ? '#C06010' : '#1A6B4A')}>
+                            {pl.active ? 'Pausar' : 'Reativar'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
       )}
 
       {receber && (
