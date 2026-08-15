@@ -180,10 +180,14 @@ export default function BillingPage() {
     setFVenc(d.invoice.due_date || ''); setFPlano(d.invoice.payment_plan)
     setFForma(d.invoice.expected_method || ''); setFDesconto(String(d.invoice.discount || 0))
     setFNotas(d.invoice.notes || '')
-    setItens((d.items || []).map((i: any) => ({
+    const linhasDoc = (d.items || []).map((i: any) => ({
       description: i.description, qty: Number(i.qty), unitPrice: Number(i.unit_price),
       serviceId: i.service_id || undefined,
-    })))
+    }))
+    setItens(linhasDoc.length ? linhasDoc : [{ description: '', qty: 1, unitPrice: 0 }])
+    if (linhasDoc.length === 0) {
+      setMsg('⚠️ Esta fatura ficou sem itens (falha na criação). Preencha os itens e salve para corrigi-la.')
+    }
     setEPass(''); setEMotivo(''); setAbrirNovo(true); setAba('docs')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }

@@ -130,7 +130,11 @@ export async function POST(req: NextRequest) {
     sort: idx,
   }))
   const { error: itErr } = await db.from('invoice_items').insert(linhas)
-  if (itErr) return NextResponse.json({ error: itErr.message }, { status: 500 })
+  if (itErr) {
+    // Sem itens a fatura não serve para nada: desfaz para não sobrar documento vazio
+    await db.from('invoices').delete().eq('id', inv.id)
+    return NextResponse.json({ error: `Itens: ${itErr.message}` }, { status: 500 })
+  }
 
   // ── Parcelamento: gera o cronograma ──
   let parcelas = 0
