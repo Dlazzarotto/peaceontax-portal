@@ -102,10 +102,13 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     return achados
   }
 
-  const finalDaConta = new Map<string, string>()
+  // TODOS os grupos de 4 dígitos do nome/apelido da conta — antes só o último
+  // era considerado, então nomes com outro número depois do final da conta
+  // (ano, sufixo) faziam o reconhecimento falhar.
+  const digitosDaConta = new Map<string, string[]>()
   for (const a of (contasCli || []) as any[]) {
     const digs = String(`${a.name || ''} ${a.account_hint || ''}`).match(/(\d{4})(?!\d)/g)
-    if (digs && digs.length) finalDaConta.set(a.id, digs[digs.length - 1])
+    if (digs && digs.length) digitosDaConta.set(a.id, Array.from(new Set(digs)))
   }
 
   const dias = (a: string, b: string) =>
@@ -116,6 +119,28 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     const k = Math.abs(Number(t.amount)).toFixed(2)
     if (!porValor.has(k)) porValor.set(k, [])
     porValor.get(k)!.push(t)
+  }
+
+
+  // Cartões costumam aparecer sem os 4 dígitos ("AMEX EPAYMENT ACH PMT").
+  // Então casamos também pelo NOME do cartão cadastrado (Amex, Applecard...).
+  const GENERICAS = new Set(['bank','america','american','credit','card','cards','visa','mastercard',
+    'platinum','rewards','unlimited','cash','plus','savings','checking','union','federal','business',
+    'gold','blue','preferred','signature','account','conta','cartao','cartão'])
+  const nomesDeCartao = new Map<string, string[]>()
+  for (const a of (contasCli || []) as any[]) {
+    if (!/credit|card|cart/.test(String(a.type || '').toLowerCase())) continue
+    const chaves = String(a.name || '').toLowerCase()
+      .replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+      .filter((w: string) => w.length >= 4 && !GENERICAS.has(w) && !/^\d+$/.test(w))
+    if (chaves.length) nomesDeCartao.set(a.id, chaves)
+  }
+  const cartaoCitado = (desc: string): string | null => {
+    const d = desc.toLowerCase()
+    const achados = Array.from(nomesDeCartao.entries())
+      .filter(([, chaves]) => chaves.some((k: string) =>
+        new RegExp('(^|[^a-z0-9])' + k + '([^a-z0-9]|$)', 'i').test(d)))
+    return achados.length === 1 ? achados[0][0] : null
   }
 
   const contasDeFora = new Set<string>()
@@ -131,20 +156,29 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   }
 
   for (const t of txs) {
-    if (jaTransferencia.has(t.id) || t.transfer_match_id || temRegra.has(t.id)) continue
+    if (jaTransferencia.has(t.id) || t.transfer_match_id) continue   // cartão/conta cadastrada vence a regra
     if (!sentidoTransferencia(String(t.description))) continue
     const tokens = quatroDigitos(String(t.description))
-    if (tokens.length === 0) continue
-    const alvos = (contasCli || []).filter((a: any) =>
-      a.id !== t.account_id && finalDaConta.get(a.id) && tokens.includes(finalDaConta.get(a.id)!))
-    if (alvos.length === 0) {
-      // Cita uma conta que NÃO é deste cliente: dinheiro de fora, não é
-      // movimentação interna. Fica para decisão manual (pode ser receita).
-      for (const d of tokens) contasDeFora.add(d)
-      continue
+    let conta: any = null
+
+    if (tokens.length === 0) {
+      // Sem os 4 dígitos: pagamento de cartão citando a bandeira/nome cadastrado
+      const idCartao = cartaoCitado(String(t.description))
+      if (!idCartao || idCartao === t.account_id) continue
+      conta = (contasCli || []).find((a: any) => a.id === idCartao)
+      if (!conta) continue
+    } else {
+      const alvos = (contasCli || []).filter((a: any) =>
+        a.id !== t.account_id &&
+        (digitosDaConta.get(a.id) || []).some((d: string) => tokens.includes(d)))
+      if (alvos.length === 0) {
+        // Cita uma conta que NÃO é deste cliente: não é movimentação interna.
+        for (const d of tokens) contasDeFora.add(d)
+        continue
+      }
+      if (alvos.length !== 1) continue
+      conta = alvos[0]
     }
-    if (alvos.length !== 1) continue
-    const conta: any = alvos[0]
 
     const ehCartao = /credit|card|cart/.test(
       String(tipoConta.get(t.account_id) || '') + ' ' + String(tipoConta.get(conta.id) || ''))
