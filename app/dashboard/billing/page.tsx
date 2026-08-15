@@ -234,6 +234,18 @@ export default function BillingPage() {
     setMsg(`✓ ${d.message}`); load()
   }
 
+  const cobrarCartao = async (inv: Inv) => {
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/stripe-checkout', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ invoiceId: inv.id }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message} A baixa entra sozinha quando o cliente pagar.`)
+    window.open(d.url, '_blank')
+  }
+
   const salvarRecebimento = async () => {
     if (!receber) return
     setBusy(true); setMsg('')
@@ -527,6 +539,10 @@ export default function BillingPage() {
                         )}
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => { setReceber(inv); setRValor(String(inv.saldo)) }} style={acaoBtn('#1A6B4A')}>Receber</button>
+                        )}
+                        {perms?.receber && inv.saldo > 0 && inv.doc_type === 'invoice'
+                          && inv.status !== 'void' && inv.status !== 'draft' && (
+                          <button onClick={() => cobrarCartao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>💳 Cartão</button>
                         )}
                         {perms?.editar && Number(inv.paid_total) === 0 && inv.status !== 'void' && (
                           <button onClick={() => abrirEdicao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>Editar</button>
