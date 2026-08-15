@@ -98,9 +98,19 @@ export async function POST(req: NextRequest) {
   }).select('id, number').single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  // O item guarda descrição e preço praticados. A referência ao catálogo é
+  // apenas informativa — se o id não existir mais, gravamos sem ela em vez
+  // de derrubar a fatura inteira por integridade referencial.
+  const idsPedidos = itens.map((i: any) => i.serviceId).filter(Boolean)
+  let idsValidos = new Set<string>()
+  if (idsPedidos.length) {
+    const { data: cat } = await db.from('pricing_items').select('id').in('id', idsPedidos)
+    idsValidos = new Set((cat || []).map((c: any) => c.id))
+  }
+
   const linhas = itens.map((i: any, idx: number) => ({
     invoice_id: inv.id,
-    service_id: i.serviceId || null,
+    service_id: i.serviceId && idsValidos.has(i.serviceId) ? i.serviceId : null,
     description: String(i.description).trim(),
     qty: Number(i.qty) || 1,
     unit_price: round2(i.unitPrice),
