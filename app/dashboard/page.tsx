@@ -1,5 +1,6 @@
 import { getUser } from '@/lib/supabase-server'
 import { createClient } from '@supabase/supabase-js'
+import { getStaffLevel } from '@/lib/staff-perms'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
@@ -58,6 +59,38 @@ export default async function DashboardPage() {
       .lt('starts_at', tmrwET.toISOString())
       .order('starts_at'),
   ])
+
+  // Financeiro: números do negócio são exclusivos do sócio
+  const nivel = await getStaffLevel(user.id)
+  const ehSocio = nivel === 'owner'
+  let fin: { aReceber: number; vencido: number; recebidoMes: number; abertas: number } | null = null
+
+  if (ehSocio) {
+    try {
+      const inicioMes = new Date(nowET.getFullYear(), nowET.getMonth(), 1).toISOString().slice(0, 10)
+      const [{ data: abertas }, { data: recebidos }] = await Promise.all([
+        sb.from('invoices')
+          .select('total, paid_total, due_date, status')
+          .eq('doc_type', 'invoice')
+          .in('status', ['sent', 'partial', 'overdue']),
+        sb.from('invoice_payments')
+          .select('amount, received_at')
+          .gte('received_at', inicioMes),
+      ])
+      const hoje = nowET.toISOString().slice(0, 10)
+      const saldo = (r: any) => Number(r.total || 0) - Number(r.paid_total || 0)
+      fin = {
+        aReceber: (abertas || []).reduce((acc: number, r: any) => acc + saldo(r), 0),
+        vencido: (abertas || []).filter((r: any) => r.due_date && r.due_date < hoje)
+          .reduce((acc: number, r: any) => acc + saldo(r), 0),
+        recebidoMes: (recebidos || []).reduce((acc: number, r: any) => acc + Number(r.amount || 0), 0),
+        abertas: (abertas || []).length,
+      }
+    } catch { fin = null }   // módulo ainda não instalado: simplesmente não aparece
+  }
+
+  const dinheiro = (v: number) =>
+    `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   const nome = user?.user_metadata?.full_name?.split(' ')[0] || ''
   const hora = nowET.getHours()
@@ -213,6 +246,35 @@ export default async function DashboardPage() {
           ))}
         </div>
       </section>
+
+      {/* Financeiro — visível apenas ao sócio */}
+      {fin && (
+        <section style={{ marginBottom: 22 }}>
+          <h2 style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: 1.2, textTransform: 'uppercase' as const, color: '#6A7A9A', margin: '0 0 10px' }}>
+            Financeiro
+          </h2>
+          <div className="dash-triagem">
+            {[
+              { rotulo: 'A receber', valor: dinheiro(fin.aReceber),
+                nota: `${fin.abertas} fatura(s) em aberto`, cor: '#2D3278' },
+              { rotulo: 'Vencido', valor: dinheiro(fin.vencido),
+                nota: 'cobrança em atraso', cor: fin.vencido > 0 ? '#B02020' : '#6A7A9A' },
+              { rotulo: 'Recebido no mês', valor: dinheiro(fin.recebidoMes),
+                nota: 'todas as formas de pagamento', cor: '#1A6B4A' },
+            ].map(c => (
+              <article key={c.rotulo} className="dash-card" style={{ padding: '18px 20px', borderLeft: `5px solid ${c.cor}` }}>
+                <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.8, textTransform: 'uppercase' as const, color: '#6A7A9A' }}>
+                  {c.rotulo}
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: c.cor, margin: '6px 0 2px', fontVariantNumeric: 'tabular-nums' as const }}>
+                  {c.valor}
+                </div>
+                <div style={{ fontSize: 13, color: '#6A7A9A' }}>{c.nota}</div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Listas — cadastros que valem para todos os clientes */}
       <section style={{ marginBottom: 22 }}>
