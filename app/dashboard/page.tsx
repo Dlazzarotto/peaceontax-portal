@@ -256,21 +256,26 @@ export default async function DashboardPage() {
           <div className="dash-triagem">
             {[
               { rotulo: 'A receber', valor: dinheiro(fin.aReceber),
-                nota: `${fin.abertas} fatura(s) em aberto`, cor: '#2D3278' },
+                nota: `${fin.abertas} fatura(s) em aberto`, cor: '#2D3278',
+                href: '/dashboard/billing' },
               { rotulo: 'Vencido', valor: dinheiro(fin.vencido),
-                nota: 'cobrança em atraso', cor: fin.vencido > 0 ? '#B02020' : '#6A7A9A' },
+                nota: 'cobrança em atraso', cor: fin.vencido > 0 ? '#B02020' : '#6A7A9A',
+                href: '/dashboard/billing' },
               { rotulo: 'Recebido no mês', valor: dinheiro(fin.recebidoMes),
-                nota: 'todas as formas de pagamento', cor: '#1A6B4A' },
+                nota: 'todas as formas de pagamento', cor: '#1A6B4A',
+                href: '/dashboard/billing' },
             ].map(c => (
-              <article key={c.rotulo} className="dash-card" style={{ padding: '18px 20px', borderLeft: `5px solid ${c.cor}` }}>
+              <Link key={c.rotulo} href={c.href} className="dash-link" style={{ textDecoration: 'none' }}>
+              <article className="dash-card" style={{ padding: '18px 20px', borderLeft: `5px solid ${c.cor}`, height: '100%' }}>
                 <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.8, textTransform: 'uppercase' as const, color: '#6A7A9A' }}>
                   {c.rotulo}
                 </div>
                 <div style={{ fontSize: 28, fontWeight: 800, color: c.cor, margin: '6px 0 2px', fontVariantNumeric: 'tabular-nums' as const }}>
                   {c.valor}
                 </div>
-                <div style={{ fontSize: 13, color: '#6A7A9A' }}>{c.nota}</div>
+                <div style={{ fontSize: 13, color: '#6A7A9A' }}>{c.nota} →</div>
               </article>
+              </Link>
             ))}
           </div>
         </section>
