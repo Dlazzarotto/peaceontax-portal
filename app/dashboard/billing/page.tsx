@@ -562,6 +562,11 @@ export default function BillingPage() {
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#1A6B4A')}>Receber</button>
                         )}
+                        {perms?.estornar && Number(inv.paid_total) > 0 && (
+                          <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#C06010')}>
+                            Pagamentos
+                          </button>
+                        )}
                         {perms?.receber && inv.saldo > 0 && inv.doc_type === 'invoice'
                           && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => cobrarCartao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>💳 Cartão</button>
@@ -682,12 +687,13 @@ export default function BillingPage() {
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.55)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
           <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 460, width: '100%' }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
-              Receber {receber.number}
+              {receber.saldo > 0 ? 'Receber' : 'Pagamentos de'} {receber.number}
             </h3>
             <p style={{ fontSize: 13.5, color: '#6A7A9A', margin: '0 0 14px' }}>
               {receber.cliente} · saldo {money(receber.saldo)}
             </p>
 
+            {receber.saldo > 0 && (<>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>Valor recebido</label>
             <input type="number" step="0.01" value={rValor} onChange={e => setRValor(e.target.value)}
               style={{ ...inp, width: '100%', marginBottom: 10, boxSizing: 'border-box' as const }} />
@@ -704,6 +710,13 @@ export default function BillingPage() {
             <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>Referência (Conf#, nº do cheque)</label>
             <input value={rRef} onChange={e => setRRef(e.target.value)}
               style={{ ...inp, width: '100%', marginBottom: 14, boxSizing: 'border-box' as const }} />
+            </>)}
+
+            {receber.saldo <= 0 && (
+              <p style={{ fontSize: 13.5, color: '#1A6B4A', fontWeight: 700, margin: '0 0 12px' }}>
+                Fatura quitada. Para reabri-la, estorne o pagamento abaixo.
+              </p>
+            )}
 
             {pagamentos.length > 0 && (
               <div style={{ borderTop: '1px solid #EEF1F6', paddingTop: 12, marginBottom: 12 }}>
@@ -735,8 +748,12 @@ export default function BillingPage() {
             )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setReceber(null)} style={btn('#6A7A9A')}>Cancelar</button>
-              <button onClick={salvarRecebimento} disabled={busy} style={btn('#1A6B4A', busy)}>Registrar</button>
+              <button onClick={() => setReceber(null)} style={btn('#6A7A9A')}>
+                {receber.saldo > 0 ? 'Cancelar' : 'Fechar'}
+              </button>
+              {receber.saldo > 0 && (
+                <button onClick={salvarRecebimento} disabled={busy} style={btn('#1A6B4A', busy)}>Registrar</button>
+              )}
             </div>
           </div>
         </div>
