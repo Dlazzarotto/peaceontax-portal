@@ -87,6 +87,8 @@ export default function BillingPage() {
   const [rValor, setRValor] = useState('')
   const [rForma, setRForma] = useState('zelle')
   const [rRef, setRRef] = useState('')
+  const [pagamentos, setPagamentos] = useState<any[]>([])
+  const [estPass, setEstPass] = useState(''); const [estMotivo, setEstMotivo] = useState('')
 
   const perms = dados.perms
 
@@ -232,6 +234,26 @@ export default function BillingPage() {
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`); load()
+  }
+
+  const abrirRecebimento = async (inv: Inv) => {
+    setReceber(inv); setRValor(String(inv.saldo)); setPagamentos([])
+    setEstPass(''); setEstMotivo('')
+    const d = await jsonSeguro(await fetch(`/api/billing/payments?invoiceId=${inv.id}`))
+    if (d?.payments) setPagamentos(d.payments)
+  }
+
+  const estornar = async (pg: any) => {
+    if (!confirm(`Estornar ${money(pg.amount)} (${pg.method})?\n\nA fatura volta a ficar em aberto.`)) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/payments', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'refund', paymentId: pg.id, password: estPass, reason: estMotivo }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setReceber(null); load()
   }
 
   const cobrarCartao = async (inv: Inv) => {
@@ -538,7 +560,7 @@ export default function BillingPage() {
                           <button onClick={() => acao(inv, 'send')} disabled={busy} style={acaoBtn('#2D3278')}>Enviar</button>
                         )}
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
-                          <button onClick={() => { setReceber(inv); setRValor(String(inv.saldo)) }} style={acaoBtn('#1A6B4A')}>Receber</button>
+                          <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#1A6B4A')}>Receber</button>
                         )}
                         {perms?.receber && inv.saldo > 0 && inv.doc_type === 'invoice'
                           && inv.status !== 'void' && inv.status !== 'draft' && (
@@ -675,15 +697,42 @@ export default function BillingPage() {
               style={{ ...inp, width: '100%', marginBottom: 10, cursor: 'pointer' }}>
               {FORMAS.map(([k, r]) => <option key={k} value={k}>{r}</option>)}
             </select>
-            {['zelle', 'venmo', 'cash'].includes(rForma) && (
-              <p style={{ fontSize: 12, color: '#C06010', margin: '0 0 10px', fontWeight: 700 }}>
-                Dinheiro, Zelle e Venmo são à vista: informe o valor integral do saldo.
-              </p>
-            )}
+            <p style={{ fontSize: 12, color: '#6A7A9A', margin: '0 0 10px' }}>
+              Pode receber em partes: o que faltar continua em aberto na fatura.
+            </p>
 
             <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>Referência (Conf#, nº do cheque)</label>
             <input value={rRef} onChange={e => setRRef(e.target.value)}
               style={{ ...inp, width: '100%', marginBottom: 14, boxSizing: 'border-box' as const }} />
+
+            {pagamentos.length > 0 && (
+              <div style={{ borderTop: '1px solid #EEF1F6', paddingTop: 12, marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 8 }}>
+                  JÁ RECEBIDO NESTA FATURA
+                </div>
+                {pagamentos.map(pg => (
+                  <div key={pg.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', fontSize: 13 }}>
+                    <span style={{ fontWeight: 700 }}>{money(pg.amount)}</span>
+                    <span style={{ color: '#6A7A9A' }}>{pg.method}{pg.reference ? ` · ${pg.reference}` : ''}</span>
+                    {perms?.estornar && (
+                      <button onClick={() => estornar(pg)} disabled={busy}
+                        style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#B02020',
+                          fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                        Estornar
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {perms?.senhaNaEdicao && (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <input value={estMotivo} onChange={e => setEstMotivo(e.target.value)}
+                      placeholder="Motivo do estorno" style={{ ...inp, flex: 1, fontSize: 13, borderColor: '#C06010' }} />
+                    <input type="password" value={estPass} onChange={e => setEstPass(e.target.value)}
+                      placeholder="Sua senha" style={{ ...inp, width: 130, fontSize: 13, borderColor: '#C06010' }} />
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={() => setReceber(null)} style={btn('#6A7A9A')}>Cancelar</button>
