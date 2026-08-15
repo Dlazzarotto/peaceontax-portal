@@ -39,6 +39,7 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
           ['Bookkeeping','/dashboard/bookkeeping'],
           ['Invitations','/invitations'],
           ['Agenda',     '/dashboard/agenda'],
+          ['Financeiro','/dashboard/billing'],
         ].map(([l,h]) => (
           <Link key={h} href={h} style={{ padding:'8px 12px', borderRadius:8, textDecoration:'none', fontSize:13, color:'rgba(255,255,255,0.7)' }}>{l}</Link>
         ))}
