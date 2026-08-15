@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   const [{ data: invoices, error }, { data: clients }, { data: services }] = await Promise.all([
     q,
     db.from('clients').select('id, business_name, name').eq('active', true).order('name'),
-    db.from('billing_services').select('id, name, unit_price, kind, interval').eq('active', true).order('name'),
+    db.from('pricing_items').select('id, code, label, amount, kind').eq('active', true).order('sort').order('label'),
   ])
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
@@ -50,7 +50,10 @@ export async function GET(req: NextRequest) {
       saldo: round2(Number(i.total) - Number(i.paid_total)),
     })),
     clients: (clients || []).map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
-    services: services || [],
+    // Catálogo de preços (tela Preços) — fonte única para os itens da fatura
+    services: (services || []).map((x: any) => ({
+      id: x.id, nome: x.label, preco: Number(x.amount) || 0, code: x.code, kind: x.kind,
+    })),
     perms,
   })
 }

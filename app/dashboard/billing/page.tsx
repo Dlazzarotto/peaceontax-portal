@@ -380,9 +380,22 @@ export default function BillingPage() {
 
           {itens.map((it, idx) => (
             <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-              <input value={it.description} placeholder="Descrição do serviço"
+              <select value={it.serviceId || ''}
+                onChange={e => {
+                  const sv = (dados.services || []).find((x: any) => x.id === e.target.value)
+                  setItens(a => a.map((x, i) => i === idx ? (sv
+                    ? { ...x, serviceId: sv.id, description: sv.nome, unitPrice: sv.preco }
+                    : { ...x, serviceId: undefined }) : x))
+                }}
+                style={{ ...inp, flex: '2 1 200px', cursor: 'pointer' }}>
+                <option value="">— serviço do catálogo —</option>
+                {(dados.services || []).map((sv: any) => (
+                  <option key={sv.id} value={sv.id}>{sv.nome} · {money(sv.preco)}</option>
+                ))}
+              </select>
+              <input value={it.description} placeholder="Descrição (ajuste se precisar)"
                 onChange={e => setItens(a => a.map((x, i) => i === idx ? { ...x, description: e.target.value } : x))}
-                style={{ ...inp, flex: '3 1 240px' }} />
+                style={{ ...inp, flex: '3 1 220px' }} />
               <input type="number" value={it.qty} min={1}
                 onChange={e => setItens(a => a.map((x, i) => i === idx ? { ...x, qty: Number(e.target.value) } : x))}
                 style={{ ...inp, width: 80 }} />
@@ -493,8 +506,18 @@ export default function BillingPage() {
                   <option value="">— cliente —</option>
                   {(dados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
                 </select>
-                <input value={cDesc} onChange={e => setCDesc(e.target.value)} placeholder="Ex.: Bookkeeping mensal"
-                  style={{ ...inp, flex: '2 1 200px' }} />
+                <select onChange={e => {
+                    const sv = (dados.services || []).find((x: any) => x.id === e.target.value)
+                    if (sv) { setCDesc(sv.nome); setCValor(String(sv.preco)) }
+                  }}
+                  style={{ ...inp, flex: '2 1 190px', cursor: 'pointer' }}>
+                  <option value="">— serviço do catálogo —</option>
+                  {(dados.services || []).map((sv: any) => (
+                    <option key={sv.id} value={sv.id}>{sv.nome} · {money(sv.preco)}</option>
+                  ))}
+                </select>
+                <input value={cDesc} onChange={e => setCDesc(e.target.value)} placeholder="Descrição"
+                  style={{ ...inp, flex: '2 1 170px' }} />
                 <input type="number" step="0.01" value={cValor} onChange={e => setCValor(e.target.value)}
                   placeholder="Valor" style={{ ...inp, width: 120 }} />
                 <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
