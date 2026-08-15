@@ -11,6 +11,7 @@
 //   sócio      → tudo + relatórios
 
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 
@@ -25,6 +26,17 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const db = serviceDb()
+
+  // Uma fatura específica, com itens — usado pela tela de edição
+  const umId = sp.get('id')
+  if (umId) {
+    const [{ data: doc }, { data: itens }] = await Promise.all([
+      db.from('invoices').select('*').eq('id', umId).single(),
+      db.from('invoice_items').select('*').eq('invoice_id', umId).order('sort'),
+    ])
+    if (!doc) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+    return NextResponse.json({ invoice: doc, items: itens || [], perms })
+  }
 
   let q = db.from('invoices')
     .select('id, client_id, doc_type, number, status, issue_date, due_date, total, paid_total, payment_plan, expected_method, financier, notes, clients(business_name, name)')
@@ -192,6 +204,95 @@ export async function PATCH(req: NextRequest) {
     await db.from('invoices').update({ status: 'void', updated_at: new Date().toISOString() }).eq('id', id)
     await db.from('invoice_audit').insert({ invoice_id: id, action: 'canceled', performed_by: auth.userId, staff_level: perms.nivel, previous: { status: inv.status } }).then(() => null, () => null)
     return NextResponse.json({ ok: true, message: `${inv.number} cancelado (permanece no histórico).` })
+  }
+
+  if (action === 'edit') {
+    if (!perms.editar) return NextResponse.json({ error: RECUSA.editar }, { status: 403 })
+    if (Number(inv.paid_total) > 0) {
+      return NextResponse.json({
+        error: 'Fatura com pagamento registrado não pode ser editada. Estorne o pagamento ou emita nota de ajuste.',
+      }, { status: 409 })
+    }
+    if (inv.status === 'void') {
+      return NextResponse.json({ error: 'Fatura cancelada não pode ser editada.' }, { status: 409 })
+    }
+
+    const b2 = (await req.clone().json()) as any
+    const motivo = String(b2.reason || '').trim()
+
+    // Gerente confirma com senha e justifica; sócio edita direto
+    if (perms.senhaNaEdicao) {
+      if (motivo.length < 5) {
+        return NextResponse.json({ error: 'Descreva o motivo da alteração (mínimo 5 caracteres).' }, { status: 400 })
+      }
+      if (!b2.password) return NextResponse.json({ error: 'Confirme com a sua senha.' }, { status: 400 })
+
+      const { data: quem } = await db.auth.admin.getUserById(auth.userId)
+      const email = quem?.user?.email
+      if (!email) return NextResponse.json({ error: 'Não foi possível identificar seu login.' }, { status: 400 })
+
+      const sbAuth = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+      )
+      const { error: pwErr } = await sbAuth.auth.signInWithPassword({
+        email, password: String(b2.password).trim(),
+      })
+      if (pwErr) {
+        const m = pwErr.message || ''
+        if (/rate|too many|429/i.test(m)) {
+          return NextResponse.json({ error: 'Muitas tentativas. Aguarde 1 minuto.' }, { status: 429 })
+        }
+        return NextResponse.json({ error: `Senha não confere para ${email}.` }, { status: 401 })
+      }
+    }
+
+    const itens2 = Array.isArray(b2.items)
+      ? b2.items.filter((i: any) => String(i.description || '').trim()) : []
+    if (itens2.length === 0) return NextResponse.json({ error: 'A fatura precisa de ao menos um item.' }, { status: 400 })
+
+    const desconto2 = perms.darDesconto ? round2(b2.discount) : Number(inv.discount)
+    const subtotal2 = round2(itens2.reduce((s2: number, i: any) =>
+      s2 + (Number(i.qty) || 1) * (Number(i.unitPrice) || 0), 0))
+    const total2 = round2(subtotal2 - desconto2)
+    if (total2 < 0) return NextResponse.json({ error: 'O desconto é maior que o valor dos itens.' }, { status: 400 })
+
+    const anterior = { total: Number(inv.total), discount: Number(inv.discount), due_date: inv.due_date, notes: inv.notes }
+
+    const { error: upErr } = await db.from('invoices').update({
+      due_date: b2.dueDate || null,
+      subtotal: subtotal2, discount: desconto2, total: total2,
+      expected_method: b2.expectedMethod || null,
+      notes: b2.notes ?? inv.notes,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 })
+
+    // Itens são reescritos: mais simples e sem risco de sobra
+    await db.from('invoice_items').delete().eq('invoice_id', id)
+    const idsPedidos2 = itens2.map((i: any) => i.serviceId).filter(Boolean)
+    let validos2 = new Set<string>()
+    if (idsPedidos2.length) {
+      const { data: cat } = await db.from('pricing_items').select('id').in('id', idsPedidos2)
+      validos2 = new Set((cat || []).map((c: any) => c.id))
+    }
+    await db.from('invoice_items').insert(itens2.map((i: any, idx: number) => ({
+      invoice_id: id,
+      service_id: i.serviceId && validos2.has(i.serviceId) ? i.serviceId : null,
+      description: String(i.description).trim(),
+      qty: Number(i.qty) || 1,
+      unit_price: round2(i.unitPrice),
+      amount: round2((Number(i.qty) || 1) * (Number(i.unitPrice) || 0)),
+      sort: idx,
+    })))
+
+    await db.from('invoice_audit').insert({
+      invoice_id: id, action: 'edited', performed_by: auth.userId,
+      staff_level: perms.nivel, reason: motivo || null,
+      previous: anterior, next: { total: total2, discount: desconto2, due_date: b2.dueDate || null },
+    }).then(() => null, () => null)
+
+    return NextResponse.json({ ok: true, message: `${inv.number} atualizada (${total2.toFixed(2)}).` })
   }
 
   if (action === 'duplicate') {

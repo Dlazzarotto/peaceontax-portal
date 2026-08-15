@@ -17,6 +17,8 @@ export interface PermissoesFinanceiro {
   criar: boolean          // emitir estimate/invoice
   receber: boolean        // dar baixa em pagamento
   duplicar: boolean       // copiar uma fatura já emitida
+  editar: boolean         // alterar uma fatura já criada
+  senhaNaEdicao: boolean  // gerente precisa confirmar com senha e motivo
   cancelar: boolean
   apagar: boolean
   darDesconto: boolean
@@ -32,6 +34,9 @@ export async function permissoesFinanceiro(userId: string): Promise<PermissoesFi
     criar: true,             // todos emitem
     receber: senior,         // baixa de pagamento: gerente ou sócio
     duplicar: senior,
+    editar: senior,
+    // Sócio edita direto; gerente confirma com senha e justifica a alteração
+    senhaNaEdicao: nivel === 'manager',
     cancelar: senior,
     apagar: senior,
     // Desconto: só gerente ou sócio. Diferente dos orçamentos, aqui NÃO existe
@@ -50,5 +55,6 @@ export const RECUSA = {
   receber: 'Dar baixa em pagamento é permitido a gerente ou sócio.',
   duplicar: 'Duplicar fatura emitida é permitido a gerente ou sócio.',
   cancelar: 'Cancelar fatura é permitido a gerente ou sócio.',
+  editar: 'Editar fatura é permitido a gerente ou sócio.',
   desconto: 'Desconto só pode ser concedido por gerente ou sócio.',
 }

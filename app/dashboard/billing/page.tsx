@@ -63,6 +63,8 @@ export default function BillingPage() {
   const [aba, setAba] = useState<'docs' | 'contratos'>('docs')
   const [fParcelas, setFParcelas] = useState('3')
   const [fPrimeiroVenc, setFPrimeiroVenc] = useState('')
+  const [editandoId, setEditandoId] = useState<string | null>(null)
+  const [ePass, setEPass] = useState(''); const [eMotivo, setEMotivo] = useState('')
   // contratos recorrentes
   const [planos, setPlanos] = useState<any[]>([])
   const [cCliente, setCCliente] = useState(''); const [cDesc, setCDesc] = useState('')
@@ -166,6 +168,43 @@ export default function BillingPage() {
     setMsg(`✓ ${d.message}`)
     setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }])
     setFVenc(''); setFNotas(''); setFDesconto('0')
+    load()
+  }
+
+  const abrirEdicao = async (inv: Inv) => {
+    setMsg('')
+    const d = await jsonSeguro(await fetch(`/api/billing/invoices?id=${inv.id}`))
+    if (!d?.invoice) { setMsg(`⚠️ ${d?.error || 'Não foi possível abrir a fatura.'}`); return }
+    setEditandoId(inv.id)
+    setFCliente(d.invoice.client_id); setFTipo(d.invoice.doc_type)
+    setFVenc(d.invoice.due_date || ''); setFPlano(d.invoice.payment_plan)
+    setFForma(d.invoice.expected_method || ''); setFDesconto(String(d.invoice.discount || 0))
+    setFNotas(d.invoice.notes || '')
+    setItens((d.items || []).map((i: any) => ({
+      description: i.description, qty: Number(i.qty), unitPrice: Number(i.unit_price),
+      serviceId: i.service_id || undefined,
+    })))
+    setEPass(''); setEMotivo(''); setAbrirNovo(true); setAba('docs')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const salvarEdicao = async () => {
+    if (!editandoId) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/invoices', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: editandoId, action: 'edit',
+        dueDate: fVenc || null, expectedMethod: fForma || null,
+        discount: Number(fDesconto) || 0, notes: fNotas, items: itens,
+        password: ePass, reason: eMotivo,
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setEditandoId(null); setAbrirNovo(false)
+    setItens([{ description: '', qty: 1, unitPrice: 0 }]); setEPass(''); setEMotivo('')
     load()
   }
 
@@ -321,7 +360,7 @@ export default function BillingPage() {
       {abrirNovo && (
         <section style={card}>
           <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 12px', fontWeight: 400 }}>
-            Novo documento
+            {editandoId ? 'Editar documento' : 'Novo documento'}
           </h2>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
             <select value={fCliente} onChange={e => setFCliente(e.target.value)} style={{ ...inp, flex: '2 1 240px', cursor: 'pointer' }}>
@@ -418,12 +457,29 @@ export default function BillingPage() {
                   onChange={e => setFDesconto(e.target.value)} style={{ ...inp, width: 110 }} />
               </label>
             )}
+            {editandoId && perms?.senhaNaEdicao && (
+              <>
+                <input value={eMotivo} onChange={e => setEMotivo(e.target.value)}
+                  placeholder="Motivo da alteração (obrigatório)"
+                  style={{ ...inp, flex: '2 1 220px', borderColor: '#C06010' }} />
+                <input type="password" value={ePass} onChange={e => setEPass(e.target.value)}
+                  placeholder="Sua senha" style={{ ...inp, width: 160, borderColor: '#C06010' }} />
+              </>
+            )}
             <input value={fNotas} onChange={e => setFNotas(e.target.value)} placeholder="Observações"
               style={{ ...inp, flex: '1 1 220px' }} />
             <span style={{ fontSize: 16, fontWeight: 800, color: '#0F2340' }}>
               {money(itens.reduce((s, i) => s + (i.qty || 1) * (i.unitPrice || 0), 0) - (Number(fDesconto) || 0))}
             </span>
-            <button onClick={criar} disabled={busy} style={btn('#1A6B4A', busy)}>Criar rascunho</button>
+            {editandoId ? (
+              <>
+                <button onClick={salvarEdicao} disabled={busy} style={btn('#1A6B4A', busy)}>Salvar alterações</button>
+                <button onClick={() => { setEditandoId(null); setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }]) }}
+                  style={btn('#6A7A9A')}>Cancelar edição</button>
+              </>
+            ) : (
+              <button onClick={criar} disabled={busy} style={btn('#1A6B4A', busy)}>Criar rascunho</button>
+            )}
           </div>
         </section>
       )}
@@ -467,6 +523,9 @@ export default function BillingPage() {
                         )}
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => { setReceber(inv); setRValor(String(inv.saldo)) }} style={acaoBtn('#1A6B4A')}>Receber</button>
+                        )}
+                        {perms?.editar && Number(inv.paid_total) === 0 && inv.status !== 'void' && (
+                          <button onClick={() => abrirEdicao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>Editar</button>
                         )}
                         {perms?.duplicar && (
                           <button onClick={() => acao(inv, 'duplicate')} disabled={busy} style={acaoBtn('#6A7A9A')}>Duplicar</button>
