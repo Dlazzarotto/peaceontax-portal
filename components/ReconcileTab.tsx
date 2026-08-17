@@ -30,6 +30,12 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [carregado, setCarregado] = useState(false)
+  // Lançamento que falta no extrato (como o register do QuickBooks)
+  const [novoAberto, setNovoAberto] = useState(false)
+  const [nData, setNData] = useState(''); const [nDesc, setNDesc] = useState('')
+  const [nValor, setNValor] = useState(''); const [nSentido, setNSentido] = useState('out')
+  const [nConta, setNConta] = useState(''); const [nPayee, setNPayee] = useState('')
+  const [categorias, setCategorias] = useState<{ name: string; kind: string }[]>([])
 
   // Ao trocar de conta: histórico e saldo inicial sugerido
   useEffect(() => {
@@ -49,6 +55,30 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
       })
       .catch(() => setMsg('Não foi possível carregar o histórico.'))
   }, [accountId, clientId])
+
+  useEffect(() => {
+    fetch('/api/bookkeeping/categories').then(r => r.json())
+      .then(d => setCategorias(d.categories || [])).catch(() => null)
+  }, [])
+
+  const incluirLancamento = async () => {
+    if (!nData || !nDesc.trim() || !Number(nValor) || !nConta) {
+      setMsg('⚠️ Preencha data, descrição, valor e conta contábil.'); return
+    }
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/bookkeeping/manual-entry', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId, accountId, date: nData, description: nDesc,
+        amount: Number(nValor), direction: nSentido, category: nConta, payee: nPayee,
+      }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}${d.aviso ? ` — ${d.aviso}` : ''}`)
+    setNDesc(''); setNValor(''); setNPayee(''); setNovoAberto(false)
+    carregar()   // recarrega a conciliação com o lançamento novo
+  }
 
   const carregar = async () => {
     if (!accountId || !statementDate) { setMsg('Escolha a conta e a data final do extrato.'); return }
@@ -201,6 +231,10 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
               </button>
               <button onClick={() => setCleared(new Set(txs.map(t => t.id)))} style={btn('#6a7a9a')}>Marcar todos</button>
               <button onClick={() => setCleared(new Set())} style={btn('#6a7a9a')}>Limpar marcações</button>
+              <button onClick={() => { setNovoAberto(v => !v); setNData(statementDate) }}
+                style={btn('#c06010')}>
+                {novoAberto ? 'Fechar' : '➕ Falta um lançamento'}
+              </button>
             </div>
 
             {pendentes > 0 && (
@@ -211,6 +245,36 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
               </p>
             )}
           </div>
+
+          {novoAberto && (
+            <div style={{ ...card, border:'1.5px solid #c06010' }}>
+              <div style={{ fontSize:13, fontWeight:800, color:'#c06010', marginBottom:4 }}>
+                ➕ Incluir lançamento que falta no extrato
+              </div>
+              <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px', lineHeight:1.5 }}>
+                Para o que aconteceu de verdade mas não veio no banco — cheque que não compensou,
+                dinheiro em espécie, ajuste. Entra direto no registro desta conta.
+              </p>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
+                <input type="date" value={nData} onChange={e => setNData(e.target.value)} style={inp} />
+                <input value={nDesc} onChange={e => setNDesc(e.target.value)} placeholder="Descrição"
+                  style={{ ...inp, flex:'2 1 200px' }} />
+                <select value={nSentido} onChange={e => setNSentido(e.target.value)} style={{ ...inp, cursor:'pointer' }}>
+                  <option value="out">Saída</option>
+                  <option value="in">Entrada</option>
+                </select>
+                <input type="number" step="0.01" value={nValor} onChange={e => setNValor(e.target.value)}
+                  placeholder="0.00" style={{ ...inp, width:120 }} />
+                <select value={nConta} onChange={e => setNConta(e.target.value)} style={{ ...inp, flex:'1 1 180px', cursor:'pointer' }}>
+                  <option value="">— conta contábil —</option>
+                  {categorias.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                </select>
+                <input value={nPayee} onChange={e => setNPayee(e.target.value)} placeholder="Payee (opcional)"
+                  style={{ ...inp, flex:'1 1 150px' }} />
+                <button onClick={incluirLancamento} disabled={busy} style={btn('#1a6b4a', busy)}>Incluir</button>
+              </div>
+            </div>
+          )}
 
           <div style={{ background:'#fff', borderRadius:14, border:'1px solid #e2e8f4', overflow:'hidden' }}>
             <table style={{ width:'100%', borderCollapse:'collapse' as const, fontSize:13 }}>
