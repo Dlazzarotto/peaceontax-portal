@@ -153,11 +153,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatRow, setNewCatRow] = useState<string | null>(null)   // id da transação com o form inline aberto
   // Lançamento manual (sócio/gerente, com senha)
   const [manualOpen, setManualOpen] = useState(false)
-  const [mData, setMData] = useState(new Date().toISOString().slice(0, 10))
-  const [mDesc, setMDesc] = useState(''); const [mValor, setMValor] = useState('')
-  const [mSentido, setMSentido] = useState('out'); const [mConta, setMConta] = useState('')
-  const [mBanco, setMBanco] = useState(''); const [mPayee, setMPayee] = useState('')
-  const [mSenha, setMSenha] = useState(''); const [mBusy, setMBusy] = useState(false)
+  const [manData, setManData] = useState(new Date().toISOString().slice(0, 10))
+  const [manDesc, setManDesc] = useState(''); const [manValor, setManValor] = useState('')
+  const [manSentido, setManSentido] = useState('out'); const [manConta, setManConta] = useState('')
+  const [manBanco, setManBanco] = useState(''); const [manPayee, setManPayee] = useState('')
+  const [manSenha, setManSenha] = useState(''); const [manBusy, setManBusy] = useState(false)
   // Edição de conta bancária (sócio/gerente, com senha e motivo)
   const [editAcc, setEditAcc] = useState<any | null>(null)
   const [eaName, setEaName] = useState(''); const [eaType, setEaType] = useState('checking')
@@ -224,7 +224,7 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   const csvPreviewFile = async (f: File) => {
     setCsvBusy(true); setMsg(''); setCsvPrev(null)
-    const fd = new FormData()
+    const fd = new FormanData()
     fd.append('file', f); fd.append('clientId', clientId); fd.append('preview', 'true')
     let r: any
     try {
@@ -240,7 +240,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const csvImport = async () => {
     if (!csvFile) return
     setCsvBusy(true); setMsg('')
-    const fd = new FormData()
+    const fd = new FormanData()
     fd.append('file', csvFile); fd.append('clientId', clientId); fd.append('preview', 'false')
     if (csvAcc) fd.append('accountId', csvAcc)
     else if (csvNewAcc.trim()) fd.append('accountName', csvNewAcc.trim())
@@ -398,29 +398,29 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const lancarManual = async () => {
-    if (!mBanco) { setMsg('Escolha a conta bancária.'); return }
-    if (!mData || !mDesc.trim() || !Number(mValor) || !mConta) {
+    if (!manBanco) { setMsg('Escolha a conta bancária.'); return }
+    if (!manData || !manDesc.trim() || !Number(manValor) || !manConta) {
       setMsg('Preencha data, descrição, valor e conta contábil.'); return
     }
-    if (!mSenha) { setMsg('Confirme com a sua senha.'); return }
-    setMBusy(true); setMsg('')
+    if (!manSenha) { setMsg('Confirme com a sua senha.'); return }
+    setManBusy(true); setMsg('')
     let d: any
     try {
       const resp = await fetch('/api/bookkeeping/manual-entry', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          clientId, accountId: mBanco, date: mData, description: mDesc,
-          amount: Number(mValor), direction: mSentido, category: mConta,
-          payee: mPayee, password: mSenha,
+          clientId, accountId: manBanco, date: manData, description: manDesc,
+          amount: Number(manValor), direction: manSentido, category: manConta,
+          payee: manPayee, password: manSenha,
         }),
       })
       const bruto = await resp.text()
       try { d = JSON.parse(bruto) } catch { d = { error: `servidor respondeu ${resp.status}` } }
     } catch (e) { d = { error: (e as Error).message } }
-    setMBusy(false)
+    setManBusy(false)
     if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
     setMsg(`✓ ${d.message}${d.aviso ? ` — ${d.aviso}` : ''}`)
-    setMDesc(''); setMValor(''); setMPayee(''); setMSenha(''); setManualOpen(false)
+    setManDesc(''); setManValor(''); setManPayee(''); setManSenha(''); setManualOpen(false)
     load()
   }
 
@@ -1657,32 +1657,32 @@ export default function BookkeepingTab({ clientId }: Props) {
             Permitido a sócio e gerente, com confirmação de senha.
           </p>
           <div style={{ display:'flex', gap:9, flexWrap:'wrap', alignItems:'center' }}>
-            <select value={mBanco} onChange={e => setMBanco(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
+            <select value={manBanco} onChange={e => setManBanco(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
               <option value="">— conta bancária —</option>
               {accounts.map(a2 => <option key={a2.id} value={a2.id}>{a2.name}</option>)}
             </select>
-            <input type="date" value={mData} onChange={e => setMData(e.target.value)}
+            <input type="date" value={manData} onChange={e => setManData(e.target.value)}
               style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none' }} />
-            <input value={mDesc} onChange={e => setMDesc(e.target.value)} placeholder="Descrição"
+            <input value={manDesc} onChange={e => setManDesc(e.target.value)} placeholder="Descrição"
               style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', flex:'2 1 200px' }} />
-            <select value={mSentido} onChange={e => setMSentido(e.target.value)} style={{ ...sel, cursor:'pointer' }}>
+            <select value={manSentido} onChange={e => setManSentido(e.target.value)} style={{ ...sel, cursor:'pointer' }}>
               <option value="out">Saída</option>
               <option value="in">Entrada</option>
             </select>
-            <input type="number" step="0.01" value={mValor} onChange={e => setMValor(e.target.value)}
+            <input type="number" step="0.01" value={manValor} onChange={e => setManValor(e.target.value)}
               placeholder="0.00"
               style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', width:120 }} />
-            <select value={mConta} onChange={e => setMConta(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
+            <select value={manConta} onChange={e => setManConta(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
               <option value="">— conta contábil —</option>
               {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
             </select>
-            <input value={mPayee} onChange={e => setMPayee(e.target.value)} placeholder="Payee (opcional)"
+            <input value={manPayee} onChange={e => setManPayee(e.target.value)} placeholder="Payee (opcional)"
               style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', flex:'1 1 140px' }} />
-            <input type="password" value={mSenha} onChange={e => setMSenha(e.target.value)} placeholder="Sua senha"
+            <input type="password" value={manSenha} onChange={e => setManSenha(e.target.value)} placeholder="Sua senha"
               onKeyDown={e => { if (e.key === 'Enter') lancarManual() }}
               style={{ padding:'9px 11px', border:'1.5px solid #c06010', borderRadius:9, fontSize:13.5, outline:'none', width:150 }} />
-            <button onClick={lancarManual} disabled={mBusy} style={btn('#1a6b4a', mBusy)}>
-              {mBusy ? 'Lançando…' : 'Lançar'}
+            <button onClick={lancarManual} disabled={manBusy} style={btn('#1a6b4a', manBusy)}>
+              {manBusy ? 'Lançando…' : 'Lançar'}
             </button>
             <button onClick={() => setManualOpen(false)} style={btn('#6a7a9a')}>Cancelar</button>
           </div>
