@@ -348,11 +348,16 @@ export default function PlansTab({ clientId, clientName }: Props) {
                       }} disabled={busy} style={outlineBtn('#2D3278')}>
                         ✏️ Editar
                       </button>
+                      <button onClick={() => window.open(`/api/signatures/contract?planId=${p.id}&preview=1`, '_blank')}
+                        style={{ padding:'7px 12px', background:'#fff', color:'#5A1A8A', border:'1.5px solid #5A1A8A',
+                          borderRadius:8, fontSize:12.5, fontWeight:700, cursor:'pointer', marginRight:6 }}>
+                        👁 Ver contrato
+                      </button>
                       <button onClick={() => sendContract(p.id)} disabled={busy} style={outlineBtn('#5a1a8a')}>
                         📝 Enviar contrato
                       </button>
                       <button onClick={() => genLink(p.id)} disabled={busy} style={btn('#F47B20', busy)}>
-                        {p.kind === 'installment' ? '💳 Link da entrada' : '💳 Link de assinatura'}
+                        {p.kind === 'installment' ? '💳 Link da entrada' : '💳 Link de pagamento'}
                       </button>
                     </>
                   )}
