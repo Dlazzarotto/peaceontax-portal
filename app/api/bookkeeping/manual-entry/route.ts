@@ -12,6 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { createClient } from '@supabase/supabase-js'
 import { getStaffLevel } from '@/lib/staff-perms'
 
 export const dynamic = 'force-dynamic'
@@ -30,6 +31,33 @@ export async function POST(req: NextRequest) {
 
   const b = await req.json()
   const { clientId, accountId, date, description, category, payee, memo } = b
+
+  // Lançamento manual entra direto no livro sem passar pelo banco:
+  // exige confirmação com a senha de quem está lançando.
+  if (!b.password) {
+    return NextResponse.json({ error: 'Confirme com a sua senha para lançar manualmente.' }, { status: 400 })
+  }
+  {
+    const dbAuth = serviceDb()
+    const { data: quem } = await dbAuth.auth.admin.getUserById(auth.userId)
+    const email = quem?.user?.email
+    if (!email) return NextResponse.json({ error: 'Não foi possível identificar seu login.' }, { status: 400 })
+
+    const sbAuth = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+    const { error: pwErr } = await sbAuth.auth.signInWithPassword({
+      email, password: String(b.password).trim(),
+    })
+    if (pwErr) {
+      const m = pwErr.message || ''
+      if (/rate|too many|429/i.test(m)) {
+        return NextResponse.json({ error: 'Muitas tentativas. Aguarde 1 minuto.' }, { status: 429 })
+      }
+      return NextResponse.json({ error: `Senha não confere para ${email}.` }, { status: 401 })
+    }
+  }
 
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })

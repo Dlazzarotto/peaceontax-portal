@@ -151,6 +151,13 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [newCatParent, setNewCatParent] = useState('')
   const [newCatIsSub, setNewCatIsSub] = useState(false)
   const [newCatRow, setNewCatRow] = useState<string | null>(null)   // id da transação com o form inline aberto
+  // Lançamento manual (sócio/gerente, com senha)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [mData, setMData] = useState(new Date().toISOString().slice(0, 10))
+  const [mDesc, setMDesc] = useState(''); const [mValor, setMValor] = useState('')
+  const [mSentido, setMSentido] = useState('out'); const [mConta, setMConta] = useState('')
+  const [mBanco, setMBanco] = useState(''); const [mPayee, setMPayee] = useState('')
+  const [mSenha, setMSenha] = useState(''); const [mBusy, setMBusy] = useState(false)
   // Edição de conta bancária (sócio/gerente, com senha e motivo)
   const [editAcc, setEditAcc] = useState<any | null>(null)
   const [eaName, setEaName] = useState(''); const [eaType, setEaType] = useState('checking')
@@ -173,6 +180,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [businessKind, setBusinessKind] = useState<'regular'|'nonprofit'>('regular')
   const [editRuleId, setEditRuleId] = useState<string|null>(null)
   const [ruleSearch, setRuleSearch] = useState('')
+  const [payeeSearch, setPayeeSearch] = useState('')
   // Importação de CSV do banco (bancos fora do Plaid)
   const [csvFile, setCsvFile]     = useState<File | null>(null)
   const [csvPrev, setCsvPrev]     = useState<any>(null)
@@ -200,7 +208,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     const arr = linesOf(v); arr.splice(i, 1); return arr.join('|')
   }
   const [rPayeeType, setRPayeeType] = useState('vendor')
-  const [payeeRegistry, setPayeeRegistry] = useState<{name:string; type:string}[]>([])
+  const [payeeRegistry, setPayeeRegistry] = useState<any[]>([])
 
   // Modal QuickBooks: aplicar só ao lançamento ou criar regra
   const [catDecision, setCatDecision] = useState<{ tx: Tx; category: string }|null>(null)
@@ -359,6 +367,60 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (!r?.ok) { setEaErr(r?.error || 'Não foi possível salvar.'); return }
     setMsg(`✓ ${r.message}`)
     setEditAcc(null); setEaPass(''); setEaReason(''); setEaMoveTo('')
+    load()
+  }
+
+  const payeeAcao = async (body: any, aviso: string) => {
+    setMsg('')
+    const d = await fetch('/api/bookkeeping/payees', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientId, ...body }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
+    setMsg(`✓ ${aviso}${d.message ? ` — ${d.message}` : ''}`)
+    loadPayees(); load()
+  }
+
+  const payeeApagar = async (p2: any) => {
+    const usos = p2.total || 0
+    if (usos > 0) {
+      if (!confirm(`"${p2.name}" está em ${usos} lançamento(s).\n\n`
+        + 'Apagar do cadastro E remover o nome dos lançamentos em aberto?\n'
+        + 'Os já aprovados mantêm o nome.')) return
+    } else if (!confirm(`Apagar "${p2.name}" do cadastro?`)) return
+
+    const url = `/api/bookkeeping/payees?clientId=${clientId}&name=${encodeURIComponent(p2.name)}`
+      + (usos > 0 ? '&limpar=1' : '')
+    const d = await fetch(url, { method: 'DELETE' }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    loadPayees(); load()
+  }
+
+  const lancarManual = async () => {
+    if (!mBanco) { setMsg('Escolha a conta bancária.'); return }
+    if (!mData || !mDesc.trim() || !Number(mValor) || !mConta) {
+      setMsg('Preencha data, descrição, valor e conta contábil.'); return
+    }
+    if (!mSenha) { setMsg('Confirme com a sua senha.'); return }
+    setMBusy(true); setMsg('')
+    let d: any
+    try {
+      const resp = await fetch('/api/bookkeeping/manual-entry', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientId, accountId: mBanco, date: mData, description: mDesc,
+          amount: Number(mValor), direction: mSentido, category: mConta,
+          payee: mPayee, password: mSenha,
+        }),
+      })
+      const bruto = await resp.text()
+      try { d = JSON.parse(bruto) } catch { d = { error: `servidor respondeu ${resp.status}` } }
+    } catch (e) { d = { error: (e as Error).message } }
+    setMBusy(false)
+    if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
+    setMsg(`✓ ${d.message}${d.aviso ? ` — ${d.aviso}` : ''}`)
+    setMDesc(''); setMValor(''); setMPayee(''); setMSenha(''); setManualOpen(false)
     load()
   }
 
@@ -1573,6 +1635,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         <button onClick={() => setNewCatOpen(o => !o)} style={btn('#6a7a9a')}>
           + Nova categoria
         </button>
+        <button onClick={() => setManualOpen(o => !o)} style={btn('#c06010')}>
+          ✍️ Inserir manualmente
+        </button>
         {plaidItems.length > 0 && (
           <button onClick={syncPlaid} disabled={plaidBusy} style={btn('#0a6a8a', plaidBusy)}>
             {plaidBusy ? 'Sincronizando…' : `🔄 Sincronizar Plaid (${plaidItems.length})`}
@@ -1580,6 +1645,49 @@ export default function BookkeepingTab({ clientId }: Props) {
         )}
 
       </div>
+
+      {manualOpen && (
+        <div style={{ background:'#fff', border:'1.5px solid #c06010', borderRadius:14, padding:'16px 18px', marginBottom:14 }}>
+          <div style={{ fontSize:13.5, fontWeight:800, color:'#c06010', marginBottom:4 }}>
+            ✍️ Inserir lançamento manualmente
+          </div>
+          <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px', lineHeight:1.5 }}>
+            Para o que existe de verdade mas não veio no extrato — cheque não compensado, dinheiro em
+            espécie, ajuste de conciliação. Entra <b>direto no registro</b>, marcado como manual.
+            Permitido a sócio e gerente, com confirmação de senha.
+          </p>
+          <div style={{ display:'flex', gap:9, flexWrap:'wrap', alignItems:'center' }}>
+            <select value={mBanco} onChange={e => setMBanco(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
+              <option value="">— conta bancária —</option>
+              {accounts.map(a2 => <option key={a2.id} value={a2.id}>{a2.name}</option>)}
+            </select>
+            <input type="date" value={mData} onChange={e => setMData(e.target.value)}
+              style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none' }} />
+            <input value={mDesc} onChange={e => setMDesc(e.target.value)} placeholder="Descrição"
+              style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', flex:'2 1 200px' }} />
+            <select value={mSentido} onChange={e => setMSentido(e.target.value)} style={{ ...sel, cursor:'pointer' }}>
+              <option value="out">Saída</option>
+              <option value="in">Entrada</option>
+            </select>
+            <input type="number" step="0.01" value={mValor} onChange={e => setMValor(e.target.value)}
+              placeholder="0.00"
+              style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', width:120 }} />
+            <select value={mConta} onChange={e => setMConta(e.target.value)} style={{ ...sel, minWidth:190, cursor:'pointer' }}>
+              <option value="">— conta contábil —</option>
+              {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+            </select>
+            <input value={mPayee} onChange={e => setMPayee(e.target.value)} placeholder="Payee (opcional)"
+              style={{ padding:'9px 11px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13.5, outline:'none', flex:'1 1 140px' }} />
+            <input type="password" value={mSenha} onChange={e => setMSenha(e.target.value)} placeholder="Sua senha"
+              onKeyDown={e => { if (e.key === 'Enter') lancarManual() }}
+              style={{ padding:'9px 11px', border:'1.5px solid #c06010', borderRadius:9, fontSize:13.5, outline:'none', width:150 }} />
+            <button onClick={lancarManual} disabled={mBusy} style={btn('#1a6b4a', mBusy)}>
+              {mBusy ? 'Lançando…' : 'Lançar'}
+            </button>
+            <button onClick={() => setManualOpen(false)} style={btn('#6a7a9a')}>Cancelar</button>
+          </div>
+        </div>
+      )}
 
       {/* Abas de revisão (Banking) / cabeçalho do Registro */}
       {view === 'register' && (
@@ -1825,39 +1933,96 @@ export default function BookkeepingTab({ clientId }: Props) {
       {/* View Payees */}
       {view === 'payees' && (
         <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>
-          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>🏪 Payees (Vendors & Customers)</h3>
-          <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px' }}>
-            Cadastro dos favorecidos deste cliente. O tipo define onde aparecem nos relatórios (Vendor = pagamentos · Customer = recebimentos).
+          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>
+            🏪 Fornecedores e clientes
+          </h3>
+          <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px', lineHeight:1.5 }}>
+            Troque a conta contábil de todos os lançamentos de um fornecedor de uma vez, renomeie ou apague.
+            Lançamentos já no registro não são alterados aqui — use a reclassificação com senha.
           </p>
+
+          <input value={payeeSearch} onChange={e => setPayeeSearch(e.target.value)}
+            placeholder="Buscar fornecedor"
+            style={{ width:'100%', maxWidth:320, padding:'9px 12px', border:'1.5px solid #e2e8f4',
+              borderRadius:9, fontSize:13.5, marginBottom:14, outline:'none' }} />
+
           {payeeRegistry.length === 0 ? (
-            <p style={{ fontSize:13, color:'#9aaab0' }}>Nenhum payee ainda — eles são criados nas regras, no modal de categorização ou na coluna Payee da tabela.</p>
+            <p style={{ fontSize:13, color:'#9aaab0' }}>
+              Nenhum fornecedor ainda — eles nascem quando você preenche a coluna Payee ou cria uma regra.
+            </p>
           ) : (
-            <table style={{ width:'100%', borderCollapse:'collapse' as const, maxWidth:560 }}>
+            <div style={{ overflowX:'auto' as const }}>
+            <table style={{ width:'100%', borderCollapse:'collapse' as const, minWidth:760 }}>
               <thead><tr>
-                {['Nome','Tipo'].map(h => <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4' }}>{h}</th>)}
+                {['Nome','Tipo','Lançamentos','Total','Conta contábil','']. map(h => (
+                  <th key={h} style={{ textAlign:'left', padding:'8px 10px', fontSize:11, fontWeight:700,
+                    color:'#6a7a9a', textTransform:'uppercase' as const, borderBottom:'1px solid #e2e8f4', whiteSpace:'nowrap' as const }}>{h}</th>
+                ))}
               </tr></thead>
               <tbody>
-                {payeeRegistry.map(p2 => (
+                {payeeRegistry
+                  .filter((p2: any) => !payeeSearch.trim() ||
+                    p2.name.toLowerCase().includes(payeeSearch.trim().toLowerCase()))
+                  .map((p2: any) => (
                   <tr key={p2.name} style={{ borderBottom:'1px solid #f0f4fa' }}>
-                    <td style={{ padding:'9px 10px', fontSize:13.5, fontWeight:600, color:'#0f2340' }}>{p2.name}</td>
+                    <td style={{ padding:'9px 10px', fontSize:13.5, fontWeight:600, color:'#0f2340' }}>
+                      {p2.name}
+                      {p2.contasDiferentes > 1 && (
+                        <div style={{ fontSize:10.5, color:'#c06010', fontWeight:700 }}>
+                          em {p2.contasDiferentes} contas diferentes
+                        </div>
+                      )}
+                    </td>
                     <td style={{ padding:'9px 10px' }}>
                       <select value={p2.type}
-                        onChange={async e => {
-                          await fetch('/api/bookkeeping/payees', {
-                            method:'POST', headers:{'content-type':'application/json'},
-                            body: JSON.stringify({ clientId, name: p2.name, type: e.target.value }),
-                          })
-                          loadPayees()
-                        }}
-                        style={{ padding:'6px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:12.5, fontWeight:700, outline:'none', cursor:'pointer' }}>
+                        onChange={e => payeeAcao({ name: p2.name, type: e.target.value }, 'Tipo atualizado')}
+                        style={{ padding:'5px 9px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:12, fontWeight:700, outline:'none', cursor:'pointer' }}>
                         <option value="vendor">🏪 Vendor</option>
                         <option value="customer">💰 Customer</option>
                       </select>
+                    </td>
+                    <td style={{ padding:'9px 10px', fontSize:13 }}>
+                      {p2.total ?? 0}
+                      {(p2.aprovados ?? 0) > 0 && (
+                        <span style={{ fontSize:10.5, color:'#6a7a9a' }}> ({p2.aprovados} no registro)</span>
+                      )}
+                    </td>
+                    <td style={{ padding:'9px 10px', fontSize:13, fontWeight:700, whiteSpace:'nowrap' as const,
+                      color: Number(p2.soma) < 0 ? '#b02020' : '#1a6b4a' }}>
+                      {Number(p2.soma) < 0 ? '−' : ''}${Math.abs(Number(p2.soma) || 0).toFixed(2)}
+                    </td>
+                    <td style={{ padding:'9px 10px' }}>
+                      <select value={p2.contaMaisUsada || ''}
+                        onChange={e => {
+                          if (!e.target.value) return
+                          if (!confirm(`Mover TODOS os lançamentos em aberto de "${p2.name}" para "${e.target.value}"?`)) return
+                          payeeAcao({ name: p2.name, category: e.target.value }, 'Conta aplicada')
+                        }}
+                        style={{ padding:'5px 9px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:12, outline:'none', cursor:'pointer', maxWidth:210 }}>
+                        <option value="">— sem conta —</option>
+                        {categories.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ padding:'9px 10px', whiteSpace:'nowrap' as const }}>
+                      <button onClick={() => {
+                          const novo = window.prompt('Novo nome do fornecedor:', p2.name)
+                          if (novo && novo.trim() && novo.trim() !== p2.name) {
+                            payeeAcao({ name: p2.name, newName: novo.trim() }, 'Fornecedor renomeado')
+                          }
+                        }}
+                        style={{ background:'none', border:'none', color:'#2D3278', fontSize:12.5, fontWeight:700, cursor:'pointer' }}>
+                        Renomear
+                      </button>
+                      <button onClick={() => payeeApagar(p2)}
+                        style={{ background:'none', border:'none', color:'#b02020', fontSize:12.5, fontWeight:700, cursor:'pointer', marginLeft:8 }}>
+                        Apagar
+                      </button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}
