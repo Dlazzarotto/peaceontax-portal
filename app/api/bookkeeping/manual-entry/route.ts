@@ -90,7 +90,9 @@ export async function POST(req: NextRequest) {
     .eq('tx_date', date).eq('amount', valor)
     .neq('status', 'excluded').limit(3)
 
-  const { data: nova, error } = await db.from('bank_transactions').insert({
+  // Grava tolerando colunas que este banco não tem (ex.: memo, approved_at).
+  // Em vez de falhar, remove o campo que o banco não reconhece e tenta de novo.
+  const base: Record<string, unknown> = {
     client_id: clientId,
     account_id: accountId,
     source: 'manual',
@@ -102,31 +104,27 @@ export async function POST(req: NextRequest) {
     categorized_by: 'staff',
     payee: payee ? String(payee).trim() : null,
     memo: memo ? String(memo).trim() : null,
-    status: 'approved',           // lançado à mão já faz parte do livro
-    approved_at: new Date().toISOString(),
-  }).select('id, tx_date, amount').single()
-
-  if (error) {
-    // memo pode não existir na tabela: repete sem ele antes de desistir
-    if (/memo/i.test(error.message)) {
-      const { data: n2, error: e2 } = await db.from('bank_transactions').insert({
-        client_id: clientId, account_id: accountId, source: 'manual',
-        tx_date: date, description: String(description).trim().slice(0, 500),
-        amount: valor, category: String(category).trim(),
-        category_confidence: 100, categorized_by: 'staff',
-        payee: payee ? String(payee).trim() : null, status: 'approved',
-      }).select('id, tx_date, amount').single()
-      if (e2) return NextResponse.json({ error: e2.message }, { status: 500 })
-      return NextResponse.json({
-        ok: true, id: n2.id,
-        aviso: (parecidas || []).length > 0
-          ? `Atenção: já existe ${(parecidas || []).length} lançamento(s) do mesmo valor nesta conta e data.`
-          : undefined,
-        message: `Lançamento de ${valor < 0 ? '−' : ''}$${Math.abs(valor).toFixed(2)} incluído no registro.`,
-      })
-    }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    status: 'approved',            // lançado à mão já faz parte do livro
   }
+
+  let nova: any = null
+  let ultimoErro = ''
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
+    const { data, error } = await db.from('bank_transactions')
+      .insert(base).select('id, tx_date, amount').single()
+    if (!data && error) {
+      ultimoErro = error.message
+      // "Could not find the 'x' column" / "column \"x\" does not exist"
+      const m = error.message.match(/["']([a-z_]+)["']\s*column/i)
+        || error.message.match(/column\s+["']?([a-z_]+)["']?/i)
+      const coluna = m?.[1]
+      if (coluna && coluna in base) { delete base[coluna]; continue }
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+    nova = data
+    break
+  }
+  if (!nova) return NextResponse.json({ error: ultimoErro || 'Não foi possível gravar o lançamento.' }, { status: 500 })
 
   return NextResponse.json({
     ok: true, id: nova.id,
