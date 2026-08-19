@@ -22,6 +22,12 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     business_type: client.business_type || '', industry: client.industry || '',
     business_kind: client.business_kind || 'regular',
   })
+  // Consentimento de SMS: separado dos demais campos, porque exige registro próprio
+  const [smsPhone, setSmsPhone] = useState(client.sms_phone || '')
+  const [smsConsent, setSmsConsent] = useState(!!client.sms_consent)
+  const consentOriginal = !!client.sms_consent
+  const [smsMotivo, setSmsMotivo] = useState('')
+
   const [saving, setSaving]   = useState(false)
   const [msg, setMsg]         = useState('')
 
@@ -42,10 +48,15 @@ export default function ProfileEditor({ client, onSaved }: Props) {
     setSaving(true); setMsg('')
     const r = await fetch('/api/clients/profile', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ clientId: client.id, fields: f }),
+      body: JSON.stringify({
+        clientId: client.id,
+        fields: { ...f, sms_phone: smsPhone },
+        // Só manda o consentimento quando mudou — evita reescrever a trilha à toa
+        ...(smsConsent !== consentOriginal ? { smsConsent, reason: smsMotivo } : {}),
+      }),
     })
     const d = await r.json()
-    setMsg(d.ok ? '✓ Dados atualizados.' : `Erro: ${d.error}`)
+    setMsg(d.ok ? `✓ Dados atualizados.${d.aviso ? ' ' + d.aviso : ''}` : `Erro: ${d.error}`)
     if (d.ok) onSaved()
     setSaving(false)
   }
@@ -250,6 +261,58 @@ export default function ProfileEditor({ client, onSaved }: Props) {
                 <option>Married Filing Separately</option>
                 <option>Head of Household</option>
               </select>
+            </div>
+          )}
+        </div>
+
+        {/* Consentimento de SMS — exigência do TCPA */}
+        <div style={{ marginTop:18, padding:'14px 16px', background:'#f8faff',
+          border:'1px solid #e2e8f4', borderRadius:12 }}>
+          <div style={{ fontSize:12.5, fontWeight:800, color:'#2D3278', marginBottom:8 }}>
+            📱 MENSAGENS DE TEXTO
+          </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:10 }}>
+            <div>
+              <label style={label}>Celular para SMS</label>
+              <input type="tel" value={smsPhone} onChange={e => setSmsPhone(e.target.value)}
+                placeholder="(857) 555-1234" style={input} />
+            </div>
+            <div style={{ fontSize:12, color:'#6a7a9a', alignSelf:'end', paddingBottom:4 }}>
+              {client.sms_consent && client.sms_consent_at
+                ? `Autorizado em ${new Date(client.sms_consent_at).toLocaleDateString('en-US')}`
+                + (client.sms_consent_source === 'portal' ? ' pelo próprio cliente' : ' pela equipe')
+                : client.sms_opted_out_at
+                  ? `Cancelou em ${new Date(client.sms_opted_out_at).toLocaleDateString('en-US')}`
+                  : 'Sem autorização registrada'}
+            </div>
+          </div>
+
+          <label style={{ display:'flex', gap:9, alignItems:'flex-start', cursor:'pointer', fontSize:13, lineHeight:1.5 }}>
+            <input type="checkbox" checked={smsConsent}
+              onChange={e => setSmsConsent(e.target.checked)}
+              style={{ marginTop:3, width:16, height:16, cursor:'pointer' }} />
+            <span style={{ color:'#3a4a5a' }}>
+              O cliente autoriza a Peace on Tax Corp a enviar mensagens de texto sobre seus
+              serviços contábeis e cobranças. Podem incidir taxas da operadora.
+              Responder STOP cancela a qualquer momento.
+            </span>
+          </label>
+
+          {smsConsent !== consentOriginal && (
+            <div style={{ marginTop:10 }}>
+              <label style={label}>
+                {smsConsent ? 'Como o cliente autorizou? *' : 'Motivo do cancelamento'}
+              </label>
+              <input value={smsMotivo} onChange={e => setSmsMotivo(e.target.value)}
+                placeholder={smsConsent
+                  ? 'Ex.: autorizou por telefone em 19/08, falei com o próprio titular'
+                  : 'Ex.: pediu para parar de receber'}
+                style={{ ...input, borderColor:'#c06010' }} />
+              <p style={{ fontSize:11.5, color:'#c06010', margin:'5px 0 0', lineHeight:1.45 }}>
+                Fica registrado com data, hora e o seu nome. A autorização mais forte é a que o
+                próprio cliente marca no portal dele.
+              </p>
             </div>
           )}
         </div>
