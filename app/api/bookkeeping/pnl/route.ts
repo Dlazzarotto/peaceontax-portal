@@ -151,6 +151,11 @@ export async function GET(req: NextRequest) {
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
+    .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;
+              padding-bottom:11px; margin-bottom:14px; }
+    .timbre img { height:42px; }
+    .timbre .marca { font-size:18px; font-weight:700; letter-spacing:0.3px; }
+    .timbre .contato { font-size:10px; line-height:1.45; }
   .sheet { max-width:760px; margin:0 auto; background:#fff; padding:40px 48px; }
   h1 { font-size:19px; font-weight:700; text-align:center; }
   h2 { font-size:15px; text-align:center; font-weight:400; margin:2px 0 2px; }
@@ -168,6 +173,14 @@ export async function GET(req: NextRequest) {
   a { color:#000; }
   @media print { body { padding:0; } .sheet { padding:0; } .printbtn { display:none; } }
 </style></head><body>
+  <div class="timbre">
+    <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
+    <div>
+      <div class="marca">Peace on Tax Corp</div>
+      <div class="contato">75 Pleasant St Suite 119, Malden, MA 02148<br>(833) 732-2327 &middot; info@peaceontax.com &middot; peaceontax.com</div>
+    </div>
+  </div>
+
 <button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
 <div class="sheet">
   <h1>${displayName}</h1>

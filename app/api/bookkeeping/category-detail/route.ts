@@ -119,6 +119,11 @@ export async function GET(req: NextRequest) {
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${category} — ${period}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
+    .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;
+              padding-bottom:11px; margin-bottom:14px; }
+    .timbre img { height:42px; }
+    .timbre .marca { font-size:18px; font-weight:700; letter-spacing:0.3px; }
+    .timbre .contato { font-size:10px; line-height:1.45; }
     h1 { font-size: 18px; font-weight: 700; margin-bottom: 2px; text-align: center; }
     h2 { font-size: 14px; margin: 2px 0 20px; font-weight: normal; text-align: center; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -132,6 +137,14 @@ export async function GET(req: NextRequest) {
     .footer { margin-top: 30px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
     @media print { body { margin: 14px auto; } }
   </style></head><body>
+  <div class="timbre">
+    <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
+    <div>
+      <div class="marca">Peace on Tax Corp</div>
+      <div class="contato">75 Pleasant St Suite 119, Malden, MA 02148<br>(833) 732-2327 &middot; info@peaceontax.com &middot; peaceontax.com</div>
+    </div>
+  </div>
+
   <div class="muted">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
   <h1>${displayName}</h1>
   <h2>Account detail: <b>${category}</b> — ${period} <span class="muted">(register only: approved entries)</span></h2>
