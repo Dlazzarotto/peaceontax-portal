@@ -14,7 +14,7 @@
 alter table wa_conversations add column if not exists canal text not null default 'whatsapp';
 alter table wa_messages      add column if not exists canal text not null default 'whatsapp';
 
-do $$ begin
+do $do$ begin
   if not exists (select 1 from pg_constraint where conname = 'wa_conversations_canal_chk') then
     alter table wa_conversations add constraint wa_conversations_canal_chk
       check (canal in ('whatsapp','sms'));
@@ -23,7 +23,7 @@ do $$ begin
     alter table wa_messages add constraint wa_messages_canal_chk
       check (canal in ('whatsapp','sms'));
   end if;
-end $$;
+end $do$;
 
 drop index if exists idx_wa_fone;
 create unique index if not exists idx_wa_fone_canal on wa_conversations (phone, canal);
@@ -51,7 +51,7 @@ create table if not exists wa_templates (
 -- ── 4. Casar telefone recebido com o cadastro do cliente ────
 -- Descobre sozinha qual é a coluna de telefone da tabela clients
 -- e compara pelos 10 últimos dígitos (ignora +1, parênteses e traço).
-do $$
+do $do$
 declare col text;
 begin
   select column_name into col
@@ -65,20 +65,21 @@ begin
   if col is null then
     raise notice 'Nenhuma coluna de telefone encontrada em clients — casamento automatico desativado.';
     execute 'create or replace function wa_client_por_telefone(p text) returns uuid
-             language sql stable as $f$ select null::uuid $f$';
+             language sql stable as $fn$ select null::uuid $fn$';
   else
     raise notice 'Casamento por telefone usando clients.%', col;
-    execute format($x$
+    execute format($fmt$
       create or replace function wa_client_por_telefone(p text) returns uuid
-      language sql stable as $f$
+      language sql stable as $fn$
         select c.id from clients c
-         where length(regexp_replace(coalesce(c.%I,''), '[^0-9]', '', 'g')) >= 10
-           and right(regexp_replace(coalesce(c.%I,''), '[^0-9]', '', 'g'), 10)
-             = right(regexp_replace(coalesce(p,''),  '[^0-9]', '', 'g'), 10)
+         where length(regexp_replace(coalesce(c.%I, ''), '[^0-9]', '', 'g')) >= 10
+           and right(regexp_replace(coalesce(c.%I, ''), '[^0-9]', '', 'g'), 10)
+             = right(regexp_replace(coalesce(p, ''),  '[^0-9]', '', 'g'), 10)
          limit 1
-      $f$$x$, col, col);
+      $fn$
+    $fmt$, col, col);
   end if;
-end $$;
+end $do$;
 
 -- ── 5. Onde ficam as fotos e PDFs recebidos ─────────────────
 -- O link que a Twilio manda exige autenticação e expira: se
