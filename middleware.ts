@@ -1,14 +1,15 @@
 ﻿import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
-const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar', '/privacy', '/terms', '/privacidade']
+const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar', '/privacy', '/terms', '/privacidade', '/staff-setup']
 
 // APIs pÃºblicas: sem sessÃ£o necessÃ¡ria
 const API_PUBLIC = [
   '/api/invite',
   '/api/agenda/slots',
   '/api/agenda/bookings',
-  '/api/stripe/webhook',   // Stripe chama diretamente â€” sem sessÃ£o de usuÃ¡rio
+  '/api/stripe/webhook',
+  '/api/firm/setup',   // Stripe chama diretamente â€” sem sessÃ£o de usuÃ¡rio
 ]
 
 const FIRM_ONLY   = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
@@ -67,4 +68,6 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 }
+
+
 
