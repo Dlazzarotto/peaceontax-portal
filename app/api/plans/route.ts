@@ -1,8 +1,10 @@
-// GET    /api/plans?clientId=...        — lista planos do cliente (equipe)
+// GET    /api/plans?clientId=...        — lista planos do cliente + catálogo de preços
 // POST   /api/plans                     — cria plano (SÓ manager/owner)
 //   Parcelamento: { clientId, kind:'installment', total, entryPct, frequency, installments, description }
-//   Bookkeeping:  { clientId, kind:'bookkeeping', monthlyAmount, description }
+//   Bookkeeping:  { clientId, kind:'bookkeeping', monthlyAmount, includedTransactions, dueDay?, description? }
+//   Outro mensal: { clientId, kind:'monthly', monthlyAmount, dueDay?, serviceId?, description }
 // DELETE /api/plans?id=...&reason=...   — cancela plano (manager/owner, motivo obrigatório)
+// PATCH  /api/plans                     — edita plano ainda não ativado
 
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
@@ -22,21 +24,22 @@ export async function GET(req: NextRequest) {
   const clientId = req.nextUrl.searchParams.get('clientId')
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
 
-  const { data, error } = await serviceDb()
-    .from('payment_plans')
-    .select('*')
-    .eq('client_id', clientId)
-    .order('created_at', { ascending: false })
-
+  const db0 = serviceDb()
+  const [{ data, error }, { data: catalogo }] = await Promise.all([
+    db0.from('payment_plans').select('*').eq('client_id', clientId)
+      .order('created_at', { ascending: false }),
+    db0.from('pricing_items').select('id, code, label, amount, kind')
+      .eq('active', true).order('sort').order('label'),
+  ])
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
   const level = await getStaffLevel(auth.userId)
-  return NextResponse.json({ plans: data || [], level })
+  return NextResponse.json({ plans: data || [], services: catalogo || [], level })
 }
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
-
   const level = await requireManagerOrOwner(auth.userId)
   if (!level) return NextResponse.json({ error: 'Somente manager/owner criam planos' }, { status: 403 })
 
@@ -49,10 +52,10 @@ export async function POST(req: NextRequest) {
   let payload: Record<string, unknown>
 
   if (kind === 'installment') {
-    // Vinculado a uma cotação (Estimate)? Usa o total dela.
     let quoteId: string | null = null
     let quoteTotal: number | null = null
     let quoteDesc: string | null = null
+
     if (body.quoteId) {
       const { data: quote } = await db.from('quotes')
         .select('id, total, status, est_number, fiscal_year')
@@ -62,11 +65,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Cotação em status '${quote.status}' não pode ser parcelada` }, { status: 409 })
       }
       if (Number(quote.total) <= 0) return NextResponse.json({ error: 'Cotação sem valor' }, { status: 400 })
-      // Já existe plano ativo vinculado?
+
       const { data: existingPlan } = await db.from('payment_plans')
         .select('id, status').eq('quote_id', quote.id)
         .not('status', 'in', '(cancelled,completed)').maybeSingle()
       if (existingPlan) return NextResponse.json({ error: 'Já existe parcelamento ativo para esta cotação' }, { status: 409 })
+
       quoteId = quote.id
       quoteTotal = Number(quote.total)
       quoteDesc = `Estimate ${quote.est_number || ''} — Ano fiscal ${quote.fiscal_year}`.trim()
@@ -76,6 +80,7 @@ export async function POST(req: NextRequest) {
     const entryPct = Number(body.entryPct)
     const installments = Number(body.installments)
     const frequency = body.frequency
+
     if (!total || total <= 0 || total > 500000) return NextResponse.json({ error: 'Total inválido' }, { status: 400 })
     if (isNaN(entryPct) || entryPct < 0 || entryPct > 90) return NextResponse.json({ error: 'Entrada deve ser 0–90%' }, { status: 400 })
     if (!installments || installments < 1 || installments > 60) return NextResponse.json({ error: 'Parcelas: 1 a 60' }, { status: 400 })
@@ -93,21 +98,63 @@ export async function POST(req: NextRequest) {
       quote_id: quoteId,
       status: 'draft', created_by: auth.userId,
     }
-  } else if (kind === 'bookkeeping') {
+
+  } else if (kind === 'bookkeeping' || kind === 'monthly') {
+    // 'bookkeeping' = escrituração (transações incluídas + excedente)
+    // 'monthly'     = qualquer outro serviço mensal (payroll, sales tax…)
     const monthlyAmount = Number(body.monthlyAmount)
     if (!monthlyAmount || monthlyAmount <= 0 || monthlyAmount > 100000) {
       return NextResponse.json({ error: 'Valor mensal inválido' }, { status: 400 })
     }
-    const includedTx = Number(body.includedTransactions)
-    if (!includedTx || includedTx < 1 || includedTx > 100000) {
-      return NextResponse.json({ error: 'Informe a quantidade de transações incluídas no contrato' }, { status: 400 })
+
+    const dueDay = body.dueDay !== undefined ? Number(body.dueDay) : 5
+    if (isNaN(dueDay) || dueDay < 1 || dueDay > 28) {
+      return NextResponse.json({ error: 'Dia da cobrança deve estar entre 1 e 28' }, { status: 400 })
     }
+
+    let servicoNome: string | null = null
+    if (body.serviceId) {
+      const { data: item } = await db.from('pricing_items')
+        .select('id, label').eq('id', body.serviceId).maybeSingle()
+      if (!item) return NextResponse.json({ error: 'Serviço não encontrado no catálogo' }, { status: 400 })
+      servicoNome = item.label
+    }
+    const descricaoFinal = description || servicoNome
+      || (kind === 'bookkeeping' ? 'Bookkeeping mensal' : null)
+    if (!descricaoFinal) {
+      return NextResponse.json({ error: 'Descreva o serviço mensal ou escolha um do catálogo' }, { status: 400 })
+    }
+
+    let includedTx: number | null = null
+    if (kind === 'bookkeeping') {
+      includedTx = Number(body.includedTransactions)
+      if (!includedTx || includedTx < 1 || includedTx > 100000) {
+        return NextResponse.json({ error: 'Informe a quantidade de transações incluídas no contrato' }, { status: 400 })
+      }
+    }
+
+    // Evita cobrar duas vezes o mesmo serviço
+    const { data: iguais } = await db.from('payment_plans')
+      .select('id, description, status')
+      .eq('client_id', clientId)
+      .in('kind', ['bookkeeping','monthly'])
+      .not('status', 'in', '(cancelled,completed)')
+    const jaTem = (iguais || []).find(
+      (x: any) => String(x.description || '').trim().toLowerCase() === descricaoFinal.trim().toLowerCase())
+    if (jaTem) {
+      return NextResponse.json({
+        error: `Este cliente já tem um plano ativo de "${descricaoFinal}". Cancele o existente ou use outra descrição.`,
+      }, { status: 409 })
+    }
+
     payload = {
-      client_id: clientId, kind, monthly_amount: monthlyAmount, due_day: 5,
-      included_transactions: includedTx, overage_rate: 1.25,
-      description: description || 'Bookkeeping mensal',
+      client_id: clientId, kind, monthly_amount: monthlyAmount, due_day: dueDay,
+      included_transactions: includedTx,
+      overage_rate: kind === 'bookkeeping' ? Number(body.overageRate ?? 1.25) : null,
+      description: descricaoFinal,
       status: 'draft', created_by: auth.userId,
     }
+
   } else {
     return NextResponse.json({ error: 'kind inválido' }, { status: 400 })
   }
@@ -125,7 +172,6 @@ export async function POST(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
-
   const level = await requireManagerOrOwner(auth.userId)
   if (!level) return NextResponse.json({ error: 'Somente manager/owner cancelam planos' }, { status: 403 })
 
@@ -139,7 +185,6 @@ export async function DELETE(req: NextRequest) {
   if (!plan) return NextResponse.json({ error: 'Plano não encontrado' }, { status: 404 })
   if (plan.status === 'cancelled') return NextResponse.json({ error: 'Já cancelado' }, { status: 409 })
 
-  // Cancela no Stripe se houver assinatura/agendamento ativos
   try {
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion })
     if (plan.stripe_schedule_id) {
@@ -186,25 +231,36 @@ export async function PATCH(req: NextRequest) {
     const entryPct = body.entryPct !== undefined ? Number(body.entryPct) : Number(plan.entry_pct)
     const installments = body.installments !== undefined ? Number(body.installments) : plan.installments
     const frequency = body.frequency ?? plan.frequency
+
     if (isNaN(entryPct) || entryPct < 1 || entryPct > 90) return NextResponse.json({ error: 'Entrada 1–90%' }, { status: 400 })
     if (!installments || installments < 1 || installments > 60) return NextResponse.json({ error: 'Parcelas 1–60' }, { status: 400 })
     if (!['weekly','biweekly','monthly'].includes(frequency)) return NextResponse.json({ error: 'Frequência inválida' }, { status: 400 })
+
     const calc = calcInstallmentPlan(Number(plan.total), entryPct, installments)
     Object.assign(update, {
       entry_pct: entryPct, entry_amount: calc.entry,
       frequency, installments, installment_amount: calc.perInstallment,
-      status: 'draft', stripe_session_id: null,   // sessão antiga invalida
+      status: 'draft', stripe_session_id: null,
     })
+
   } else {
     if (body.monthlyAmount !== undefined) {
       const m = Number(body.monthlyAmount)
       if (!m || m <= 0 || m > 100000) return NextResponse.json({ error: 'Valor mensal inválido' }, { status: 400 })
       update.monthly_amount = m
     }
-    if (body.includedTransactions !== undefined) {
+    if (body.includedTransactions !== undefined && plan.kind === 'bookkeeping') {
       const tx = Number(body.includedTransactions)
       if (!tx || tx < 1) return NextResponse.json({ error: 'Transações incluídas inválido' }, { status: 400 })
       update.included_transactions = tx
+    }
+    if (body.dueDay !== undefined) {
+      const d = Number(body.dueDay)
+      if (isNaN(d) || d < 1 || d > 28) return NextResponse.json({ error: 'Dia da cobrança deve estar entre 1 e 28' }, { status: 400 })
+      update.due_day = d
+    }
+    if (body.description !== undefined && String(body.description).trim()) {
+      update.description = String(body.description).trim()
     }
     update.status = 'draft'
     update.stripe_session_id = null
@@ -216,5 +272,6 @@ export async function PATCH(req: NextRequest) {
   await db.from('plan_audit').insert({
     plan_id: planId, action: 'edited', performed_by: auth.userId, snapshot: update,
   })
+
   return NextResponse.json({ ok: true })
 }
