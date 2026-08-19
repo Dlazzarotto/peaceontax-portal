@@ -66,8 +66,12 @@ export async function GET(req: NextRequest) {
   const ehOrcamento = inv.doc_type === 'estimate'
   const saldo = Number(inv.total) - Number(inv.paid_total)
 
-  const endereco = [c.address, [c.city, c.state].filter(Boolean).join(', '), c.zip]
-    .filter(Boolean).join(' · ')
+  // Colunas reais da tabela: address_line1, address_line2, city, state, zip
+  const endereco = [
+    c.address_line1,
+    c.address_line2,
+    [[c.city, c.state].filter(Boolean).join(', '), c.zip].filter(Boolean).join(' '),
+  ].filter(Boolean).join('<br>')
 
   const linhasItens = (itens || []).map((i: any) => `
     <tr>
