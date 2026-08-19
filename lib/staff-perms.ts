@@ -1,20 +1,71 @@
 // lib/staff-perms.ts — Níveis de equipe e aprovação por PIN
-// owner/manager: editam cotações livremente
-// junior: precisa de PIN de um manager + motivo para alterar/cancelar
+//
+// FONTE ÚNICA de permissão: a tabela staff_roles.
+// O papel escolhido no convite (firm/admin/manager/staff) é traduzido
+// para os três níveis reais do sistema:
+//
+//   convite 'firm'  → owner    (sócio)
+//   convite 'admin' → owner    (administrador: mesmo poder, inclusive relatórios)
+//   convite 'manager' → manager
+//   convite 'staff' → junior
+//
+// Se a pessoa ainda não estiver em staff_roles (convite aceito mas registro
+// não criado), usamos o papel do login como reserva — assim ninguém fica
+// travado por um passo esquecido.
 
 import { createHash } from 'crypto'
 import { serviceDb } from '@/lib/api-auth'
 
 export type StaffLevel = 'owner' | 'manager' | 'junior'
 
+/** Traduz o papel do convite para o nível de permissão do sistema. */
+export function nivelDoPapel(papel: string | null | undefined): StaffLevel {
+  switch (String(papel || '').toLowerCase()) {
+    case 'firm':
+    case 'owner':
+    case 'admin':    return 'owner'
+    case 'manager':  return 'manager'
+    default:         return 'junior'
+  }
+}
+
 export async function getStaffLevel(userId: string): Promise<StaffLevel> {
-  const { data } = await serviceDb()
+  const db = serviceDb()
+
+  const { data } = await db
     .from('staff_roles')
     .select('level')
     .eq('user_id', userId)
     .maybeSingle()
-  // Sem registro = junior (mais restritivo por padrão)
-  return (data?.level as StaffLevel) ?? 'junior'
+
+  if (data?.level) return data.level as StaffLevel
+
+  // Sem registro em staff_roles: cai para o papel do login.
+  // Não grava nada aqui — quem grava é o aceite do convite.
+  try {
+    const { data: u } = await db.auth.admin.getUserById(userId)
+    const papel = u?.user?.user_metadata?.role
+    if (papel) return nivelDoPapel(papel)
+  } catch { /* segue para o padrão */ }
+
+  // Padrão mais restritivo
+  return 'junior'
+}
+
+/** Garante o registro em staff_roles — usado no aceite do convite. */
+export async function registrarNivel(params: {
+  userId: string
+  papelDoConvite: string
+  displayName?: string
+}): Promise<StaffLevel> {
+  const nivel = nivelDoPapel(params.papelDoConvite)
+  await serviceDb().from('staff_roles').upsert({
+    user_id: params.userId,
+    level: nivel,
+    display_name: params.displayName || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id' })
+  return nivel
 }
 
 export function hashPin(pin: string): string {

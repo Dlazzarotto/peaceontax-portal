@@ -1,9 +1,32 @@
+// /api/firm/users — lista e convida membros da equipe
+//
+// CORREÇÃO DE SEGURANÇA: antes qualquer login da equipe (inclusive
+// assistente) podia listar todos os usuários e convidar alguém como
+// Admin. Agora só sócio/administrador faz isso.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
 import { randomBytes } from 'crypto'
+import { getAuth } from '@/lib/api-auth'
+import { getStaffLevel } from '@/lib/staff-perms'
 
 const PORTAL_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME  = 'Peace on Tax'
+
+/** Só sócio/administrador gerencia a equipe. */
+async function exigeSocio() {
+  const auth = await getAuth()
+  if (!auth?.isStaff) {
+    return { erro: NextResponse.json({ error: 'Acesso restrito' }, { status: 403 }) }
+  }
+  const nivel = await getStaffLevel(auth.userId)
+  if (nivel !== 'owner') {
+    return { erro: NextResponse.json({
+      error: 'Somente sócio ou administrador pode gerenciar a equipe.',
+    }, { status: 403 }) }
+  }
+  return { auth, nivel }
+}
 
 function buildInviteEmail(name: string, email: string, setupUrl: string, role: string) {
   const roleLabels: Record<string,string> = { firm:'Owner', admin:'Admin', manager:'Manager', staff:'Staff' }
@@ -34,7 +57,7 @@ function buildInviteEmail(name: string, email: string, setupUrl: string, role: s
     </div>
   </td></tr>
   <tr><td style="background:#f0f4fa;border-radius:0 0 16px 16px;padding:16px;text-align:center;">
-    <p style="color:#9aaab0;font-size:11px;margin:0;">🔒 Secure & encrypted · ${FIRM_NAME} · Massachusetts</p>
+    <p style="color:#9aaab0;font-size:11px;margin:0;">🔒 Secure &amp; encrypted · ${FIRM_NAME} · Massachusetts</p>
   </td></tr>
 </table>
 </td></tr>
@@ -43,10 +66,18 @@ function buildInviteEmail(name: string, email: string, setupUrl: string, role: s
 }
 
 export async function GET() {
+  const guarda = await exigeSocio()
+  if (guarda.erro) return guarda.erro
+
   try {
     const db = supabaseAdmin()
     const { data: { users }, error } = await db.auth.admin.listUsers()
     if (error) throw error
+
+    // Nível real de cada um, vindo de staff_roles
+    const { data: papeis } = await db.from('staff_roles').select('user_id, level')
+    const mapa = new Map((papeis || []).map((p: any) => [p.user_id, p.level]))
+
     const firmUsers = users
       .filter(u => ['firm', 'staff', 'admin', 'manager'].includes(u.user_metadata?.role))
       .map(u => ({
@@ -54,12 +85,14 @@ export async function GET() {
         email:        u.email,
         name:         u.user_metadata?.full_name || u.email?.split('@')[0] || '—',
         role:         u.user_metadata?.role || 'staff',
+        nivelReal:    mapa.get(u.id) || null,     // null = ainda não registrado
         title:        u.user_metadata?.title || '',
         phone:        u.user_metadata?.phone || '',
         active:       !u.banned_until,
         created_at:   u.created_at,
         last_sign_in: u.last_sign_in_at,
       }))
+
     return NextResponse.json({ users: firmUsers })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
@@ -67,24 +100,27 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const guarda = await exigeSocio()
+  if (guarda.erro) return guarda.erro
+
   try {
     const { email, name, role, title, phone } = await req.json()
     if (!email || !name) return NextResponse.json({ error: 'Email and name are required' }, { status: 400 })
+
+    const papel = ['firm', 'admin', 'manager', 'staff'].includes(role) ? role : 'staff'
 
     const db    = supabaseAdmin()
     const token = randomBytes(32).toString('hex')
     const setupUrl = `${PORTAL_URL}/staff-setup/${token}`
 
-    // Save invitation to staff_invitations table
     const { error: invErr } = await db.from('staff_invitations').insert({
-      email, name, role: role||'staff', title: title||'', phone: phone||'',
+      email, name, role: papel, title: title||'', phone: phone||'',
       token,
       status:     'pending',
       expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
     })
     if (invErr) throw invErr
 
-    // Send invite email
     const resendKey = process.env.RESEND_API_KEY
     const fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@peaceontax.com'
     let emailSent   = false
@@ -98,7 +134,7 @@ export async function POST(req: NextRequest) {
             from:     `${FIRM_NAME} <${fromEmail}>`,
             to:       [email],
             subject:  `You have been invited to ${FIRM_NAME} Portal`,
-            html:     buildInviteEmail(name, email, setupUrl, role||'staff'),
+            html:     buildInviteEmail(name, email, setupUrl, papel),
             reply_to: 'info@peaceontax.com',
           }),
         })
