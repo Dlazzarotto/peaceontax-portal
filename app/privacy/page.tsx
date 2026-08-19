@@ -1,78 +1,130 @@
-// /privacy — Privacy Policy pública (exigida para Plaid, GLBA e boas práticas)
-// Página estática, acessível sem login.
+// app/privacy/page.tsx — PÚBLICA (sem login)
+// Exigida pelo registro A2P 10DLC: as operadoras abrem este link para
+// verificar a seção de mensagens de texto antes de aprovar a campanha.
 
-export const metadata = { title: 'Privacy Policy — Peace on Tax Corp' }
+export const metadata = {
+  title: 'Privacy Policy — Peace on Tax Corp',
+  description: 'How Peace on Tax Corp collects, uses and protects client information, including SMS messaging.',
+}
 
 const FIRM = {
   name: 'Peace on Tax Corp',
   address: '75 Pleasant St Suite 119, Malden, MA 02148',
   phone: '(833) 732-2327',
+  sms: '(857) 837-2327',
   email: 'info@peaceontax.com',
 }
 
 export default function PrivacyPage() {
-  const s = {
-    h2: { fontFamily: 'Georgia,serif', fontSize: 18, color: '#2D3278', margin: '28px 0 10px' } as const,
-    p: { fontSize: 15, lineHeight: 1.8, color: '#2a3a4a', margin: '0 0 12px' } as const,
-    li: { fontSize: 15, lineHeight: 1.8, color: '#2a3a4a', marginBottom: 6 } as const,
-  }
+  const atualizado = 'August 2026'
+  const h2: React.CSSProperties = { fontSize: 17, fontWeight: 700, margin: '28px 0 8px', color: '#0F2340' }
+  const p: React.CSSProperties = { margin: '10px 0', lineHeight: 1.7 }
+
   return (
-    <div style={{ background: '#f7f9fc', minHeight: '100vh', padding: '32px 16px' }}>
-      <div style={{ maxWidth: 780, margin: '0 auto', background: '#fff', borderRadius: 16, padding: '44px 48px', boxShadow: '0 2px 24px rgba(45,50,120,0.08)' }}>
-        <img src="/logo.png" alt={FIRM.name} style={{ height: 52, marginBottom: 18 }} />
-        <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 26, color: '#0f2340', margin: '0 0 4px' }}>Privacy Policy</h1>
-        <p style={{ fontSize: 13, color: '#8a9ab0', margin: '0 0 24px' }}>Last updated: July 8, 2026 · <a href="/privacidade" style={{ color: '#F47B20' }}>Versão em Português</a></p>
+    <main style={{ fontFamily: 'Georgia, "Times New Roman", serif', maxWidth: 780, margin: '0 auto',
+      padding: '40px 24px 60px', color: '#1a2a3a', fontSize: 15 }}>
 
-        <p style={s.p}><b>{FIRM.name}</b> ("we", "us") provides tax preparation, accounting, and bookkeeping services. This policy describes how we collect, use, protect, and share your information when you use our client portal and services.</p>
+      <header style={{ borderBottom: '2px solid #0F2340', paddingBottom: 14, marginBottom: 8 }}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: '#0F2340' }}>{FIRM.name}</div>
+        <div style={{ fontSize: 13, color: '#5a6a7a' }}>
+          {FIRM.address} · {FIRM.phone} · {FIRM.email}
+        </div>
+      </header>
 
-        <h2 style={s.h2}>Information We Collect</h2>
-        <ul style={{ paddingLeft: 22 }}>
-          <li style={s.li}><b>Identity and contact data</b> — name, email, phone, address, date of birth, SSN/ITIN/EIN, provided by you for tax and accounting services.</li>
-          <li style={s.li}><b>Tax and financial documents</b> — documents you upload to the portal (W-2s, 1099s, statements, receipts).</li>
-          <li style={s.li}><b>Bank account and transaction data</b> — when you choose to connect a bank account through <b>Plaid Inc.</b>, we receive account and transaction information for bookkeeping purposes. Plaid's own privacy policy is available at <a href="https://plaid.com/legal/#end-user-privacy-policy" style={{ color: '#F47B20' }}>plaid.com/legal</a>. We do not receive or store your bank login credentials.</li>
-          <li style={s.li}><b>Payment data</b> — payments are processed by <b>Stripe</b>; we do not store full card or bank account numbers on our servers.</li>
-          <li style={s.li}><b>Usage data</b> — login activity and actions in the portal, kept for security and audit purposes.</li>
-        </ul>
+      <h1 style={{ fontSize: 26, margin: '22px 0 4px', color: '#0F2340' }}>Privacy Policy</h1>
+      <div style={{ fontSize: 13, color: '#5a6a7a', marginBottom: 18 }}>Last updated: {atualizado}</div>
 
-        <h2 style={s.h2}>How We Use Your Information</h2>
-        <ul style={{ paddingLeft: 22 }}>
-          <li style={s.li}>To prepare tax returns and provide accounting, bookkeeping, and advisory services you request;</li>
-          <li style={s.li}>To categorize financial transactions and produce reports (e.g., Profit &amp; Loss) as part of bookkeeping engagements;</li>
-          <li style={s.li}>To process payments, send invoices, contracts, and e-signature requests;</li>
-          <li style={s.li}>To communicate with you about your services;</li>
-          <li style={s.li}>To meet legal and regulatory obligations (IRS, state authorities).</li>
-        </ul>
+      <p style={p}>
+        {FIRM.name} (&quot;we&quot;, &quot;us&quot;) provides tax preparation, bookkeeping and business
+        advisory services. This policy explains what information we collect, how we use it, and the
+        choices you have. We are also bound by professional confidentiality rules applicable to tax
+        practitioners, including IRC §7216 governing the use of tax return information.
+      </p>
 
-        <h2 style={s.h2}>What We Do NOT Do</h2>
-        <ul style={{ paddingLeft: 22 }}>
-          <li style={s.li}>We do <b>not</b> sell your personal information;</li>
-          <li style={s.li}>We do <b>not</b> use or disclose tax return information except as permitted by IRC §7216 (with your consent or as required by law);</li>
-          <li style={s.li}>We do <b>not</b> share your data with third parties for their marketing.</li>
-        </ul>
+      <h2 style={h2}>Information we collect</h2>
+      <p style={p}>
+        Identification and contact details (name, address, email, phone number); tax and financial
+        information you provide or authorize us to obtain (documents, bank statements, payroll data);
+        business records needed to perform bookkeeping; and payment information processed by our
+        payment provider. We do not store full credit or debit card numbers on our systems.
+      </p>
 
-        <h2 style={s.h2}>How We Protect Your Information</h2>
-        <p style={s.p}>All data is encrypted in transit (TLS 1.2+) and at rest (AES-256). Access is restricted by role-based permissions; sensitive actions are logged in audit trails. Our security program follows the FTC Safeguards Rule and IRS Publication 4557 guidelines applicable to tax professionals.</p>
+      <h2 style={h2}>How we use information</h2>
+      <p style={p}>
+        To prepare returns and financial statements, to communicate about your engagement, to bill and
+        collect for services, to comply with legal and regulatory obligations, and to protect against
+        fraud. We do not use tax return information for any purpose other than the services you
+        engaged us for, unless you give separate written consent as required by IRC §7216.
+      </p>
 
-        <h2 style={s.h2}>Service Providers</h2>
-        <p style={s.p}>We use vetted service providers to operate the portal: Supabase (secure data hosting), Vercel (application hosting), Stripe (payments), DocuSign (e-signatures), Plaid (bank connections, at your election), Resend (transactional email), and Anthropic (document classification assistance). Providers process data only as needed to deliver our services.</p>
+      <h2 style={h2}>SMS and text messaging</h2>
+      <p style={p}>
+        With your consent, we send text messages related to your services — such as advance notice of
+        a scheduled charge, payment confirmation, failed payment alerts, document requests and
+        availability of your reports. Message frequency varies. <strong>Message and data rates may
+        apply.</strong>
+      </p>
+      <p style={p}>
+        You may opt out at any time by replying <strong>STOP</strong> to any message; you will receive
+        a confirmation and no further messages. Reply <strong>START</strong> to resume, or{' '}
+        <strong>HELP</strong> for assistance. You may also call us at {FIRM.phone}.
+      </p>
+      <p style={{ ...p, fontWeight: 700 }}>
+        We do not sell, rent or share mobile phone numbers or SMS consent with third parties or
+        affiliates for their marketing purposes. Text messaging originator opt-in data and consent are
+        not shared with any third party except the messaging provider strictly necessary to deliver
+        the messages.
+      </p>
+      <p style={p}>
+        Our messaging number is {FIRM.sms}. Opting out of text messages does not affect email or phone
+        communication about your engagement.
+      </p>
 
-        <h2 style={s.h2}>Data Retention</h2>
-        <p style={s.p}>We retain tax records for the periods required by federal and state law (generally at least 3–7 years). You may request a copy of your documents at any time.</p>
+      <h2 style={h2}>How we share information</h2>
+      <p style={p}>
+        We share information only with service providers that help us operate — such as secure hosting,
+        electronic signature, payment processing and messaging — under agreements requiring them to
+        protect it; with tax authorities when filing on your behalf and with your authorization; and
+        when required by law. <strong>We never sell your information.</strong>
+      </p>
 
-        <h2 style={s.h2}>Your Choices and Rights</h2>
-        <ul style={{ paddingLeft: 22 }}>
-          <li style={s.li}>You may disconnect a linked bank account at any time from the portal or by contacting us;</li>
-          <li style={s.li}>You may request access to, correction of, or (where legally permissible) deletion of your information;</li>
-          <li style={s.li}>You may direct how your tax return information is used or disclosed under IRC §7216.</li>
-        </ul>
+      <h2 style={h2}>Security</h2>
+      <p style={p}>
+        We maintain a written information security program, as required of tax professionals, with
+        encrypted transmission and storage, access limited to personnel who need it, and multi-factor
+        authentication on administrative systems.
+      </p>
 
-        <h2 style={s.h2}>Contact Us</h2>
-        <p style={s.p}>
-          {FIRM.name}<br />
-          {FIRM.address}<br />
-          {FIRM.phone} · <a href={`mailto:${FIRM.email}`} style={{ color: '#F47B20' }}>{FIRM.email}</a>
-        </p>
-      </div>
-    </div>
+      <h2 style={h2}>Retention</h2>
+      <p style={p}>
+        We retain records for the period required by professional and legal standards — generally
+        seven years for tax records — and dispose of them securely afterwards.
+      </p>
+
+      <h2 style={h2}>Your choices</h2>
+      <p style={p}>
+        You may request a copy of the information we hold about you, ask for corrections, withdraw SMS
+        consent, or request deletion of information we are not legally required to keep. Contact us at{' '}
+        {FIRM.email} or {FIRM.phone}.
+      </p>
+
+      <h2 style={h2}>Changes</h2>
+      <p style={p}>
+        We may update this policy; the date above reflects the current version. Material changes will
+        be communicated to active clients.
+      </p>
+
+      <h2 style={h2}>Contact</h2>
+      <p style={p}>
+        {FIRM.name}<br />
+        {FIRM.address}<br />
+        Phone: {FIRM.phone} · Text: {FIRM.sms} · {FIRM.email}
+      </p>
+
+      <footer style={{ marginTop: 34, paddingTop: 12, borderTop: '1px solid #d8dee8',
+        fontSize: 12.5, color: '#5a6a7a' }}>
+        See also our <a href="/terms" style={{ color: '#2D3278' }}>Terms of Service</a>.
+      </footer>
+    </main>
   )
 }
