@@ -9,7 +9,7 @@ const API_PUBLIC = [
   '/api/agenda/slots',
   '/api/agenda/bookings',
   '/api/stripe/webhook',
-  '/api/firm/setup',   // Stripe chama diretamente â€” sem sessÃ£o de usuÃ¡rio
+  '/api/firm/setup',   // aceite de convite — quem aceita ainda nao tem login
 ]
 
 const FIRM_ONLY   = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
@@ -68,6 +68,7 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 }
+
 
 
 
