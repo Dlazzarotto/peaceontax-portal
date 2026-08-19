@@ -1,14 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
-const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar']
+const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar', '/privacy', '/terms', '/privacidade']
 
-// APIs públicas: sem sessão necessária
+// APIs pÃºblicas: sem sessÃ£o necessÃ¡ria
 const API_PUBLIC = [
   '/api/invite',
   '/api/agenda/slots',
   '/api/agenda/bookings',
-  '/api/stripe/webhook',   // Stripe chama diretamente — sem sessão de usuário
+  '/api/stripe/webhook',   // Stripe chama diretamente â€” sem sessÃ£o de usuÃ¡rio
 ]
 
 const FIRM_ONLY   = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']
@@ -35,11 +35,11 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // APIs: públicas explícitas passam; demais exigem sessão
+  // APIs: pÃºblicas explÃ­citas passam; demais exigem sessÃ£o
   if (pathname.startsWith('/api/')) {
     if (API_PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))) return response
     const { data: { user } } = await sb.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+    if (!user) return NextResponse.json({ error: 'NÃ£o autenticado' }, { status: 401 })
     return response
   }
 
@@ -67,3 +67,4 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
 }
+
