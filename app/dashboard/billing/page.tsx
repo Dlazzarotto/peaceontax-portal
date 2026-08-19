@@ -579,6 +579,8 @@ export default function BillingPage() {
                           <button onClick={() => acao(inv, 'cancel', `Cancelar ${inv.number}? Ela continua no histórico.`)}
                             disabled={busy} style={acaoBtn('#C06010')}>Cancelar</button>
                         )}
+                        <button onClick={() => window.open(`/api/billing/print?id=${inv.id}`, '_blank')}
+                          style={acaoBtn('#0F2340')}>🖨 Imprimir</button>
                         {perms?.apagar && Number(inv.paid_total) === 0 && (
                           <button onClick={() => apagar(inv)} disabled={busy} style={acaoBtn('#B02020')}>Apagar</button>
                         )}
