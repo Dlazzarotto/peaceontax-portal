@@ -41,10 +41,19 @@ export async function GET(req: NextRequest) {
   if (!id) return new NextResponse('id obrigatório', { status: 400 })
 
   const db = serviceDb()
-  const [{ data: inv }, { data: itens }, { data: pagos }, { data: parcelas }] = await Promise.all([
-    db.from('invoices')
-      .select('*, clients(name, business_name, email, phone, address, city, state, zip)')
-      .eq('id', id).maybeSingle(),
+
+  // Busca sem enumerar colunas do cliente: assim a impressão não quebra
+  // se a tabela não tiver algum campo de endereço.
+  const { data: inv, error: errInv } = await db.from('invoices')
+    .select('*').eq('id', id).maybeSingle()
+
+  if (errInv) {
+    return new NextResponse(`Erro ao buscar o documento: ${errInv.message}`, { status: 500 })
+  }
+  if (!inv) return new NextResponse('Documento não encontrado', { status: 404 })
+
+  const [{ data: cli }, { data: itens }, { data: pagos }, { data: parcelas }] = await Promise.all([
+    db.from('clients').select('*').eq('id', inv.client_id).maybeSingle(),
     db.from('invoice_items').select('*').eq('invoice_id', id).order('sort'),
     db.from('invoice_payments').select('amount, method, reference, received_at, financier')
       .eq('invoice_id', id).order('received_at'),
@@ -52,9 +61,7 @@ export async function GET(req: NextRequest) {
       .eq('invoice_id', id).order('seq'),
   ])
 
-  if (!inv) return new NextResponse('Documento não encontrado', { status: 404 })
-
-  const c: any = (inv as any).clients || {}
+  const c: any = cli || {}
   const nome = c.business_name || c.name || '—'
   const ehOrcamento = inv.doc_type === 'estimate'
   const saldo = Number(inv.total) - Number(inv.paid_total)
