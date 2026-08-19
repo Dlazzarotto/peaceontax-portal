@@ -65,6 +65,10 @@ export async function POST(req: NextRequest) {
     'line_items[0][price_data][product_data][name]': `Fatura ${inv.number} — ${cli.business_name || cli.name || 'Cliente'}`,
     'line_items[0][quantity]': '1',
     'metadata[invoice_id]': inv.id,
+    'metadata[forma]': forma,
+    // O evento de recusa vem do payment_intent: ele precisa saber a fatura
+    'payment_intent_data[metadata][invoice_id]': inv.id,
+    'payment_intent_data[metadata][forma]': forma,
     'metadata[invoice_number]': inv.number,
     'metadata[client_id]': inv.client_id,
     success_url: `${origem}/dashboard/billing?pago=${inv.number}`,

@@ -1,8 +1,10 @@
 // POST /api/stripe/webhook — PÚBLICO (assinatura verificada)
 // Trata:
-//   checkout.session.completed → quotes (Fase 2) + entrada de parcelamento + setup bookkeeping
+//   checkout.session.completed → cotações + entrada de parcelamento + bookkeeping
+//                              → FATURAS do módulo financeiro (metadata.invoice_id)
 //   invoice.paid               → conta parcelas pagas / registra mensalidade
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
+//   payment_intent.payment_failed → registra recusa de cobrança de fatura
 //   customer.subscription.deleted → encerra plano
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -45,6 +47,12 @@ export async function POST(req: NextRequest) {
       const session = event.data.object as Stripe.Checkout.Session
       const meta = session.metadata ?? {}
 
+      // ---- Módulo financeiro: fatura paga (cartão, Klarna ou ACH) ----
+      if (meta.invoice_id) {
+        await handleFaturaPaga(db, session)
+        return NextResponse.json({ received: true })
+      }
+
       // ---- Fase 2: cotação à vista ----
       if (meta.quoteId) {
         await handleQuotePaid(db, session)
@@ -64,11 +72,27 @@ export async function POST(req: NextRequest) {
           status: 'active',
           updated_at: new Date().toISOString(),
         }).eq('id', meta.planId)
-
-        await notifyClient(db, meta.clientId, '✅ Contrato de bookkeeping ativado! A cobrança mensal ocorre todo dia 5. Obrigado pela confiança! 🙏')
+        await notifyClient(db, meta.clientId, '✅ Contrato de bookkeeping ativado! A cobrança mensal ocorre na data combinada. Obrigado pela confiança! 🙏')
         return NextResponse.json({ received: true })
       }
 
+      return NextResponse.json({ received: true })
+    }
+
+    // ============ COBRANÇA DE FATURA RECUSADA ============
+    if (event.type === 'payment_intent.payment_failed') {
+      const pi = event.data.object as Stripe.PaymentIntent
+      const invoiceId = pi.metadata?.invoice_id
+      if (invoiceId) {
+        const motivo = (pi as any).last_payment_error?.message
+          || (pi as any).last_payment_error?.decline_code
+          || 'recusado pelo emissor'
+        await db.from('invoice_audit').insert({
+          invoice_id: invoiceId, action: 'stripe_declined',
+          reason: String(motivo).slice(0, 400),
+          next: { intent: pi.id, valor: Number(pi.amount || 0) / 100 },
+        }).then(() => null, () => null)
+      }
       return NextResponse.json({ received: true })
     }
 
@@ -100,7 +124,6 @@ export async function POST(req: NextRequest) {
           plan_id: plan.id, client_id: plan.client_id, type: 'completed',
           message: `Parcelamento concluído: ${paid}/${plan.installments} parcelas pagas.`,
         })
-        // Cotação vinculada → vira Invoice paga
         if (plan.quote_id) {
           await db.from('quotes').update({
             status: 'paid',
@@ -164,6 +187,45 @@ export async function POST(req: NextRequest) {
 
 // ---------- handlers ----------
 
+/** Fatura do módulo financeiro quitada pelo Stripe (cartão, Klarna ou ACH) */
+async function handleFaturaPaga(db: ReturnType<typeof adminDb>, session: Stripe.Checkout.Session) {
+  const meta = session.metadata ?? {}
+  const invoiceId = meta.invoice_id
+  if (!invoiceId || session.payment_status !== 'paid') return
+
+  // Idempotência: o Stripe reenvia o evento se não confirmarmos
+  const { data: jaTem } = await db.from('invoice_payments')
+    .select('id').eq('stripe_object', session.id).maybeSingle()
+  if (jaTem) return
+
+  const { data: inv } = await db.from('invoices')
+    .select('id, client_id, number, total, paid_total').eq('id', invoiceId).maybeSingle()
+  if (!inv) return
+
+  // Klarna paga integralmente à firma: registra como financiada
+  const viaKlarna = String(meta.forma || '').toLowerCase() === 'klarna'
+    || (session as any).payment_method_types?.includes('klarna')
+
+  await db.from('invoice_payments').insert({
+    invoice_id: inv.id,
+    client_id: inv.client_id,
+    amount: Math.round(Number(session.amount_total || 0)) / 100,
+    method: viaKlarna ? 'external' : 'card',
+    financier: viaKlarna ? 'Klarna' : null,
+    reference: (session.payment_intent as string) || session.id,
+    stripe_object: session.id,
+    received_at: new Date().toISOString(),
+  })
+
+  await db.from('invoice_audit').insert({
+    invoice_id: inv.id, action: 'stripe_paid',
+    next: { valor: Number(session.amount_total || 0) / 100, session: session.id, klarna: viaKlarna },
+  }).then(() => null, () => null)
+
+  await notifyClient(db, inv.client_id,
+    `✅ Pagamento da fatura ${inv.number} confirmado. Obrigado! 🙏`)
+}
+
 async function handleQuotePaid(db: ReturnType<typeof adminDb>, session: Stripe.Checkout.Session) {
   const { quoteId, clientId } = session.metadata ?? {}
   if (!quoteId || !clientId) return
@@ -195,7 +257,6 @@ async function handleInstallmentEntry(
 
   const entryPaidAt = new Date(session.created * 1000)
 
-  // Método de pagamento salvo na entrada → usado nas parcelas
   const pi = await stripe.paymentIntents.retrieve(session.payment_intent as string)
   const paymentMethod = pi.payment_method as string
 
@@ -203,7 +264,6 @@ async function handleInstallmentEntry(
   const { interval, interval_count } = FREQ_STRIPE[freq]
   const startDate = firstInstallmentDate(entryPaidAt, freq)
 
-  // Agendamento: N parcelas e encerra sozinho
   const schedule = await stripe.subscriptionSchedules.create({
     customer: plan.stripe_customer_id!,
     start_date: Math.floor(startDate.getTime() / 1000),
@@ -246,7 +306,7 @@ let cachedProductId: string | null = null
 async function getOrCreateProduct(stripe: Stripe): Promise<string> {
   if (cachedProductId) return cachedProductId
   const existing = await stripe.products.search({ query: "name:'Parcelamento Peace on Tax'" }).catch(() => null)
-  if (existing?.data?.[0]) { cachedProductId = existing.data[0].id; return cachedProductId }
+  if (existing?.data?.[0]) { const id = String(existing.data[0].id); cachedProductId = id; return id }
   const p = await stripe.products.create({ name: 'Parcelamento Peace on Tax' })
   cachedProductId = p.id
   return p.id
