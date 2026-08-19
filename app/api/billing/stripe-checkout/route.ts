@@ -34,7 +34,11 @@ export async function POST(req: NextRequest) {
     }, { status: 500 })
   }
 
-  const { invoiceId } = await req.json()
+  const body = await req.json()
+  const { invoiceId } = body
+  // Forma no Stripe: cartão, Klarna (cliente parcela, você recebe integral)
+  // ou débito em conta (ACH). Klarna e ACH precisam estar habilitados no painel.
+  const forma = ['card', 'klarna', 'us_bank_account'].includes(body.forma) ? body.forma : 'card'
   if (!invoiceId) return NextResponse.json({ error: 'invoiceId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
@@ -55,7 +59,7 @@ export async function POST(req: NextRequest) {
 
   const corpo: Record<string, string> = {
     mode: 'payment',
-    'payment_method_types[0]': 'card',
+    'payment_method_types[0]': forma,
     'line_items[0][price_data][currency]': 'usd',
     'line_items[0][price_data][unit_amount]': String(Math.round(saldo * 100)),
     'line_items[0][price_data][product_data][name]': `Fatura ${inv.number} — ${cli.business_name || cli.name || 'Cliente'}`,
@@ -83,13 +87,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Resposta inesperada do Stripe.' }, { status: 502 })
   }
   if (!resp.ok) {
-    return NextResponse.json({
-      error: `Stripe: ${sessao?.error?.message || 'não foi possível criar o pagamento'}`,
-    }, { status: 400 })
+    const msg = sessao?.error?.message || 'não foi possível criar o pagamento'
+    if (/payment_method_type|not activated|invalid.*klarna/i.test(msg)) {
+      return NextResponse.json({
+        error: `${forma === 'klarna' ? 'Klarna' : forma} não está habilitado na sua conta Stripe. `
+          + 'Ative em Settings → Payment methods e tente de novo.',
+      }, { status: 400 })
+    }
+    return NextResponse.json({ error: `Stripe: ${msg}` }, { status: 400 })
   }
 
   await db.from('invoices').update({
-    stripe_link: sessao.url, updated_at: new Date().toISOString(),
+    stripe_link: sessao.url,
+    // Klarna quita a fatura integralmente: registra quem financiou
+    ...(forma === 'klarna' ? { payment_plan: 'financed', financier: 'Klarna' } : {}),
+    updated_at: new Date().toISOString(),
   }).eq('id', inv.id)
 
   await db.from('invoice_audit').insert({
@@ -99,6 +111,9 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true, url: sessao.url, valor: saldo,
-    message: `Link de pagamento de $${saldo.toFixed(2)} gerado para ${inv.number}.`,
+    forma,
+    message: forma === 'klarna'
+      ? `Link Klarna de $${saldo.toFixed(2)} gerado para ${inv.number} — o cliente parcela e você recebe o valor integral.`
+      : `Link de pagamento de $${saldo.toFixed(2)} gerado para ${inv.number}.`,
   })
 }

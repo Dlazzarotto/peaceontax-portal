@@ -256,15 +256,16 @@ export default function BillingPage() {
     setReceber(null); load()
   }
 
-  const cobrarCartao = async (inv: Inv) => {
+  const cobrarCartao = async (inv: Inv, forma: 'card' | 'klarna' | 'us_bank_account' = 'card') => {
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/stripe-checkout', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ invoiceId: inv.id }),
+      body: JSON.stringify({ invoiceId: inv.id, forma }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message} A baixa entra sozinha quando o cliente pagar.`)
+    setReceber(null)
     window.open(d.url, '_blank')
   }
 
@@ -567,10 +568,7 @@ export default function BillingPage() {
                             Pagamentos
                           </button>
                         )}
-                        {perms?.receber && inv.saldo > 0 && inv.doc_type === 'invoice'
-                          && inv.status !== 'void' && inv.status !== 'draft' && (
-                          <button onClick={() => cobrarCartao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>💳 Cartão</button>
-                        )}
+
                         {perms?.editar && Number(inv.paid_total) === 0 && inv.status !== 'void' && (
                           <button onClick={() => abrirEdicao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>Editar</button>
                         )}
@@ -712,6 +710,31 @@ export default function BillingPage() {
               style={{ ...inp, width: '100%', marginBottom: 14, boxSizing: 'border-box' as const }} />
             </>)}
 
+            {receber.saldo > 0 && rForma === 'card' && (
+              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F4', borderRadius: 10,
+                padding: '11px 13px', marginBottom: 12 }}>
+                <div style={{ fontSize: 12.5, color: '#4A5A70', lineHeight: 1.5, marginBottom: 9 }}>
+                  <b>Cartão:</b> pagamento à vista no crédito ou débito.<br />
+                  <b>Klarna:</b> o cliente parcela com eles e <b>você recebe o valor cheio na hora</b> — a
+                  inadimplência passa a ser risco da Klarna. Taxa maior (~6%).<br />
+                  <b>ACH:</b> débito na conta bancária, taxa baixa, compensa em alguns dias.<br />
+                  <b>Já cobrei:</b> quando o cartão passou na maquininha — informe o comprovante em Referência.
+                </div>
+                <button onClick={() => cobrarCartao(receber, 'card')} disabled={busy}
+                  style={{ ...btn('#5A1A8A', busy), width: '100%', marginBottom: 8 }}>
+                  💳 Cobrar no cartão — {money(Number(rValor) || receber.saldo)}
+                </button>
+                <button onClick={() => cobrarCartao(receber, 'klarna')} disabled={busy}
+                  style={{ ...btn('#C06010', busy), width: '100%', marginBottom: 8 }}>
+                  🧾 Parcelar com Klarna — você recebe integral
+                </button>
+                <button onClick={() => cobrarCartao(receber, 'us_bank_account')} disabled={busy}
+                  style={{ ...btn('#0A6A8A', busy), width: '100%' }}>
+                  🏦 Débito em conta (ACH)
+                </button>
+              </div>
+            )}
+
             {receber.saldo <= 0 && (
               <p style={{ fontSize: 13.5, color: '#1A6B4A', fontWeight: 700, margin: '0 0 12px' }}>
                 Fatura quitada. Para reabri-la, estorne o pagamento abaixo.
@@ -752,7 +775,9 @@ export default function BillingPage() {
                 {receber.saldo > 0 ? 'Cancelar' : 'Fechar'}
               </button>
               {receber.saldo > 0 && (
-                <button onClick={salvarRecebimento} disabled={busy} style={btn('#1A6B4A', busy)}>Registrar</button>
+                <button onClick={salvarRecebimento} disabled={busy} style={btn('#1A6B4A', busy)}>
+                  {rForma === 'card' ? 'Já cobrei — registrar' : 'Registrar'}
+                </button>
               )}
             </div>
           </div>
