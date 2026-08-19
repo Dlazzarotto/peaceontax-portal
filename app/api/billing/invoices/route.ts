@@ -185,7 +185,9 @@ export async function PATCH(req: NextRequest) {
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   const perms = await permissoesFinanceiro(auth.userId)
 
-  const { id, action } = await req.json()
+  // Ler o corpo UMA vez: depois de consumido não dá para clonar
+  const corpo = (await req.json()) as any
+  const { id, action } = corpo
   if (!id || !action) return NextResponse.json({ error: 'id e action obrigatórios' }, { status: 400 })
 
   const db = serviceDb()
@@ -221,7 +223,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Fatura cancelada não pode ser editada.' }, { status: 409 })
     }
 
-    const b2 = (await req.clone().json()) as any
+    const b2 = corpo
     const motivo = String(b2.reason || '').trim()
 
     // Gerente confirma com senha e justifica; sócio edita direto
