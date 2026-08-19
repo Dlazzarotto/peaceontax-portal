@@ -19,11 +19,15 @@ export default function PortalNav({ userName, clientType }: { userName?: string;
     router.push('/login')
   }
 
+  const ehEmpresa = clientType === 'business'
+
   const links = [
     { href:'/portal',           label:'Home',          icon:'🏠' },
     { href:'/portal/documents', label:'Documents',     icon:'📁' },
     { href:'/portal/organizer', label:'Tax Organizer', icon:'📋' },
     { href:'/portal/bank',      label:'Banks',         icon:'🏦' },
+    // Contabilidade: P&L, Balanço e Fornecedores — só faz sentido para empresa
+    ...(ehEmpresa ? [{ href:'/portal/reports', label:'Accounting', icon:'📊' }] : []),
     { href:'/portal/messages',  label:'Messages',      icon:'💬' },
     { href:'/portal/payments',  label:'Payments',      icon:'💳' },
   ]
@@ -43,7 +47,6 @@ export default function PortalNav({ userName, clientType }: { userName?: string;
         }
         .ptnav-logo { display:flex; align-items:center; gap:9px; text-decoration:none; flex-shrink:0; }
         .ptnav-type { font-size:10.5px; color:rgba(255,255,255,0.5); white-space:nowrap; }
-
         .ptnav-links { display:flex; gap:2px; flex:1; }
         .ptnav-link {
           display:flex; align-items:center; gap:6px; padding:8px 12px; border-radius:8px;
@@ -51,7 +54,6 @@ export default function PortalNav({ userName, clientType }: { userName?: string;
           color:rgba(255,255,255,0.68); border-bottom:2px solid transparent;
         }
         .ptnav-link.on { color:#F47B20; font-weight:700; background:rgba(244,123,32,0.15); border-bottom-color:#F47B20; }
-
         .ptnav-right { display:flex; align-items:center; gap:10px; flex-shrink:0; margin-left:auto; }
         .ptnav-user { font-size:12px; color:rgba(255,255,255,0.6); }
         .ptnav-signout {
@@ -59,7 +61,6 @@ export default function PortalNav({ userName, clientType }: { userName?: string;
           color:rgba(255,255,255,0.85); padding:7px 13px; border-radius:8px;
           cursor:pointer; font-size:12.5px; font-weight:600;
         }
-
         .ptnav-burger { display:none; }
 
         /* ===== CELULAR ===== */
@@ -95,7 +96,7 @@ export default function PortalNav({ userName, clientType }: { userName?: string;
       <nav className="ptnav">
         <Link href="/portal" className="ptnav-logo" onClick={() => setOpen(false)}>
           <img src="/logo.png" alt="Peace on Tax" style={{ height:30, width:'auto' }} />
-          <span className="ptnav-type">{clientType === 'business' ? '🏢 Business' : '👤 Individual'}</span>
+          <span className="ptnav-type">{ehEmpresa ? '🏢 Business' : '👤 Individual'}</span>
         </Link>
 
         {/* Desktop */}
