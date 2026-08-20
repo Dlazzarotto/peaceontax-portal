@@ -1,0 +1,207 @@
+# Peace on Tax OS — Especificação do Sistema
+
+**Documento vivo** · Atualizado em 19 de agosto de 2026
+
+---
+
+## 1. O que é
+
+Sistema próprio da **Peace on Tax Corp** para operar uma firma de contabilidade e impostos: relacionamento com o cliente, escrituração contábil (bookkeeping), contratos, cobrança e comunicação — substituindo a combinação de QuickBooks, planilhas e conversas soltas por WhatsApp.
+
+**Quem usa:** a equipe da firma (sócio, gerente, assistente) e os próprios clientes, cada um com sua área.
+
+**Onde roda:** Next.js 14 na Vercel · banco Supabase (PostgreSQL) · repositório no GitHub, com publicação automática a cada `git push`.
+
+---
+
+## 2. Princípios que orientam as decisões
+
+Estes princípios foram estabelecidos ao longo da construção e explicam por que o sistema é como é:
+
+1. **Quem emite não dá baixa.** Separação de funções no financeiro — o assistente emite fatura, mas não registra pagamento.
+2. **Nada se apaga sem rastro.** Cancelar preserva o documento; apagar é exceção restrita e bloqueada quando há dinheiro envolvido.
+3. **Toda ação sensível pede senha e motivo.** Editar fatura, estornar pagamento, lançar manualmente, alterar conta bancária.
+4. **O cliente é da firma, não da pessoa.** Comunicação sai como Peace on Tax; a autoria fica registrada por dentro.
+5. **Documento que sai leva a marca.** Logo, endereço e contato em contrato, fatura, orçamento e relatórios.
+6. **Consentimento é prova, não formalidade.** Autorização de cobrança e de mensagens fica gravada com data, hora, IP e origem.
+7. **O motor decide sozinho, a IA não.** Transferências e pagamentos de cartão são identificados por regra determinística, nunca por inferência.
+
+---
+
+## 3. Níveis de acesso
+
+Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, que é traduzido para um dos três níveis.
+
+| Convite | Nível | Alcance |
+|---|---|---|
+| Owner · Admin | `owner` | tudo, inclusive relatórios e totais do negócio |
+| Manager | `manager` | opera o dia a dia; **não** vê faturamento consolidado |
+| Staff | `junior` | acesso restrito; ações sensíveis exigem PIN de gerente |
+
+**Matriz do financeiro:**
+
+| Ação | Assistente | Gerente | Sócio |
+|---|---|---|---|
+| Emitir orçamento/fatura | ✅ | ✅ | ✅ |
+| Registrar pagamento | ❌ | ✅ | ✅ |
+| Duplicar · Cancelar · Apagar | ❌ | ✅ | ✅ |
+| Editar fatura | ❌ | ✅ com senha e motivo | ✅ |
+| Estornar pagamento | ❌ | ✅ com senha e motivo | ✅ |
+| Conceder desconto | ❌ | ✅ | ✅ |
+| Relatórios e totais | ❌ | ❌ | ✅ |
+| Ver conversas de atendimento | ❌ | ✅ | ✅ |
+
+O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
+
+---
+
+## 4. Módulos
+
+### 4.1 Clientes e portal
+
+Cadastro de pessoas físicas e jurídicas, com etapa do serviço, documentos, agendamento e mensagens. O cliente entra no portal para enviar documentos, acompanhar o andamento, pagar e — quando é empresa — consultar a contabilidade.
+
+**Portal do cliente:** Home · Documentos · Organizador fiscal · Bancos · **Contabilidade** · Mensagens · Pagamentos.
+
+A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimonial**, **Fornecedores** e **1099**, com seletor de ano e impressão no mesmo padrão da firma.
+
+### 4.2 Bookkeeping
+
+O núcleo operacional. Importa movimentação bancária por **Plaid**, **PDF de extrato** ou **CSV**, classifica automaticamente e produz os relatórios.
+
+**Motor de classificação** — três pontos do sistema executam a mesma lógica (importação, aplicação de regras e criação de regra), mantidos sincronizados:
+
+- **Casamento por palavra inteira.** Fragmentos com menos de 3 caracteres são ignorados. Evita que "mobil" capture "Mobilizat" ou "bk" capture "BNF BK:ITAU".
+- **Limpeza de metadados.** Remove ruído de wire e ACH (`BNF BK:`, `ORIG:`, `ID:`, `TRN:`, `Conf#`) antes de comparar.
+- **Transferência interna** só quando o extrato diz literalmente "transfer to/from" **e** a conta citada é uma conta cadastrada do cliente, **e** o sentido é coerente com o sinal do valor. Conta não cadastrada é dinheiro de fora — receita ou despesa normal.
+- **Pagamento de cartão** reconhecido pelo nome do cartão ou pelos 4 dígitos, nas duas pontas (saída do checking e entrada no cartão). A detecção de cartão tem precedência sobre as regras.
+- **Non-profit** (igreja, ONG): cada conta bancária é um fundo; as regras valem só para aquela entidade, nunca as gerais.
+
+**Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
+
+**Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.
+
+### 4.3 Financeiro (faturamento)
+
+Ciclo completo: **orçamento → fatura → cobrança → recebimento**.
+
+**Documentos.** Orçamentos e faturas na mesma estrutura, distinguidos por tipo, com numeração sequencial por ano (`INV-2026-0001`) gerada no banco — à prova de duas pessoas emitindo ao mesmo tempo. Nascem como rascunho; enviar é ato consciente do gerente ou sócio. Itens vêm do **catálogo de preços** (`pricing_items`), e cada item guarda o **preço praticado** — reajuste futuro não altera fatura antiga.
+
+**Formas de pagamento e o que cada uma permite:**
+
+| Forma | Parcela? | Cobrança automática? |
+|---|---|---|
+| Cartão · ACH | ✅ | ✅ |
+| Klarna | cliente parcela com eles | firma recebe integral na hora |
+| Dinheiro · Zelle · Venmo · Cheque · Wire | ❌ | ❌ baixa manual |
+
+Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o que faltar continua em aberto. O que não se permite é parcelar nas formas manuais.
+
+**Klarna** merece destaque: o cliente parcela com a financeira, a firma recebe o valor cheio imediatamente e **o risco de inadimplência deixa de ser da firma** — resposta direta ao histórico de contestação de cobrança.
+
+**Cobrança pelo Stripe.** Um único caminho, dentro do Receber: escolhe-se cartão, Klarna ou ACH e o sistema gera o link. Quando o cliente paga, o **webhook** registra o pagamento, o gatilho do banco recalcula o saldo, a fatura vira Paga e o cliente é avisado no portal — sem intervenção humana. Recusas ficam registradas com o motivo.
+
+**Estorno.** Sócio faz direto; gerente precisa de senha e motivo. O pagamento vai para `payment_reversals` antes de sair. Se veio do Stripe, o sistema avisa que a devolução do dinheiro precisa ser feita no painel do Stripe — apagar o registro não devolve nada.
+
+**Impressão.** Toda fatura e orçamento gera documento formal com timbre, dados do cliente, itens, parcelas, pagamentos recebidos e saldo.
+
+### 4.4 Planos e contratos
+
+Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e valor por excedente) e **outros serviços mensais** (payroll, sales tax), mais **parcelamento** de serviços avulsos com entrada.
+
+O **dia da cobrança é definido no acordo** (1 a 28), não mais fixo. Um cliente pode ter vários serviços mensais, mas o sistema impede dois planos ativos do mesmo serviço — evita cobrança duplicada.
+
+**Contrato** gerado pelo sistema, em português ou inglês conforme o cliente, com timbre e dez cláusulas: objeto, preço, autorização de débito, obrigações, prazo, atraso, entrega, confidencialidade, **autorização ACH** e assinaturas. Assinado via **DocuSign**, com campos preenchíveis pelo cliente (banco, tipo de conta, routing, account) e rubrica.
+
+**Dados de cartão nunca são coletados no documento** — o cliente cadastra em ambiente seguro do Stripe, e o contrato autoriza a cobrança naquele método. Mantém a firma fora do escopo PCI pesado.
+
+O botão **Ver contrato** abre a prévia sem tocar no DocuSign, para conferência antes do envio.
+
+### 4.5 Comunicação
+
+**SMS** pelo Twilio, número (857) 837-2327. Envio com três travas obrigatórias: cliente autorizou, não pediu STOP, e tem celular válido. A verificação fica dentro da biblioteca de envio — nenhum fluxo novo consegue burlar por esquecimento. Toda mensagem sai identificada e com "Reply STOP to opt out".
+
+**Consentimento** registrado com data, hora, IP, origem (portal, equipe ou palavra-chave) e o texto exato que o cliente viu. O histórico nunca é sobrescrito.
+
+**WhatsApp** pela API do Twilio, com atendimento pelo portal: bot responde consultas de status primeiro, escala para humano quando não souber. Mensagens saem como Peace on Tax; a autoria fica visível só para a equipe. Respeita a janela de 24 horas da Meta — fora dela, apenas templates aprovados.
+
+---
+
+## 5. Integrações
+
+| Serviço | Para quê | Situação |
+|---|---|---|
+| **Supabase** | banco, autenticação, arquivos | ✅ operando |
+| **Stripe** | pagamentos, links, Klarna, ACH | ✅ operando em produção |
+| **Plaid** | importação bancária automática | ✅ operando |
+| **DocuSign** | assinatura de contratos | ⚠️ chave corrigida, falta testar |
+| **Resend** | e-mails transacionais | ✅ operando |
+| **Twilio SMS** | avisos e cobrança | ⏳ campanha A2P em aprovação |
+| **Twilio WhatsApp** | atendimento e bot | ⏳ cadastro na Meta |
+| **Anthropic** | apoio à classificação | ✅ operando |
+
+---
+
+## 6. Auditoria
+
+Cada área guarda sua própria trilha, com quem fez, quando, em que nível e por quê:
+
+`invoice_audit` (faturas) · `payment_reversals` (estornos) · `client_audit` (cadastro) · `plan_audit` (contratos) · `quote_audit` (orçamentos) · `bank_account_audit` (contas bancárias) · `sms_consent_log` (consentimento) · `sms_messages` (mensagens).
+
+Além do valor operacional, essa trilha existe por uma razão concreta: **num questionamento de cobrança, o que protege a firma é o registro** — contrato assinado, autorização datada, aviso enviado e histórico de pagamentos.
+
+---
+
+## 7. Verificação
+
+Existe um script `auditoria.ps1` na raiz do projeto que confere **20 invariantes** do sistema: o motor de regras nos três pontos, transferências, cartões, isolamento non-profit, formato de datas, permissões em todas as rotas do financeiro e assinatura do webhook.
+
+Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente instalado — evita horas investigando sintomas de código antigo.
+
+---
+
+## 8. O que falta
+
+**Em andamento, dependendo de terceiros:**
+- Campanha A2P do SMS (suporte do Twilio)
+- Cadastro do WhatsApp Sender (Meta)
+- Teste do envio de contrato pelo DocuSign
+
+**A construir:**
+- Tela de **Atendimento** (fila e conversa) — trava a migração do WhatsApp
+- Webhook de recebimento e o bot de consultas
+- Consentimento de SMS no portal do cliente e tratamento de STOP/START
+- Aviso de cobrança três dias antes do débito
+- Tela de novo serviço mensal nos Planos
+- Importação do histórico do QuickBooks (último ano)
+
+**Decisões pendentes:**
+- Módulo Plans × tabela `recurring_plans` (duplicação a resolver)
+- Orçamentos: módulo Quotes × estimates do financeiro
+- `staff_roles` × `team_members` (permissão × CRM)
+- Menu repetido em quatro layouts
+- Domínio próprio `portal.peaceontax.com`
+
+---
+
+## 9. Onde as coisas ficam
+
+```
+app/
+  dashboard/          área da equipe (clientes, bookkeeping, financeiro, listas)
+  portal/             área do cliente
+  api/
+    bookkeeping/      importação, regras, relatórios, conciliação
+    billing/          faturas, pagamentos, Stripe, impressão
+    plans/            contratos e parcelamentos
+    signatures/       DocuSign
+    stripe/webhook    entrada única dos eventos de pagamento
+    clients/ firm/    cadastro e equipe
+components/           telas reutilizáveis (BookkeepingTab, PlansTab, ProfileEditor…)
+lib/                  motor de regras, permissões, SMS, contrato, integrações
+middleware.ts         controle de acesso por rota
+```
+
+---
+
+*Documento mantido junto ao projeto. Sempre que uma regra de negócio mudar, esta especificação deve mudar com ela — é o que impede o sistema de virar um conjunto de decisões que ninguém mais lembra por que foram tomadas.*
