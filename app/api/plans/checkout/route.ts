@@ -1,13 +1,13 @@
 // POST /api/plans/checkout — gera o link de pagamento do plano
 // Body: { planId }
 // installment → Checkout mode 'payment' da ENTRADA, salvando o método p/ débitos futuros
-// bookkeeping → Checkout mode 'subscription' mensal ancorada no dia 5
+// bookkeeping/monthly → Checkout mode 'subscription' ancorada no DIA ACORDADO (plan.due_day)
 
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
-import { nextDay5ET } from '@/lib/plans'
+import { nextBillingDayET, normalizarDiaCobranca } from '@/lib/plans'
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 
@@ -88,8 +88,11 @@ export async function POST(req: NextRequest) {
       }).eq('id', planId)
 
     } else {
-      // BOOKKEEPING — assinatura mensal ancorada no dia 5 (trial até lá)
-      const anchor = nextDay5ET()
+      // BOOKKEEPING / MENSAL — ancorada no dia acordado com o cliente.
+      // O trial vai até a data-base: a 1ª cobrança cai exatamente nela,
+      // e o Stripe repete no mesmo dia nos meses seguintes.
+      const dia = normalizarDiaCobranca(plan.due_day)
+      const anchor = nextBillingDayET(dia)
       session = await stripe.checkout.sessions.create({
         mode: 'subscription',
         customer: customerId,
@@ -98,7 +101,9 @@ export async function POST(req: NextRequest) {
           price_data: {
             currency: 'usd',
             product_data: {
-              name: plan.description || (lang === 'pt' ? 'Bookkeeping mensal — Peace on Tax' : 'Monthly bookkeeping — Peace on Tax'),
+              name: plan.description || (plan.kind === 'monthly'
+                ? (lang === 'pt' ? 'Serviço mensal — Peace on Tax' : 'Monthly service — Peace on Tax')
+                : (lang === 'pt' ? 'Bookkeeping mensal — Peace on Tax' : 'Monthly bookkeeping — Peace on Tax')),
             },
             unit_amount: Math.round(Number(plan.monthly_amount) * 100),
             recurring: { interval: 'month', interval_count: 1 },
@@ -126,7 +131,7 @@ export async function POST(req: NextRequest) {
 
     await db.from('plan_audit').insert({
       plan_id: planId, action: 'checkout_link_created', performed_by: auth.userId,
-      snapshot: { sessionId: session.id },
+      snapshot: { sessionId: session.id, kind: plan.kind, dueDay: plan.due_day ?? null },
     })
 
     return NextResponse.json({ url: session.url, sessionId: session.id })
