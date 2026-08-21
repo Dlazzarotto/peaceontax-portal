@@ -65,6 +65,53 @@ export function montarCronograma(restante: number, n: number, primeira: string, 
   return linhas
 }
 
+// GET → parcelamentos existentes + faturas elegíveis para parcelar
+export async function GET() {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const perms = await permissoesFinanceiro(auth.userId)
+  const db = serviceDb()
+
+  const [{ data: planos }, { data: faturas }] = await Promise.all([
+    db.from('payment_plans')
+      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
+      .eq('kind', 'installment')
+      .not('invoice_id', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(200),
+    // Faturas que podem ser parceladas: fatura (não orçamento), não cancelada,
+    // não rascunho, e com saldo em aberto.
+    db.from('invoices')
+      .select('id, number, total, paid_total, issue_date, clients(name, business_name)')
+      .eq('doc_type', 'invoice')
+      .not('status', 'in', '(void,draft,paid)')
+      .order('issue_date', { ascending: false })
+      .limit(200),
+  ])
+
+  // Fatura que já tem parcelamento vivo sai da lista de elegíveis
+  const VIVOS = ['draft', 'awaiting_entry', 'awaiting_setup', 'active', 'payment_failed']
+  const ocupadas = new Set(
+    (planos || []).filter((p: any) => VIVOS.includes(p.status)).map((p: any) => p.invoice_id),
+  )
+
+  return NextResponse.json({
+    perms,
+    plans: (planos || []).map((p: any) => ({
+      ...p,
+      cliente: p.clients?.business_name || p.clients?.name || '—',
+      numero: p.invoices?.number || '—',
+    })),
+    invoices: (faturas || [])
+      .map((i: any) => ({
+        id: i.id, number: i.number,
+        cliente: i.clients?.business_name || i.clients?.name || '—',
+        saldo: round2(Number(i.total) - Number(i.paid_total)),
+      }))
+      .filter((i: any) => i.saldo > 0 && !ocupadas.has(i.id)),
+  })
+}
+
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })

@@ -29,6 +29,16 @@ const FORMAS = [
   ['wire', 'Wire'], ['external', 'Financiadora'],
 ]
 
+const FREQ_PT: Record<string, string> = { weekly: 'semanal', biweekly: 'quinzenal', monthly: 'mensal' }
+const STATUS_PT: Record<string, string> = {
+  draft: 'rascunho', awaiting_entry: 'aguardando entrada', awaiting_setup: 'aguardando autorização',
+  active: 'ativo', paused: 'pausado', payment_failed: 'débito falhou',
+  completed: 'quitado', cancelled: 'cancelado',
+}
+const COR_STATUS: Record<string, string> = {
+  active: '#1A6B4A', completed: '#1A6B4A', payment_failed: '#C0392B',
+  cancelled: '#9AAAB0', awaiting_entry: '#C06010', awaiting_setup: '#C06010',
+}
 const money = (v: number) =>
   `$${(Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -60,7 +70,14 @@ export default function BillingPage() {
   const [filtroStatus, setFiltroStatus] = useState('')
   const [busca, setBusca] = useState('')
   const [soAbertas, setSoAbertas] = useState(false)
-  const [aba, setAba] = useState<'docs' | 'contratos'>('docs')
+  const [aba, setAba] = useState<'docs' | 'contratos' | 'parcelamentos'>('docs')
+  // Parcelamento de fatura em aberto
+  const [pcDados, setPcDados] = useState<any>({ plans: [], invoices: [] })
+  const [pcFatura, setPcFatura] = useState('')
+  const [pcEntrada, setPcEntrada] = useState('0')
+  const [pcParcelas, setPcParcelas] = useState('4')
+  const [pcFreq, setPcFreq] = useState<'weekly'|'biweekly'|'monthly'>('monthly')
+  const [pcPrimeira, setPcPrimeira] = useState('')
   const [fParcelas, setFParcelas] = useState('3')
   const [fPrimeiroVenc, setFPrimeiroVenc] = useState('')
   const [editandoId, setEditandoId] = useState<string | null>(null)
@@ -111,6 +128,58 @@ export default function BillingPage() {
   }
   useEffect(() => { load() }, [filtroDoc, filtroStatus])
   useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
+
+  const loadParcelamentos = async () => {
+    const d = await jsonSeguro(await fetch('/api/billing/installment-plan'))
+    if (d?.plans) setPcDados(d)
+    else if (d?.error) setMsg(`⚠️ ${d.error}`)
+  }
+  useEffect(() => { if (aba === 'parcelamentos') loadParcelamentos() }, [aba])
+
+  // Prévia local — espelha o cronograma que o servidor vai gravar
+  const pcPreview = (() => {
+    const f = (pcDados.invoices || []).find((x: any) => x.id === pcFatura)
+    const n = Math.max(2, Math.min(36, Number(pcParcelas) || 0))
+    if (!f || !pcPrimeira || n < 2) return null
+    const entrada = Math.round(f.saldo * ((Number(pcEntrada) || 0) / 100) * 100) / 100
+    const restante = Math.round((f.saldo - entrada) * 100) / 100
+    if (restante <= 0) return null
+    const base = Math.floor((restante / n) * 100) / 100
+    const inicio = new Date(`${pcPrimeira}T12:00:00Z`)
+    const linhas = Array.from({ length: n }, (_, i) => {
+      let d: Date
+      if (pcFreq === 'weekly') { d = new Date(inicio); d.setUTCDate(d.getUTCDate() + 7 * i) }
+      else if (pcFreq === 'biweekly') { d = new Date(inicio); d.setUTCDate(d.getUTCDate() + 14 * i) }
+      else {
+        const dia = inicio.getUTCDate(), ano = inicio.getUTCFullYear(), mes = inicio.getUTCMonth() + i
+        const ultimo = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate()
+        d = new Date(Date.UTC(ano, mes, Math.min(dia, ultimo), 12, 0, 0))
+      }
+      return {
+        seq: i + 1, data: d.toISOString().slice(0, 10),
+        valor: i === n - 1 ? Math.round((restante - base * (n - 1)) * 100) / 100 : base,
+      }
+    })
+    return { saldo: f.saldo, entrada, restante, linhas }
+  })()
+
+  const criarParcelamento = async () => {
+    if (!pcFatura || !pcPrimeira) { setMsg('⚠️ Escolha a fatura e a data da primeira parcela.'); return }
+    setBusy(true)
+    const d = await fetch('/api/billing/installment-plan', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        invoiceId: pcFatura, entryPct: Number(pcEntrada) || 0,
+        installments: Number(pcParcelas) || 0, frequency: pcFreq, firstDueDate: pcPrimeira,
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    if (d.url) window.open(d.url, '_blank')
+    setPcFatura(''); setPcEntrada('0'); setPcPrimeira('')
+    loadParcelamentos(); load()
+  }
 
   const criarContrato = async () => {
     if (!cCliente || !cDesc.trim() || !Number(cValor)) { setMsg('⚠️ Preencha cliente, descrição e valor.'); return }
@@ -362,7 +431,7 @@ export default function BillingPage() {
       </section>
 
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #E2E8F4' }}>
-        {([['docs', 'Orçamentos e faturas'], ['contratos', 'Contratos recorrentes']] as const).map(([k, r]) => (
+        {([['docs', 'Orçamentos e faturas'], ['contratos', 'Contratos recorrentes'], ['parcelamentos', 'Parcelamentos']] as const).map(([k, r]) => (
           <button key={k} onClick={() => setAba(k)}
             style={{ background: 'none', border: 'none', borderBottom: aba === k ? '3px solid #2D3278' : '3px solid transparent',
               padding: '10px 16px', fontSize: 14.5, fontWeight: 700, cursor: 'pointer',
@@ -671,6 +740,127 @@ export default function BillingPage() {
                           <button onClick={() => alternarContrato(pl)} style={acaoBtn(pl.active ? '#C06010' : '#1A6B4A')}>
                             {pl.active ? 'Pausar' : 'Reativar'}
                           </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
+      {aba === 'parcelamentos' && (
+        <>
+          {perms?.receber && (
+            <section style={card}>
+              <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 17, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+                Parcelar uma fatura em aberto
+              </h3>
+              <p style={{ fontSize: 13.5, color: '#6A7A9A', margin: '0 0 14px' }}>
+                O cliente autoriza o débito automático uma vez e o Stripe cobra as parcelas sozinho.
+                Entrada zero é permitida — nesse caso nada é cobrado agora, só o mandato é colhido.
+              </p>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 10, alignItems: 'flex-end' }}>
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4, flex: '2 1 260px' }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>FATURA</span>
+                  <select value={pcFatura} onChange={e => setPcFatura(e.target.value)} style={{ ...inp, cursor: 'pointer' }}>
+                    <option value="">— escolha a fatura —</option>
+                    {(pcDados.invoices || []).map((f: any) => (
+                      <option key={f.id} value={f.id}>{f.number} · {f.cliente} · saldo {money(f.saldo)}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>ENTRADA %</span>
+                  <input type="number" min={0} max={90} step="1" value={pcEntrada}
+                    onChange={e => setPcEntrada(e.target.value)} style={{ ...inp, width: 100 }} />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>PARCELAS</span>
+                  <input type="number" min={2} max={36} value={pcParcelas}
+                    onChange={e => setPcParcelas(e.target.value)} style={{ ...inp, width: 100 }} />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>FREQUÊNCIA</span>
+                  <select value={pcFreq} onChange={e => setPcFreq(e.target.value as any)} style={{ ...inp, cursor: 'pointer' }}>
+                    <option value="monthly">Mensal</option>
+                    <option value="biweekly">Quinzenal</option>
+                    <option value="weekly">Semanal</option>
+                  </select>
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>1ª PARCELA</span>
+                  <input type="date" value={pcPrimeira} onChange={e => setPcPrimeira(e.target.value)} style={inp} />
+                </label>
+              </div>
+
+              {pcPreview && (
+                <div style={{ marginTop: 14, padding: '12px 14px', background: '#F7F9FC', borderRadius: 10, border: '1px solid #E2E8F4' }}>
+                  <div style={{ fontSize: 13.5, color: '#0F2340', fontWeight: 700, marginBottom: 8 }}>
+                    Saldo {money(pcPreview.saldo)}
+                    {pcPreview.entrada > 0
+                      ? <> · entrada {money(pcPreview.entrada)} · a parcelar {money(pcPreview.restante)}</>
+                      : <> · sem entrada</>}
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 8 }}>
+                    {pcPreview.linhas.map((l: any) => (
+                      <span key={l.seq} style={{ fontSize: 13, color: '#4A5A70', background: '#fff',
+                        border: '1px solid #E2E8F4', borderRadius: 8, padding: '5px 9px', whiteSpace: 'nowrap' as const }}>
+                        <b>{l.seq}ª</b> {dataUS(l.data)} · {money(l.valor)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ marginTop: 14 }}>
+                <button onClick={criarParcelamento} disabled={busy || !pcPreview} style={btn('#1A6B4A', busy || !pcPreview)}>
+                  Criar parcelamento e gerar link
+                </button>
+              </div>
+            </section>
+          )}
+
+          <div style={{ ...card, overflowX: 'auto' as const }}>
+            {(pcDados.plans || []).length === 0 ? (
+              <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>Nenhuma fatura parcelada ainda.</p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 760 }}>
+                <thead><tr>
+                  {['Fatura', 'Cliente', 'Total', 'Entrada', 'Parcelas', 'Pagas', 'Próxima', 'Situação', ''].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
+                      color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4', whiteSpace: 'nowrap' as const }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {(pcDados.plans || []).map((pl: any) => (
+                    <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA',
+                      opacity: ['cancelled', 'completed'].includes(pl.status) ? 0.55 : 1 }}>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{pl.numero}</td>
+                      <td style={{ padding: '10px', fontSize: 14 }}>{pl.cliente}</td>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>{money(pl.total)}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
+                        {Number(pl.entry_amount) > 0 ? `${money(pl.entry_amount)} (${pl.entry_pct}%)` : '—'}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
+                        {pl.installments}x {money(pl.installment_amount)}
+                        <span style={{ color: '#6A7A9A' }}> · {FREQ_PT[pl.frequency] || pl.frequency}</span>
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 13.5 }}>{pl.paid_installments}/{pl.installments}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>{dataUS(pl.next_charge_date)}</td>
+                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700, color: COR_STATUS[pl.status] || '#6A7A9A' }}>
+                        {STATUS_PT[pl.status] || pl.status}
+                      </td>
+                      <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
+                        {['awaiting_entry', 'awaiting_setup'].includes(pl.status) && pl.stripe_session_id && (
+                          <span style={{ fontSize: 12.5, color: '#6A7A9A' }}>aguardando o cliente</span>
                         )}
                       </td>
                     </tr>
