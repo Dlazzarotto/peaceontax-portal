@@ -11,8 +11,9 @@
 //   5. o usuário pertence à conta configurada
 //   6. o BASE_PATH aponta para o servidor certo daquela conta
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { getAuth } from '@/lib/api-auth'
+import { getStaffLevel } from '@/lib/staff-perms'
 import crypto from 'crypto'
 
 export const runtime = 'nodejs'
@@ -41,10 +42,12 @@ function normalizarChave(bruta: string): string | null {
 
 const ehDemo = (s: string) => /(^|\/\/|\.)(account-d\.docusign\.com|demo\.docusign\.net)/.test(s)
 
-export async function GET(req: NextRequest) {
-  const auth: any = await getAuth(req as any)
-  if (!auth?.userId) {
-    return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 })
+export async function GET() {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const level = await getStaffLevel(auth.userId)
+  if (level !== 'owner' && level !== 'manager') {
+    return NextResponse.json({ error: 'Somente manager/owner' }, { status: 403 })
   }
 
   const IK = process.env.DOCUSIGN_INTEGRATION_KEY || ''
