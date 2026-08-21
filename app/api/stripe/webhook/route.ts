@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
-import { FREQ_STRIPE, firstInstallmentDate, type Frequency } from '@/lib/plans'
+import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
 
 export const runtime = 'nodejs'
 
@@ -62,6 +62,12 @@ export async function POST(req: NextRequest) {
       // ---- Fase 4a: entrada do parcelamento ----
       if (meta.planKind === 'installment_entry' && meta.planId) {
         await handleInstallmentEntry(db, stripe, session, meta.planId)
+        return NextResponse.json({ received: true })
+      }
+
+      // ---- Parcelamento de fatura SEM entrada: mandato cadastrado, nada cobrado ----
+      if (meta.planKind === 'installment_setup' && meta.planId) {
+        await handleInstallmentSetup(db, stripe, session, meta.planId)
         return NextResponse.json({ received: true })
       }
 
@@ -118,6 +124,16 @@ export async function POST(req: NextRequest) {
         status: finished ? 'completed' : 'active',
         updated_at: new Date().toISOString(),
       }).eq('id', plan.id)
+
+      // Parcelamento nascido de fatura: baixa a parcela e lança o recebimento
+      if (isInstallment && plan.invoice_id) {
+        await sincronizarParcela(db, stripe, plan, invoice, paid)
+      }
+
+      // Mensalidade (bookkeeping/payroll/sales tax): emite a fatura do mês
+      if (!isInstallment) {
+        await gerarFaturaDaMensalidade(db, stripe, plan, invoice)
+      }
 
       if (finished) {
         await db.from('plan_alerts').insert({
@@ -260,46 +276,249 @@ async function handleInstallmentEntry(
   const pi = await stripe.paymentIntents.retrieve(session.payment_intent as string)
   const paymentMethod = pi.payment_method as string
 
+  // Data da 1ª parcela: a acordada no plano tem prioridade sobre a derivada
+  // da data em que a entrada foi paga.
   const freq = plan.frequency as Frequency
-  const { interval, interval_count } = FREQ_STRIPE[freq]
-  const startDate = firstInstallmentDate(entryPaidAt, freq)
+  const startDate = plan.next_charge_date
+    ? new Date(`${plan.next_charge_date}T12:00:00Z`)
+    : firstInstallmentDate(entryPaidAt, freq)
 
-  const schedule = await stripe.subscriptionSchedules.create({
-    customer: plan.stripe_customer_id!,
-    start_date: Math.floor(startDate.getTime() / 1000),
-    end_behavior: 'cancel',
-    default_settings: {
-      default_payment_method: paymentMethod,
-      collection_method: 'charge_automatically',
-    },
-    phases: [{
-      iterations: plan.installments,
-      items: [{
-        quantity: 1,
-        price_data: {
-          currency: 'usd',
-          product: await getOrCreateProduct(stripe),
-          unit_amount: Math.round(Number(plan.installment_amount) * 100),
-          recurring: { interval, interval_count },
-        },
-      }],
-      metadata: { planId },
-    }],
-    metadata: { planId, planKind: 'installment' },
-  })
+  const { schedule, inicio } = await criarAgendamento(stripe, plan, paymentMethod, startDate)
 
   await db.from('payment_plans').update({
     status: 'active',
     entry_paid_at: entryPaidAt.toISOString(),
     stripe_schedule_id: schedule.id,
     stripe_subscription_id: schedule.subscription as string,
-    next_charge_date: startDate.toISOString().slice(0, 10),
+    next_charge_date: inicio.toISOString().slice(0, 10),
     updated_at: new Date().toISOString(),
   }).eq('id', planId)
+
+  // A entrada é pagamento da fatura de origem, não parcela
+  if (plan.invoice_id && Number(plan.entry_amount) > 0) {
+    await lancarRecebimento(db, plan.invoice_id, plan.client_id,
+      round2(Number(plan.entry_amount)), 'card', session.payment_intent as string, session.id)
+  }
 
   const firstFmt = startDate.toLocaleDateString('pt-BR', { day:'2-digit', month:'long', year:'numeric', timeZone:'America/New_York' })
   await notifyClient(db, plan.client_id,
     `✅ Entrada confirmada! Seu parcelamento está ativo: ${plan.installments} parcela(s) de $${Number(plan.installment_amount).toFixed(2)}, primeira cobrança em ${firstFmt}, débito automático. Obrigado! 🙏`)
+}
+
+/**
+ * Agendamento das parcelas no Stripe.
+ *
+ * DUAS FASES: o cronograma faz a última parcela absorver o centavo da divisão
+ * (ex.: 1000/3 = 333.33 + 333.33 + 333.34). Um schedule de fase única cobraria
+ * 333.33 três vezes e a fatura fecharia com 1 centavo em aberto para sempre.
+ * Quando a última difere, ela vira uma fase própria.
+ *
+ * Data no passado é aceita como "começar agora": o Stripe recusa start_date
+ * anterior ao instante da criação.
+ */
+async function criarAgendamento(
+  stripe: Stripe, plan: any, paymentMethod: string, desejada: Date,
+): Promise<{ schedule: Stripe.SubscriptionSchedule; inicio: Date }> {
+  const freq = plan.frequency as Frequency
+  const { interval, interval_count } = FREQ_STRIPE[freq]
+  const n = Number(plan.installments)
+  const base = round2(Number(plan.installment_amount))
+  const restante = round2(Number(plan.total) - Number(plan.entry_amount || 0))
+  const ultima = round2(restante - base * (n - 1))
+
+  const agora = Math.floor(Date.now() / 1000)
+  const ts = Math.max(Math.floor(desejada.getTime() / 1000), agora + 120)
+  const inicio = new Date(ts * 1000)
+
+  const produto = await getOrCreateProduct(stripe)
+  const item = (valor: number) => ({
+    quantity: 1,
+    price_data: {
+      currency: 'usd',
+      product: produto,
+      unit_amount: Math.round(valor * 100),
+      recurring: { interval, interval_count },
+    },
+  })
+
+  const fases: any[] =
+    ultima === base || n < 2
+      ? [{ iterations: n, items: [item(base)], metadata: { planId: plan.id } }]
+      : [
+          { iterations: n - 1, items: [item(base)], metadata: { planId: plan.id, fase: 'base' } },
+          { iterations: 1, items: [item(ultima)], metadata: { planId: plan.id, fase: 'ultima' } },
+        ]
+
+  const schedule = await stripe.subscriptionSchedules.create({
+    customer: plan.stripe_customer_id!,
+    start_date: ts,
+    end_behavior: 'cancel',
+    default_settings: {
+      default_payment_method: paymentMethod,
+      collection_method: 'charge_automatically',
+    },
+    phases: fases,
+    metadata: { planId: plan.id, planKind: 'installment' },
+  })
+
+  return { schedule, inicio }
+}
+
+/** Parcelamento de fatura SEM entrada: nada foi cobrado, só o mandato colhido. */
+async function handleInstallmentSetup(
+  db: ReturnType<typeof adminDb>, stripe: Stripe,
+  session: Stripe.Checkout.Session, planId: string,
+) {
+  const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
+  if (!plan || plan.status === 'active') return   // idempotência
+
+  const si = await stripe.setupIntents.retrieve(session.setup_intent as string)
+  const paymentMethod = si.payment_method as string
+  if (!paymentMethod) return
+
+  const desejada = plan.next_charge_date
+    ? new Date(`${plan.next_charge_date}T12:00:00Z`)
+    : new Date()
+
+  const { schedule, inicio } = await criarAgendamento(stripe, plan, paymentMethod, desejada)
+
+  await db.from('payment_plans').update({
+    status: 'active',
+    stripe_schedule_id: schedule.id,
+    stripe_subscription_id: schedule.subscription as string,
+    next_charge_date: inicio.toISOString().slice(0, 10),
+    updated_at: new Date().toISOString(),
+  }).eq('id', planId)
+
+  const fmt = inicio.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/New_York' })
+  await notifyClient(db, plan.client_id,
+    `✅ Débito automático autorizado! ${plan.installments} parcela(s) de $${Number(plan.installment_amount).toFixed(2)}, primeira em ${fmt}. Nada foi cobrado agora. Obrigado! 🙏`)
+}
+
+/** Lança um recebimento na fatura, sem duplicar se o evento for reenviado. */
+async function lancarRecebimento(
+  db: ReturnType<typeof adminDb>, invoiceId: string, clientId: string,
+  valor: number, metodo: string, referencia: string | null, objetoStripe: string,
+) {
+  if (!invoiceId || valor <= 0) return
+  const { data: ja } = await db.from('invoice_payments')
+    .select('id').eq('stripe_object', objetoStripe).maybeSingle()
+  if (ja) return
+
+  await db.from('invoice_payments').insert({
+    invoice_id: invoiceId, client_id: clientId, amount: valor,
+    method: metodo, reference: referencia, stripe_object: objetoStripe,
+    received_at: new Date().toISOString(),
+  })
+}
+
+/** Descobre o método do pagamento no Stripe. Cai em 'card' se não conseguir. */
+async function metodoDoPagamento(stripe: Stripe, invoice: Stripe.Invoice): Promise<string> {
+  try {
+    const piId = (invoice as any).payment_intent as string | null
+    if (!piId) return 'card'
+    const pi = await stripe.paymentIntents.retrieve(piId)
+    const t = (pi.payment_method_types || [])[0]
+    return t === 'us_bank_account' ? 'ach' : 'card'
+  } catch {
+    return 'card'
+  }
+}
+
+/** Parcela paga: baixa a linha do cronograma e lança o recebimento na fatura. */
+async function sincronizarParcela(
+  db: ReturnType<typeof adminDb>, stripe: Stripe,
+  plan: any, invoice: Stripe.Invoice, seq: number,
+) {
+  const valor = round2((invoice.amount_paid ?? 0) / 100)
+  const metodo = await metodoDoPagamento(stripe, invoice)
+
+  await db.from('invoice_installments').update({
+    status: 'paid',
+    paid_at: new Date().toISOString(),
+    stripe_intent: (invoice as any).payment_intent || null,
+  }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
+
+  await lancarRecebimento(db, plan.invoice_id, plan.client_id, valor, metodo,
+    (invoice as any).payment_intent || null, invoice.id as string)
+}
+
+/**
+ * Mensalidade paga vira fatura quitada — sustentação contábil: todo dinheiro
+ * que entra tem documento de origem.
+ *
+ * A numeração usa a MESMA função do banco que a tela usa (next_invoice_number),
+ * que é atômica. Reimplementar aqui criaria corrida entre a tela e o webhook.
+ *
+ * O índice único (plan_id, competencia) impede fatura repetida quando o
+ * Stripe reenvia o evento.
+ */
+async function gerarFaturaDaMensalidade(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, invoice: Stripe.Invoice,
+) {
+  const ts = ((invoice as any).period_start || invoice.created) * 1000
+  const d = new Date(ts)
+  const competencia = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`
+
+  const { data: ja } = await db.from('invoices')
+    .select('id').eq('plan_id', plan.id).eq('competencia', competencia).maybeSingle()
+  if (ja) return
+
+  const valor = round2((invoice.amount_paid ?? 0) / 100)
+  if (valor <= 0) return
+
+  const { data: num, error: numErr } = await db.rpc('next_invoice_number', { p_kind: 'invoice' })
+  if (numErr || !num) { console.error('Numeração da mensalidade:', numErr); return }
+
+  const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  const descricao = `${plan.description || 'Serviço mensal'} — ${mesRef}`
+
+  const { data: inv, error: invErr } = await db.from('invoices').insert({
+    client_id: plan.client_id,
+    doc_type: 'invoice',
+    number: num,
+    status: 'sent',
+    due_date: competencia,
+    subtotal: valor, discount: 0, total: valor,
+    payment_plan: 'full',
+    expected_method: null,
+    notes: `Gerada automaticamente pelo contrato recorrente.`,
+    plan_id: plan.id,
+    competencia,
+    created_by: plan.created_by,
+  }).select('id, number').single()
+
+  if (invErr || !inv) { console.error('Fatura da mensalidade:', invErr); return }
+
+  const { error: itErr } = await db.from('invoice_items').insert({
+    invoice_id: inv.id, service_id: null, description: descricao,
+    qty: 1, unit_price: valor, amount: valor, sort: 0,
+  })
+  if (itErr) {
+    await db.from('invoices').delete().eq('id', inv.id)
+    console.error('Item da mensalidade:', itErr)
+    return
+  }
+
+  const metodo = await metodoDoPagamento(stripe, invoice)
+  await lancarRecebimento(db, inv.id, plan.client_id, valor, metodo,
+    (invoice as any).payment_intent || null, invoice.id as string)
+
+  // O gatilho do banco deve fechar paid_total e a situação. Se não houver
+  // gatilho, a fatura ficaria 'sent' com saldo — conferimos e corrigimos.
+  const { data: conf } = await db.from('invoices')
+    .select('paid_total, status').eq('id', inv.id).maybeSingle()
+  if (conf && (Number(conf.paid_total) < valor || conf.status !== 'paid')) {
+    await db.from('invoices').update({ paid_total: valor, status: 'paid' }).eq('id', inv.id)
+  }
+
+  await db.from('invoice_audit').insert({
+    invoice_id: inv.id, action: 'recurring_invoiced',
+    next: { planId: plan.id, competencia, valor, stripeInvoice: invoice.id },
+  }).then(() => null, () => null)
+
+  await notifyClient(db, plan.client_id,
+    `✅ Recebemos o pagamento de ${mesRef}. A fatura ${inv.number} está disponível no portal. Obrigado! 🙏`)
 }
 
 let cachedProductId: string | null = null
