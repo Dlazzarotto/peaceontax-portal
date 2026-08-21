@@ -40,6 +40,46 @@ function normalizarChave(bruta: string): string | null {
   return `-----BEGIN ${m[1]}-----\n${linhas.join('\n')}\n-----END ${m[1]}-----\n`
 }
 
+/**
+ * Radiografia da variável da chave. Revela SOMENTE estrutura:
+ * tamanho, cabeçalho, tipo de quebra de linha. Nenhum byte do miolo sai daqui.
+ */
+function radiografiaChave(bruta: string) {
+  const v = bruta || ''
+  const cabecalho = /-----BEGIN ([A-Z0-9 ]+)-----/.exec(v)?.[1] || null
+  const temFim = /-----END ([A-Z0-9 ]+)-----/.test(v)
+  const soBase64 = v.length > 100 && /^[A-Za-z0-9+/=\s]+$/.test(v)
+
+  // caso "colaram o PEM inteiro em base64"
+  let base64DePem = false
+  if (soBase64) {
+    try { base64DePem = Buffer.from(v.replace(/\s/g, ''), 'base64').toString('utf8').includes('-----BEGIN') } catch { /* ignora */ }
+  }
+
+  return {
+    tamanho: v.length,
+    cabecalho_encontrado: cabecalho,
+    tem_linha_final_END: temFim,
+    aspas_nas_pontas: /^["'`]|["'`]$/.test(v.trim()),
+    quebras_de_linha_reais: (v.match(/\n/g) || []).length,
+    barra_n_literal: (v.match(/\\n/g) || []).length,
+    parece_base64_puro: soBase64,
+    base64_contendo_pem: base64DePem,
+  }
+}
+
+function diagnosticoChave(r: ReturnType<typeof radiografiaChave>): string {
+  if (r.tamanho < 200) return `A variável tem só ${r.tamanho} caracteres — uma chave RSA 2048 tem mais de 1600. O valor foi cortado ao colar no Vercel.`
+  if (r.base64_contendo_pem) return 'A chave foi colada codificada em base64 (o PEM inteiro virou base64). Cole o conteúdo do arquivo .key como texto, começando por -----BEGIN.'
+  if (r.cabecalho_encontrado === 'ENCRYPTED PRIVATE KEY') return 'A chave tem senha. Gere uma sem senha: openssl pkcs8 -topk8 -nocrypt -in chave.key -out chave-pkcs8.key'
+  if (r.cabecalho_encontrado === 'OPENSSH PRIVATE KEY') return 'Chave no formato OpenSSH, não serve. Baixe a RSA Keypair pelo painel do DocuSign (Apps and Keys).'
+  if (r.cabecalho_encontrado && !r.tem_linha_final_END) return `Encontrei o começo (-----BEGIN ${r.cabecalho_encontrado}-----) mas não o fim. O valor foi truncado: falta a linha -----END.`
+  if (!r.cabecalho_encontrado && r.parece_base64_puro) return 'Só o miolo da chave foi colado, sem as linhas -----BEGIN PRIVATE KEY----- e -----END PRIVATE KEY-----. Cole o arquivo inteiro.'
+  if (!r.cabecalho_encontrado) return 'Não há nenhuma linha -----BEGIN...----- na variável. O conteúdo colado não é uma chave PEM.'
+  if (r.aspas_nas_pontas) return 'O valor está entre aspas. Recole sem aspas — o Vercel não precisa delas.'
+  return `Cabeçalho ${r.cabecalho_encontrado} presente, mas o miolo não formou uma chave válida. Baixe a chave de novo no DocuSign e recole.`
+}
+
 const ehDemo = (s: string) => /(^|\/\/|\.)(account-d\.docusign\.com|demo\.docusign\.net)/.test(s)
 
 export async function GET() {
@@ -115,13 +155,14 @@ export async function GET() {
     if (!pem) throw new Error('Não foi encontrado um bloco PEM válido na variável.')
     chave = crypto.createPrivateKey(pem)
   } catch (e: any) {
+    const raio = radiografiaChave(KEY_RAW)
     passos.push({
       passo: '3. Chave privada RSA',
       ok: false,
       detalhe: e?.message || 'Falha ao carregar a chave.',
-      acao: 'Recole a chave no Vercel. Se tiver senha, gere uma sem senha: openssl pkcs8 -topk8 -nocrypt -in chave.key -out chave-pkcs8.key',
+      acao: diagnosticoChave(raio),
     })
-    return parar()
+    return parar({ radiografia_da_chave: raio })
   }
   passos.push({
     passo: '3. Chave privada RSA',
