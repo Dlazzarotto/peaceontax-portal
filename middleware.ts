@@ -1,9 +1,9 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 
 const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar', '/privacy', '/terms', '/privacidade', '/staff-setup']
 
-// APIs pÃºblicas: sem sessÃ£o necessÃ¡ria
+// APIs públicas: sem sessão necessária
 const API_PUBLIC = [
   '/api/invite',
   '/api/agenda/slots',
@@ -36,11 +36,11 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // APIs: pÃºblicas explÃ­citas passam; demais exigem sessÃ£o
+  // APIs: públicas explícitas passam; demais exigem sessão
   if (pathname.startsWith('/api/')) {
     if (API_PUBLIC.some(p => pathname === p || pathname.startsWith(p + '/'))) return response
     const { data: { user } } = await sb.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'NÃ£o autenticado' }, { status: 401 })
+    if (!user) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
     return response
   }
 

@@ -8,7 +8,7 @@ import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2025-05-28.basil',
+  apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion,
 })
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'

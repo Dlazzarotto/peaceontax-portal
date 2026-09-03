@@ -154,7 +154,9 @@ Além do valor operacional, essa trilha existe por uma razão concreta: **num qu
 
 ## 7. Verificação
 
-Existe um script `auditoria.ps1` na raiz do projeto que confere **20 invariantes** do sistema: o motor de regras nos três pontos, transferências, cartões, isolamento non-profit, formato de datas, permissões em todas as rotas do financeiro e assinatura do webhook.
+Existe um script de auditoria na raiz do projeto (`npm run auditoria`, arquivo `auditoria.mjs`; `auditoria.ps1` é a versão original em PowerShell) que confere os invariantes do sistema: o motor de regras nos três pontos, transferências, cartões, isolamento non-profit, formato de datas, permissões em todas as rotas do financeiro, assinatura dos webhooks do Stripe e da Twilio, travas do SMS, lista fechada de APIs públicas e integridade dos arquivos (acentos corrompidos, BOM, `.bak` versionado).
+
+Junto dele, `npm run typecheck` e `npm run lint` são a trava de qualidade — a Vercel publica mesmo com erro de tipo, então esses três comandos rodam antes de cada push.
 
 Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente instalado — evita horas investigando sintomas de código antigo.
 

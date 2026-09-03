@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "auditoria": "node auditoria.mjs"
   },
   "dependencies": {
     "stripe": "^17.0.0", "next": "14.2.5",

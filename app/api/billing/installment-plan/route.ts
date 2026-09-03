@@ -51,7 +51,7 @@ function avancar(base: Date, freq: Frequency, passos: number): Date {
 }
 
 /** Cronograma: base para todas, última absorve o centavo da divisão. */
-export function montarCronograma(restante: number, n: number, primeira: string, freq: Frequency) {
+function montarCronograma(restante: number, n: number, primeira: string, freq: Frequency) {
   const base = Math.floor((restante / n) * 100) / 100
   const linhas: { seq: number; due_date: string; amount: number }[] = []
   const inicio = new Date(`${primeira}T12:00:00Z`)

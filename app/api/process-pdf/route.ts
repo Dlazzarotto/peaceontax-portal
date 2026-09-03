@@ -12,7 +12,8 @@ export async function POST(req: NextRequest) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+          // bloco 'document' (PDF) e aceito pela API; o tipo nao existe nesta versao do SDK
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } } as any,
           { type: 'text', text: `Extract ALL transactions from this ${bank} bank statement for ${month} ${year}. Return ONLY a valid JSON array:\n[{"date":"MM/DD/YYYY","payee":"name","memo":"desc","debit":"0.00","deposit":"0.00"}]` }
         ]
       }]

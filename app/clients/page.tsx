@@ -39,12 +39,6 @@ export default function ClientsPage() {
     fetch(`/api/clients?${params}`).then(r => r.json()).then(d => { setClients(d.clients || []); setLoading(false) })
   }
 
-  useEffect(() => {
-    fetch('/api/team').then(r => r.json())
-      .then(d => setTeam((d.members || []).map((x: any) => x.name)))
-      .catch(() => null)
-  }, [])
-
   useEffect(() => { load(search) }, [search, filter])
 
   const updateStage = async (clientId: string, newStage: string) => {
@@ -201,9 +195,19 @@ export default function ClientsPage() {
 function NewClientModal({ onSave, onClose }: { onSave: () => void; onClose: () => void }) {
   const [team, setTeam] = useState<string[]>([])
   const [form, setForm]     = useState({ name:'', email:'', phone:'', type:'individual', assignee:'', stage:'Onboarding', business_name:'', ein:'', business_type:'', filing_status:'', address_line1:'', city:'', state:'MA', zip:'', notes:'' })
+
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState('')
   const set = (k: string, v: string) => setForm(p => ({...p,[k]:v}))
+
+  // Lista de responsáveis para o campo "Assigned to" — antes ficava num efeito
+  // da página, que chamava um setTeam inexistente naquele escopo (erro engolido
+  // pelo catch), e o campo aparecia sempre vazio.
+  useEffect(() => {
+    fetch('/api/team').then(r => r.json())
+      .then(d => setTeam((d.members || []).map((x: any) => x.name)))
+      .catch(() => null)
+  }, [])
 
   const save = async () => {
     if (!form.name || !form.email) { setError('Name and email are required'); return }

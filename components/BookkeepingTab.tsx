@@ -224,7 +224,7 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   const csvPreviewFile = async (f: File) => {
     setCsvBusy(true); setMsg(''); setCsvPrev(null)
-    const fd = new FormanData()
+    const fd = new FormData()
     fd.append('file', f); fd.append('clientId', clientId); fd.append('preview', 'true')
     let r: any
     try {
@@ -240,7 +240,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const csvImport = async () => {
     if (!csvFile) return
     setCsvBusy(true); setMsg('')
-    const fd = new FormanData()
+    const fd = new FormData()
     fd.append('file', csvFile); fd.append('clientId', clientId); fd.append('preview', 'false')
     if (csvAcc) fd.append('accountId', csvAcc)
     else if (csvNewAcc.trim()) fd.append('accountName', csvNewAcc.trim())
