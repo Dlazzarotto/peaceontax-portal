@@ -1,6 +1,7 @@
 import { getUser } from '@/lib/supabase-server'
 import { createClient } from '@supabase/supabase-js'
 import Link from 'next/link'
+import SmsConsent from '@/components/portal/SmsConsent'
 
 const T: Record<string, any> = {
   en: { welcome:'Welcome back', docs:'My Documents', docsDesc:'Upload and view your files', organizer:'Tax Organizer', organizerDesc:'Track your return status', payments:'Payments', messages:'Messages', messagesDesc:'Chat with your accountant', noBalance:'No balance due', taxYear:'Tax Year 2024', accounting:'Accounting', accountingDesc:'P&L, Balance Sheet and Vendors' },
@@ -75,6 +76,9 @@ export default async function PortalPage() {
           </Link>
         ))}
       </div>
+
+      {/* Consentimento de SMS — o cliente autoriza no próprio portal (prova mais forte) */}
+      <SmsConsent lang={lang} />
 
       {/* Documentos recentes */}
       <div style={{ background:'#fff', borderRadius:14, padding:20, border:'1px solid #e2e8f4' }}>

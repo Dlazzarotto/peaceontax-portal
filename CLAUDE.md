@@ -76,9 +76,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `manager`, `junior`. Quem não está na tabela é `junior`. O
   `user_metadata.role` do Supabase só distingue firma × cliente no middleware.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
-  `X-Twilio-Signature`. Webhook nunca devolve erro à Twilio (reenvio duplica).
+  `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
+  `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
 - **SMS só sai pela `lib/sms.ts`**, que confere consentimento, STOP e celular
-  válido. Nenhum fluxo chama a Twilio direto.
+  válido. Nenhum fluxo chama a Twilio direto. Consentimento só entra por
+  `registrarConsentimento` (portal, ficha do cliente ou palavra-chave); o texto
+  que o cliente lê é o de `lib/sms-consent-text.ts`, versionado. START por SMS
+  só reativa quem já tinha opt-in.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

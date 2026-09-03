@@ -9,6 +9,7 @@ const API_PUBLIC = [
   '/api/agenda/slots',
   '/api/agenda/bookings',
   '/api/stripe/webhook',
+  '/api/sms/webhook',  // Twilio: STOP/START e mensagens recebidas — validado por X-Twilio-Signature
   '/api/firm/setup',   // aceite de convite — quem aceita ainda nao tem login
 ]
 

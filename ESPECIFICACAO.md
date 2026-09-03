@@ -123,6 +123,8 @@ O botão **Ver contrato** abre a prévia sem tocar no DocuSign, para conferênci
 
 **Consentimento** registrado com data, hora, IP, origem (portal, equipe ou palavra-chave) e o texto exato que o cliente viu. O histórico nunca é sobrescrito.
 
+Três caminhos alimentam esse registro: o **próprio cliente, no portal** (a prova mais forte: ele lê o texto versionado em `lib/sms-consent-text.ts`, marca que concorda e ficam IP e navegador); a **equipe, na ficha do cliente** (exige descrever como o cliente autorizou); e a **palavra-chave por SMS** (webhook `/api/sms/webhook`, assinatura da Twilio conferida). STOP e equivalentes gravam o cancelamento e a biblioteca de envio passa a recusar na hora. START só reativa quem já tinha autorizado antes — um START de quem nunca autorizou não cria consentimento. Mensagens de texto comuns entram na fila do Atendimento no canal `sms`, sem passar pelo bot.
+
 **WhatsApp** pela API do Twilio, com atendimento pelo portal: bot responde consultas de status primeiro, escala para humano quando não souber. Mensagens saem como Peace on Tax; a autoria fica visível só para a equipe. Respeita a janela de 24 horas da Meta — fora dela, apenas templates aprovados.
 
 ---
@@ -172,10 +174,10 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 **Construído desde a versão anterior deste documento** (conferido no código em 3 de setembro de 2026):
 - Tela de **Atendimento** (fila e conversa) em `app/dashboard/atendimento`, com as rotas de fila, conversa, envio e atribuição
 - Webhook de recebimento do WhatsApp e o bot de consultas (`lib/wa-bot.ts`), determinístico, nível `publico` por padrão
+- Consentimento de SMS **no portal do cliente** (cartão na página inicial, texto versionado) e webhook de SMS recebido com STOP/START/HELP, dedupe por SID e encaminhamento de texto livre ao Atendimento. Migração: `sql/sms-consentimento-portal-v1.sql`
 - Tela de **novo serviço mensal** nos Planos (payroll, sales tax…), com item do catálogo, valor e **dia da cobrança (1 a 28)** escolhidos no acordo; o formulário de bookkeeping ganhou o mesmo campo. O contrato passou a ler o dia acordado (antes lia uma coluna inexistente e imprimia sempre dia 5) e tem cláusulas próprias para serviço mensal, sem a regra de transações incluídas
 
 **A construir:**
-- Consentimento de SMS **no portal do cliente** e tratamento de STOP/START. Hoje o consentimento só é registrado pela equipe (ficha do cliente); a biblioteca de envio já aceita origem `portal` e `sms_keyword`, mas não existe tela no portal nem webhook de SMS recebido — um STOP enviado pelo cliente é honrado pela Twilio, porém não fica gravado em `sms_opted_out_at`
 - Aviso de cobrança três dias antes do débito (não há rotina agendada no projeto; exige cron na Vercel e o SMS operando)
 - Importação do histórico do QuickBooks (último ano)
 
