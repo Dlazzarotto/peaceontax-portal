@@ -1,6 +1,6 @@
 # Peace on Tax OS — Especificação do Sistema
 
-**Documento vivo** · Atualizado em 19 de agosto de 2026
+**Documento vivo** · Atualizado em 3 de setembro de 2026
 
 ---
 
@@ -169,12 +169,14 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - Cadastro do WhatsApp Sender (Meta)
 - Teste do envio de contrato pelo DocuSign
 
+**Construído desde a versão anterior deste documento** (conferido no código em 3 de setembro de 2026):
+- Tela de **Atendimento** (fila e conversa) em `app/dashboard/atendimento`, com as rotas de fila, conversa, envio e atribuição
+- Webhook de recebimento do WhatsApp e o bot de consultas (`lib/wa-bot.ts`), determinístico, nível `publico` por padrão
+
 **A construir:**
-- Tela de **Atendimento** (fila e conversa) — trava a migração do WhatsApp
-- Webhook de recebimento e o bot de consultas
-- Consentimento de SMS no portal do cliente e tratamento de STOP/START
-- Aviso de cobrança três dias antes do débito
-- Tela de novo serviço mensal nos Planos
+- Consentimento de SMS **no portal do cliente** e tratamento de STOP/START. Hoje o consentimento só é registrado pela equipe (ficha do cliente); a biblioteca de envio já aceita origem `portal` e `sms_keyword`, mas não existe tela no portal nem webhook de SMS recebido — um STOP enviado pelo cliente é honrado pela Twilio, porém não fica gravado em `sms_opted_out_at`
+- Aviso de cobrança três dias antes do débito (não há rotina agendada no projeto; exige cron na Vercel e o SMS operando)
+- Tela de **novo serviço mensal** nos Planos. A API já aceita `kind: 'monthly'` e o dia da cobrança (1 a 28); a tela só oferece parcelamento e bookkeeping, e o formulário de bookkeeping não expõe o dia, caindo no padrão 5
 - Importação do histórico do QuickBooks (último ano)
 
 **Decisões pendentes:**
