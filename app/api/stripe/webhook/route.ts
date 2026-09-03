@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
           status: 'active',
           updated_at: new Date().toISOString(),
         }).eq('id', meta.planId)
-        await notifyClient(db, meta.clientId, '✅ Contrato de bookkeeping ativado! A cobrança mensal ocorre na data combinada. Obrigado pela confiança! 🙏')
+        await notifyClient(db, meta.clientId, '✅ Contrato ativado! A cobrança mensal ocorre na data combinada. Obrigado pela confiança! 🙏')
         return NextResponse.json({ received: true })
       }
 
@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
 
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
-        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${(plan.paid_installments||0)+1}/${plan.installments}` : 'mensalidade bookkeeping'}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
+        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${(plan.paid_installments||0)+1}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
       })
 
       await notifyClient(db, plan.client_id, '⚠️ Não conseguimos processar seu pagamento. Uma nova tentativa será feita automaticamente. Se preferir, entre em contato: (833) 732-2327.')
