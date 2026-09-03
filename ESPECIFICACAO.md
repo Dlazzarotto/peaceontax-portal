@@ -69,6 +69,8 @@ A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimon
 
 O núcleo operacional. Importa movimentação bancária por **Plaid**, **PDF de extrato** ou **CSV**, classifica automaticamente e produz os relatórios.
 
+**Histórico do QuickBooks.** Para trazer o passado sem redigitar: exporta-se do QuickBooks Online o relatório *Transaction List by Date* (ou *Transaction Detail by Account*) em CSV e importa-se na aba Bookkeeping. Cada conta do relatório vira (ou aponta para) uma conta bancária do cliente; a categoria vem do *Split* e, quando o nome casa com uma categoria do sistema, o lançamento entra já aprovado (a decisão foi de uma pessoa no QuickBooks). *Split* sem correspondência pode ser mapeado na prévia ou fica pendente; "-Split-" (várias categorias) sempre fica pendente. O dedupe é o mesmo do CSV e do PDF, e a origem fica marcada como `quickbooks`.
+
 **Motor de classificação** — três pontos do sistema executam a mesma lógica (importação, aplicação de regras e criação de regra), mantidos sincronizados:
 
 - **Casamento por palavra inteira.** Fragmentos com menos de 3 caracteres são ignorados. Evita que "mobil" capture "Mobilizat" ou "bk" capture "BNF BK:ITAU".
@@ -178,10 +180,11 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - Webhook de recebimento do WhatsApp e o bot de consultas (`lib/wa-bot.ts`), determinístico, nível `publico` por padrão
 - Consentimento de SMS **no portal do cliente** (cartão na página inicial, texto versionado) e webhook de SMS recebido com STOP/START/HELP, dedupe por SID e encaminhamento de texto livre ao Atendimento. Migração: `sql/sms-consentimento-portal-v1.sql`
 - **Aviso de cobrança três dias antes do débito**: cron diário na Vercel, SMS com fallback para e-mail e aviso no portal, trilha em `plan_audit`. Exige a variável `CRON_SECRET` no ambiente
+- **Importação do histórico do QuickBooks** pelo relatório exportado (`/api/bookkeeping/import-quickbooks`, prévia com contas, tipos e categorias antes de gravar)
 - Tela de **novo serviço mensal** nos Planos (payroll, sales tax…), com item do catálogo, valor e **dia da cobrança (1 a 28)** escolhidos no acordo; o formulário de bookkeeping ganhou o mesmo campo. O contrato passou a ler o dia acordado (antes lia uma coluna inexistente e imprimia sempre dia 5) e tem cláusulas próprias para serviço mensal, sem a regra de transações incluídas
 
 **A construir:**
-- Importação do histórico do QuickBooks (último ano)
+- Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
 **Decisões pendentes:**
 - Módulo Plans × tabela `recurring_plans` (duplicação a resolver)

@@ -113,7 +113,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 ```
 app/dashboard/       área da equipe (clientes, bookkeeping, financeiro, agenda, atendimento)
 app/portal/          área do cliente
-app/api/bookkeeping/ importação (Plaid, CSV, PDF), regras, relatórios, conciliação
+app/api/bookkeeping/ importação (Plaid, CSV, PDF, QuickBooks), regras, relatórios, conciliação
 app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento
 app/api/plans/       contratos recorrentes
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)

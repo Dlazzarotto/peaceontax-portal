@@ -187,6 +187,14 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [csvAcc, setCsvAcc]       = useState('')
   const [csvNewAcc, setCsvNewAcc] = useState('')
   const [csvBusy, setCsvBusy]     = useState(false)
+  // Importação do histórico do QuickBooks (relatório exportado)
+  const [qbFile, setQbFile]     = useState<File | null>(null)
+  const [qbPrev, setQbPrev]     = useState<any>(null)
+  const [qbBusy, setQbBusy]     = useState(false)
+  const [qbContas, setQbContas] = useState<Record<string, { importar: boolean; accountId: string; tipo: string; inverter: boolean }>>({})
+  const [qbMap, setQbMap]       = useState<Record<string, string>>({})
+  const [qbFrom, setQbFrom]     = useState('')
+  const [qbTo, setQbTo]         = useState('')
   // Conciliação de transferências entre contas
   const [matchTx, setMatchTx]   = useState<Tx | null>(null)
   const [matchAcc, setMatchAcc] = useState('')
@@ -235,6 +243,50 @@ export default function BookkeepingTab({ clientId }: Props) {
     if (!r?.ok) { setMsg(`Erro ao ler o CSV: ${r?.error || 'formato não reconhecido'}`); return }
     setCsvFile(f); setCsvPrev(r)
     setCsvFrom(''); setCsvTo('')   // por padrão importa tudo; o recorte é decisão sua
+  }
+
+  const qbPreviewFile = async (f: File) => {
+    setQbBusy(true); setMsg(''); setQbPrev(null)
+    const fd = new FormData()
+    fd.append('file', f); fd.append('clientId', clientId); fd.append('preview', 'true')
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/import-quickbooks', { method:'POST', body: fd })
+      r = await resp.json()
+    } catch (e) { r = { error: (e as Error).message } }
+    setQbBusy(false)
+    if (!r?.ok) { setMsg(`Erro ao ler o relatório: ${r?.error || 'formato não reconhecido'}`); return }
+    setQbFile(f); setQbPrev(r); setQbFrom(''); setQbTo('')
+    // Cada conta do QuickBooks: por padrão cria conta nova com o mesmo nome; cartão detectado pelo nome
+    const escolhas: Record<string, any> = {}
+    for (const c of r.contas || []) {
+      const cartao = /amex|visa|mastercard|master card|credit|cartao|cartão|card/i.test(c.nome)
+      escolhas[c.nome] = { importar: true, accountId: '', tipo: cartao ? 'credit' : 'checking', inverter: false }
+    }
+    setQbContas(escolhas); setQbMap({})
+  }
+
+  const qbImport = async () => {
+    if (!qbFile || !qbPrev) return
+    setQbBusy(true); setMsg('')
+    const fd = new FormData()
+    fd.append('file', qbFile); fd.append('clientId', clientId); fd.append('preview', 'false')
+    if (qbFrom) fd.append('from', qbFrom)
+    if (qbTo) fd.append('to', qbTo)
+    fd.append('contas', JSON.stringify(Object.entries(qbContas).map(([nome, e]) => ({
+      nome, importar: e.importar, accountId: e.accountId || null, tipo: e.tipo, inverter: e.inverter }))))
+    fd.append('mapeamento', JSON.stringify(qbMap))
+    let r: any
+    try {
+      const resp = await fetch('/api/bookkeeping/import-quickbooks', { method:'POST', body: fd })
+      r = await resp.json()
+    } catch (e) { r = { error: (e as Error).message } }
+    setQbBusy(false)
+    if (!r?.ok) { setMsg(`Erro na importação: ${r?.error}`); return }
+    setMsg(`✓ QuickBooks importado: ${r.inseridas} lançamento(s) novo(s)`
+      + (r.duplicadas > 0 ? ` · ${r.duplicadas} já existiam` : '')
+      + (r.semCategoria > 0 ? ` · ${r.semCategoria} sem categoria (pendentes${r.classificadasPorRegra ? `, ${r.classificadasPorRegra} classificados por regra` : ''})` : ''))
+    setQbPrev(null); setQbFile(null); load()   // load() tambem recarrega as contas
   }
 
   const csvImport = async () => {
@@ -1011,6 +1063,135 @@ export default function BookkeepingTab({ clientId }: Props) {
               </button>
               <button onClick={() => { setCsvPrev(null); setCsvFile(null); setCsvAcc(''); setCsvNewAcc('') }}
                 style={btn('#6a7a9a')}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Importar histórico do QuickBooks (relatório exportado) */}
+      <div style={{ ...card, marginBottom:14 }}>
+        <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 4px' }}>
+          📗 Importar histórico do QuickBooks
+        </h3>
+        <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 12px', lineHeight:1.5 }}>
+          No QuickBooks Online: Relatórios → <b>Transaction List by Date</b> (ou <b>Transaction Detail by Account</b>) → período desejado → Exportar para Excel → salvar como CSV.
+          A categoria vem do Split do QuickBooks; o que não casar com as categorias do sistema fica pendente. Reenviar o arquivo <b>não duplica</b>.
+        </p>
+
+        {!qbPrev && (
+          <input type="file" accept=".csv,.txt,.tsv,text/csv,text/plain" disabled={qbBusy}
+            onChange={e => { const f = e.target.files?.[0]; if (f) qbPreviewFile(f); e.currentTarget.value = '' }}
+            style={{ fontSize:13 }} />
+        )}
+        {qbBusy && <p style={{ fontSize:13, color:'#6a7a9a', margin:'8px 0 0' }}>Processando…</p>}
+
+        {qbPrev && (
+          <div style={{ background:'#f8fafc', border:'1px solid #e2e8f4', borderRadius:12, padding:'14px 16px' }}>
+            <div style={{ fontSize:13.5, fontWeight:700, color:'#0f2340', marginBottom:8 }}>{qbFile?.name}</div>
+            <div style={{ fontSize:13, color:'#4a5a70', lineHeight:1.7, marginBottom:10 }}>
+              <b>{qbPrev.resumo.total}</b> lançamentos · {fmtDate(qbPrev.resumo.de)} a {fmtDate(qbPrev.resumo.ate)} · formato {qbPrev.formato === 'detalhe' ? 'Detail by Account' : 'List by Date'}
+              {qbPrev.resumo.ignoradas > 0 && <> · <span style={{ color:'#b02020' }}>{qbPrev.resumo.ignoradas} linha(s) ignorada(s)</span></>}
+              <br />
+              <span style={{ fontSize:11.5, color:'#8a9ab0' }}>
+                Tipos: {(qbPrev.tipos || []).map((t: any) => `${t.tipo} (${t.total})`).join(' · ')}
+              </span>
+            </div>
+
+            <table style={{ width:'100%', borderCollapse:'collapse' as const, fontSize:12, marginBottom:12 }}>
+              <tbody>
+                {(qbPrev.amostra || []).map((a: any, i: number) => (
+                  <tr key={i} style={{ borderBottom:'1px solid #eef1f6' }}>
+                    <td style={{ padding:'5px 6px', whiteSpace:'nowrap' as const, color:'#6a7a9a' }}>{fmtDate(a.date)}</td>
+                    <td style={{ padding:'5px 6px' }}>{String(a.description).slice(0, 50)}</td>
+                    <td style={{ padding:'5px 6px', color:'#6a7a9a' }}>{a.split || '—'}</td>
+                    <td style={{ padding:'5px 6px', textAlign:'right' as const, fontWeight:700, color: a.amount < 0 ? '#b02020' : '#1a6b4a' }}>
+                      {a.amount < 0 ? '−' : ''}${Math.abs(a.amount).toFixed(2)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Contas do QuickBooks → contas do sistema */}
+            <div style={{ fontSize:11.5, fontWeight:700, color:'#6a7a9a', marginBottom:5 }}>Contas encontradas no relatório</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12 }}>
+              {(qbPrev.contas || []).map((c: any) => {
+                const e = qbContas[c.nome] || { importar: true, accountId: '', tipo: 'checking', inverter: false }
+                const set = (patch: any) => setQbContas(p => ({ ...p, [c.nome]: { ...e, ...patch } }))
+                return (
+                  <div key={c.nome} style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', fontSize:12.5, background:'#fff', border:'1px solid #e2e8f4', borderRadius:8, padding:'8px 10px' }}>
+                    <label style={{ display:'flex', gap:6, alignItems:'center', minWidth:220, cursor:'pointer' }}>
+                      <input type="checkbox" checked={e.importar} onChange={ev => set({ importar: ev.target.checked })} />
+                      <b>{c.nome}</b>
+                    </label>
+                    <span style={{ color:'#6a7a9a' }}>{c.total} lanç. · {c.entradas} entradas · {c.saidas} saídas</span>
+                    <select value={e.accountId} onChange={ev => set({ accountId: ev.target.value })} style={sel}>
+                      <option value="">— criar conta "{c.nome}" —</option>
+                      {(qbPrev.contasCliente || []).map((a: any) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                    {!e.accountId && (
+                      <select value={e.tipo} onChange={ev => set({ tipo: ev.target.value })} style={sel}>
+                        <option value="checking">conta corrente/poupança</option>
+                        <option value="credit">cartão de crédito</option>
+                      </select>
+                    )}
+                    <label style={{ display:'flex', gap:5, alignItems:'center', cursor:'pointer', color:'#6a5a10' }} title="Use se o relatório mostrar as compras como valor positivo (comum em cartão de crédito)">
+                      <input type="checkbox" checked={e.inverter} onChange={ev => set({ inverter: ev.target.checked })} /> inverter sinal
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Categorias (Split) sem correspondência */}
+            {(qbPrev.categorias || []).some((c: any) => !c.categoria) && (
+              <div style={{ background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'11px 14px', marginBottom:12 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:'#6a5a10', marginBottom:6 }}>
+                  Categorias do QuickBooks sem correspondência no sistema — escolha para onde vão (ou deixe pendente)
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                  {(qbPrev.categorias || []).filter((c: any) => !c.categoria).map((c: any) => (
+                    <div key={c.split} style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', fontSize:12.5 }}>
+                      <span style={{ minWidth:220 }}><b>{c.split}</b> <span style={{ color:'#8a9ab0' }}>({c.total})</span></span>
+                      {c.split === '-Split-' ? (
+                        <span style={{ color:'#6a5a10' }}>várias categorias no QuickBooks — fica pendente para classificar aqui</span>
+                      ) : (
+                        <select value={qbMap[c.split] || ''} onChange={ev => setQbMap(m => ({ ...m, [c.split]: ev.target.value }))} style={sel}>
+                          <option value="">— deixar pendente —</option>
+                          {categories.map(cat => <option key={cat.name} value={cat.name}>{cat.name}</option>)}
+                        </select>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {(qbPrev.categorias || []).filter((c: any) => c.categoria).length > 0 && (
+              <p style={{ fontSize:12, color:'#1a6b4a', margin:'0 0 12px' }}>
+                ✓ {(qbPrev.categorias || []).filter((c: any) => c.categoria).length} categoria(s) do QuickBooks casam com as do sistema e entram já classificadas.
+              </p>
+            )}
+
+            {qbPrev.existentes?.total > 0 && (
+              <div style={{ background:'#fff7e0', border:'1px solid #e0c060', borderRadius:10, padding:'11px 14px', marginBottom:12, fontSize:12.5, color:'#6a5a10', lineHeight:1.6 }}>
+                ⚠️ Este cliente já tem {qbPrev.existentes.total} lançamentos no período do relatório
+                ({(qbPrev.existentes.contas || []).map((c: any) => `${c.nome}: ${c.total}`).join(' · ')}).
+                O QuickBooks descreve o lançamento de forma diferente do banco, então o mesmo lançamento pode entrar duas vezes — use o recorte de período para importar só o que veio antes do que já existe.
+              </div>
+            )}
+
+            <div style={{ fontSize:11.5, fontWeight:700, color:'#6a7a9a', marginBottom:5 }}>Período a importar (deixe em branco para tudo)</div>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12, alignItems:'center' }}>
+              <input type="date" value={qbFrom} onChange={e => setQbFrom(e.target.value)} style={sel} />
+              <span style={{ fontSize:12.5, color:'#6a7a9a' }}>até</span>
+              <input type="date" value={qbTo} onChange={e => setQbTo(e.target.value)} style={sel} />
+            </div>
+
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+              <button onClick={qbImport} disabled={qbBusy || !Object.values(qbContas).some(e => e.importar)} style={btn('#1a6b4a', qbBusy)}>
+                {qbBusy ? 'Importando…' : '⬇️ Importar do QuickBooks'}
+              </button>
+              <button onClick={() => { setQbPrev(null); setQbFile(null) }} style={btn('#6a7a9a')}>Cancelar</button>
             </div>
           </div>
         )}
