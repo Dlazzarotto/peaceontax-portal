@@ -17,38 +17,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
-import { type Frequency } from '@/lib/plans'
+import { avancarData, type Frequency } from '@/lib/plans'
 
 export const dynamic = 'force-dynamic'
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 
-/**
- * Avança a data conforme a frequência acordada.
- *
- * No mensal, mês curto é tratado: dia 30 + 3 meses a partir de novembro
- * cairia em "30 de fevereiro", que o JavaScript transborda para 2 de março
- * — deixando duas parcelas em março e nenhuma em fevereiro. Aqui a data
- * é limitada ao último dia do mês de destino.
- */
-function avancar(base: Date, freq: Frequency, passos: number): Date {
-  const d = new Date(base)
-  if (freq === 'weekly') {
-    d.setUTCDate(d.getUTCDate() + 7 * passos)
-    return d
-  }
-  if (freq === 'biweekly') {
-    d.setUTCDate(d.getUTCDate() + 14 * passos)
-    return d
-  }
-  const dia = d.getUTCDate()
-  const ano = d.getUTCFullYear()
-  const mes = d.getUTCMonth() + passos
-  // Dia 0 do mês seguinte = último dia do mês de destino
-  const ultimo = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate()
-  return new Date(Date.UTC(ano, mes, Math.min(dia, ultimo), 12, 0, 0))
-}
+// avancarData (lib/plans.ts) trata mês curto: ver comentário lá.
 
 /** Cronograma: base para todas, última absorve o centavo da divisão. */
 function montarCronograma(restante: number, n: number, primeira: string, freq: Frequency) {
@@ -58,7 +34,7 @@ function montarCronograma(restante: number, n: number, primeira: string, freq: F
   for (let i = 0; i < n; i++) {
     linhas.push({
       seq: i + 1,
-      due_date: avancar(inicio, freq, i).toISOString().slice(0, 10),
+      due_date: avancarData(inicio, freq, i).toISOString().slice(0, 10),
       amount: i === n - 1 ? round2(restante - base * (n - 1)) : base,
     })
   }

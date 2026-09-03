@@ -69,7 +69,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   único é dívida aceita, não decisão tomada.
 - **Toda rota de API exige sessão** (`middleware.ts`). A lista `API_PUBLIC` é
   fechada: só entra rota que um visitante sem login precisa mesmo chamar
-  (agendamento, convite, webhooks). Dentro da rota, `getAuth` de
+  (agendamento, convite, webhooks, cron da Vercel). Rota de `/api/cron/` só
+  aceita `Authorization: Bearer CRON_SECRET` e recusa tudo se a variável não
+  existir. Rotinas agendadas ficam em `vercel.json`. Dentro da rota, `getAuth` de
   `lib/api-auth.ts` confere o dono: equipe acessa qualquer cliente, cliente só
   o próprio.
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
@@ -117,6 +119,8 @@ app/api/plans/       contratos recorrentes
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)
 app/api/stripe/webhook   entrada única dos eventos de pagamento
 app/api/whatsapp/    webhook, fila, conversa, bot
+app/api/sms/webhook  STOP/START e SMS recebidos (Twilio)
+app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes)
 components/          BookkeepingTab, PlansTab, QuotesTab, ReconcileTab, SignaturesTab…
 lib/                 motor de regras, permissões, SMS, contrato, integrações
 sql/ e *.sql         migrações rodadas à mão no SQL Editor do Supabase (idempotentes)

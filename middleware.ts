@@ -10,6 +10,7 @@ const API_PUBLIC = [
   '/api/agenda/bookings',
   '/api/stripe/webhook',
   '/api/sms/webhook',  // Twilio: STOP/START e mensagens recebidas — validado por X-Twilio-Signature
+  '/api/cron',         // rotinas agendadas da Vercel — validado por CRON_SECRET (Authorization: Bearer)
   '/api/firm/setup',   // aceite de convite — quem aceita ainda nao tem login
 ]
 

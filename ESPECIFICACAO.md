@@ -105,6 +105,8 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 **Impressão.** Toda fatura e orçamento gera documento formal com timbre, dados do cliente, itens, parcelas, pagamentos recebidos e saldo.
 
+**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — mensalidade no dia acordado, parcela pelo cronograma — e avisa o cliente: por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
+
 ### 4.4 Planos e contratos
 
 Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e valor por excedente) e **outros serviços mensais** (payroll, sales tax), mais **parcelamento** de serviços avulsos com entrada.
@@ -175,10 +177,10 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - Tela de **Atendimento** (fila e conversa) em `app/dashboard/atendimento`, com as rotas de fila, conversa, envio e atribuição
 - Webhook de recebimento do WhatsApp e o bot de consultas (`lib/wa-bot.ts`), determinístico, nível `publico` por padrão
 - Consentimento de SMS **no portal do cliente** (cartão na página inicial, texto versionado) e webhook de SMS recebido com STOP/START/HELP, dedupe por SID e encaminhamento de texto livre ao Atendimento. Migração: `sql/sms-consentimento-portal-v1.sql`
+- **Aviso de cobrança três dias antes do débito**: cron diário na Vercel, SMS com fallback para e-mail e aviso no portal, trilha em `plan_audit`. Exige a variável `CRON_SECRET` no ambiente
 - Tela de **novo serviço mensal** nos Planos (payroll, sales tax…), com item do catálogo, valor e **dia da cobrança (1 a 28)** escolhidos no acordo; o formulário de bookkeeping ganhou o mesmo campo. O contrato passou a ler o dia acordado (antes lia uma coluna inexistente e imprimia sempre dia 5) e tem cláusulas próprias para serviço mensal, sem a regra de transações incluídas
 
 **A construir:**
-- Aviso de cobrança três dias antes do débito (não há rotina agendada no projeto; exige cron na Vercel e o SMS operando)
 - Importação do histórico do QuickBooks (último ano)
 
 **Decisões pendentes:**
