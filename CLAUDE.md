@@ -21,6 +21,8 @@ moeda em dólar, telefone com DDD americano).
 
 ```bash
 npm install --legacy-peer-deps   # obrigatório o --legacy-peer-deps (mesmo flag da Vercel)
+                                 # o package-lock.json foi gerado com esse flag; `npm ci` puro falha.
+                                 # O comando de instalação na Vercel precisa continuar sendo este.
 npm run typecheck                # tsc --noEmit — tem de passar limpo
 npm run lint                     # ESLint (next/core-web-vitals) — sem erros; avisos são dívida conhecida
 npm run auditoria                # 30+ invariantes do sistema; sai com 1 se algum falhar
