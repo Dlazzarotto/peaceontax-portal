@@ -9,15 +9,18 @@
 // Entrada = 0  → Checkout mode 'setup': cadastra método e mandato ACH sem cobrar
 //
 // Em ambos, o agendamento das parcelas é criado pelo webhook, depois que
-// o método existe. Aqui só nasce o plano e o cronograma da fatura.
+// o método existe. Aqui só nasce o plano e o cronograma da fatura. A sessão
+// vem de lib/plan-checkout.ts, e o cliente é avisado por e-mail e no portal
+// para cadastrar o débito pelo portal (o link do Checkout expira em 24h).
 //
 // Só gerente ou sócio.
 
 import { NextRequest, NextResponse } from 'next/server'
-import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { avancarData, type Frequency } from '@/lib/plans'
+import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
+import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 
 export const dynamic = 'force-dynamic'
 
@@ -157,26 +160,9 @@ export async function POST(req: NextRequest) {
 
   const client = (inv as any).clients || {}
   const lang = client.language || 'en'
-  const locale = lang === 'pt' ? 'pt-BR' : lang === 'es' ? 'es' : lang === 'zh' ? 'zh' : lang === 'fr' ? 'fr' : 'en'
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-    apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion,
-  })
+  const stripe = stripeClient()
 
   try {
-    // Cliente Stripe reutilizável — necessário para os débitos futuros
-    const { data: outro } = await db.from('payment_plans')
-      .select('stripe_customer_id').eq('client_id', inv.client_id)
-      .not('stripe_customer_id', 'is', null).limit(1)
-
-    let customerId: string = outro?.[0]?.stripe_customer_id || ''
-    if (!customerId) {
-      const c = await stripe.customers.create({
-        name: client.name, email: client.email || undefined,
-        metadata: { clientId: inv.client_id },
-      })
-      customerId = c.id
-    }
-
     // ── plano ──
     const { data: plan, error: pErr } = await db.from('payment_plans').insert({
       client_id: inv.client_id,
@@ -190,12 +176,11 @@ export async function POST(req: NextRequest) {
       installment_amount: valorParcela,
       description: `Parcelamento da fatura ${inv.number}`,
       status: entrada > 0 ? 'awaiting_entry' : 'awaiting_setup',
-      stripe_customer_id: customerId,
       // Data acordada da 1ª parcela. O webhook lê daqui em vez de derivar
       // da data em que a entrada foi paga.
       next_charge_date: String(b.firstDueDate),
       created_by: auth.userId,
-    }).select('id').single()
+    }).select('*').single()
 
     if (pErr || !plan) {
       return NextResponse.json({ error: `Plano: ${pErr?.message || 'falha ao criar'}` }, { status: 500 })
@@ -215,54 +200,28 @@ export async function POST(req: NextRequest) {
       due_date: cronograma[0].due_date,
     }).eq('id', inv.id)
 
-    // ── sessão Stripe ──
-    const metadata = {
-      planId: plan.id,
-      planKind: entrada > 0 ? 'installment_entry' : 'installment_setup',
-      clientId: inv.client_id,
-      invoiceOrigem: inv.id,
+    // ── sessão Stripe (mesma regra do portal: lib/plan-checkout) ──
+    const { url: sessionUrl, sessionId } = await criarSessaoDoPlano(db, stripe, { ...plan, clients: client }, {
+      origem: 'equipe', performedBy: auth.userId, baseUrl: BASE_URL,
+    })
+    const session = { id: sessionId, url: sessionUrl }
+
+    // ── o cliente fica sabendo na hora: e-mail + aviso no portal ──
+    // O link do Checkout expira em 24h; o e-mail leva ao portal, onde o
+    // cliente gera a sessão na hora em que clicar.
+    const valorParcelaFmt = `$${valorParcela.toFixed(2)}`
+    const textoPortal = lang === 'pt'
+      ? `📆 Sua fatura ${inv.number} foi parcelada em ${n}x de ${valorParcelaFmt}${entrada > 0 ? `, com entrada de $${entrada.toFixed(2)}` : ''}. Em Pagamentos, cadastre o débito automático (conta bancária ou cartão).`
+      : lang === 'es'
+      ? `📆 Su factura ${inv.number} fue dividida en ${n} cuotas de ${valorParcelaFmt}${entrada > 0 ? `, con anticipo de $${entrada.toFixed(2)}` : ''}. En Pagos, registre el débito automático (cuenta bancaria o tarjeta).`
+      : `📆 Your invoice ${inv.number} was split into ${n} installments of ${valorParcelaFmt}${entrada > 0 ? `, with a down payment of $${entrada.toFixed(2)}` : ''}. Under Payments, set up automatic debit (bank account or card).`
+    await avisarNoPortal(db, inv.client_id, textoPortal)
+    if (client.email) {
+      await enviarEmail(client.email,
+        lang === 'pt' ? `Fatura ${inv.number} parcelada — cadastre o débito automático` : lang === 'es' ? `Factura ${inv.number} en cuotas — registre el débito automático` : `Invoice ${inv.number} installment plan — set up automatic debit`,
+        emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${textoPortal.replace(/^📆 /, '')}</p>`,
+          botao: { texto: lang === 'pt' ? 'Cadastrar débito automático' : lang === 'es' ? 'Registrar débito automático' : 'Set up automatic debit', url: `${APP_URL}/portal/payments` } }))
     }
-
-    const session = entrada > 0
-      ? await stripe.checkout.sessions.create({
-          mode: 'payment',
-          customer: customerId,
-          payment_method_types: ['us_bank_account', 'card'],
-          line_items: [{
-            price_data: {
-              currency: 'usd',
-              product_data: {
-                name: lang === 'pt'
-                  ? `Entrada (${entryPct}%) — Fatura ${inv.number}`
-                  : `Down payment (${entryPct}%) — Invoice ${inv.number}`,
-              },
-              unit_amount: Math.round(entrada * 100),
-            },
-            quantity: 1,
-          }],
-          payment_intent_data: {
-            setup_future_usage: 'off_session',
-            metadata,
-          },
-          metadata,
-          success_url: `${BASE_URL}/portal?plan=entry_success`,
-          cancel_url: `${BASE_URL}/portal?plan=cancelled`,
-          locale: locale as Stripe.Checkout.SessionCreateParams.Locale,
-        })
-      : await stripe.checkout.sessions.create({
-          // Entrada zero: nada é cobrado agora. A sessão existe só para
-          // cadastrar o método e colher o mandato ACH com validade legal.
-          mode: 'setup',
-          customer: customerId,
-          payment_method_types: ['us_bank_account', 'card'],
-          setup_intent_data: { metadata },
-          metadata,
-          success_url: `${BASE_URL}/portal?plan=setup_success`,
-          cancel_url: `${BASE_URL}/portal?plan=cancelled`,
-          locale: locale as Stripe.Checkout.SessionCreateParams.Locale,
-        })
-
-    await db.from('payment_plans').update({ stripe_session_id: session.id }).eq('id', plan.id)
 
     await db.from('invoice_audit').insert({
       invoice_id: inv.id, action: 'installment_plan_created', performed_by: auth.userId,
