@@ -1,6 +1,7 @@
 // GET /api/bookkeeping/category-detail?clientId=...&year=YYYY&month=MM?&category=...
 // Drill-down do P&L: todos os lançamentos DO REGISTRO daquela categoria,
-// para conferência (aberto em nova aba ao clicar na linha do relatório).
+// para conferência. Abre na mesma aba a partir da linha do P&L; a barra
+// fixa tem "Voltar ao P&L" e "Print / Save PDF" (some na impressão).
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
@@ -135,8 +136,27 @@ export async function GET(req: NextRequest) {
     .warn { border: 1px solid #000; padding: 9px 12px; font-size: 12px; margin: 14px 0; }
     .badge { display:inline-block; font-size:11px; border:1px solid #000; padding:1px 8px; margin-right:5px; }
     .footer { margin-top: 30px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
-    @media print { body { margin: 14px auto; } }
+    /* Linhas com o sinal menos comum nesta conta (o aviso acima fala delas) */
+    tr.odd td { background: #fff3b0; }
+    .barra { position: fixed; top: 18px; right: 18px; display: flex; gap: 8px; }
+    .barra button { border: none; font-size: 15px; font-weight: 700; padding: 13px 20px; border-radius: 8px; cursor: pointer; min-height: 48px; font-family: inherit; }
+    .voltar { background: #fff; color: #2D3278; border: 1.5px solid #2D3278 !important; }
+    .printbtn { background: #2D3278; color: #fff; }
+    @media print { body { margin: 14px auto; } .barra { display: none; } }
   </style></head><body>
+  <div class="barra">
+    <button class="voltar" onclick="voltarAoPnl()">← Voltar ao P&amp;L</button>
+    <button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
+  </div>
+  <script>
+    // Veio do P&L na mesma aba: volta pelo histórico. Abriu por link direto
+    // ou em aba nova: abre o P&L do mesmo período.
+    function voltarAoPnl() {
+      var pnl = ${JSON.stringify(`/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`)};
+      if (window.history.length > 1 && document.referrer && document.referrer.indexOf('/api/bookkeeping/pnl') !== -1) window.history.back();
+      else window.location.href = pnl;
+    }
+  </script>
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
     <div>

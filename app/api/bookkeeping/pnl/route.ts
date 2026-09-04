@@ -1,5 +1,6 @@
 // GET /api/bookkeeping/pnl?clientId=...&year=2020[&month=9]
 // Gera o P&L (cash-basis) em HTML pronto para imprimir/salvar PDF.
+// Cada conta é um link para o detalhe (category-detail), na mesma aba.
 // Baseado nas transações categorizadas (status auto/reviewed).
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -141,7 +142,8 @@ export async function GET(req: NextRequest) {
   const detailUrl = (cat: string) =>
     `/api/bookkeeping/category-detail?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}&category=${encodeURIComponent(cat)}`
   const catLink = (cat: string, label?: string) =>
-    `<a href="${detailUrl(cat)}" target="_blank" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${label ?? cat}</a>`
+    // Mesma aba: o detalhe volta ao P&L pelo botão "Voltar" ou pelo voltar do navegador
+    `<a href="${detailUrl(cat)}" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${label ?? cat}</a>`
 
   const row = (label: string, val: number, indent = true, linkCat?: string) =>
     `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`
