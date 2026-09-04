@@ -123,6 +123,8 @@ O **dia da cobrança é definido no acordo** (1 a 28), não mais fixo. Um client
 
 O botão **Ver contrato** abre a prévia sem tocar no DocuSign, para conferência antes do envio.
 
+**Assinatura no portal.** Enviar o contrato libera o plano e avisa o cliente (e-mail da firma e aviso no portal). Em Pagamentos, ele clica em **Assinar contrato**: a tela do DocuSign abre embutida (assinante com `clientUserId`), ele assina o contrato — que já contém a **autorização de débito automático** — e, ao terminar, o sistema confere a assinatura pela API do DocuSign (nunca pelo parâmetro de retorno), registra `contract_signed_by_client` em `plan_audit` e o leva **direto ao Stripe** para cadastrar a conta bancária (ACH) ou o cartão. Enquanto o contrato não está assinado, o plano não aceita cadastro de débito. A firma assina depois, pelo e-mail do DocuSign; quando o envelope completa, a equipe atualiza o status e o PDF assinado é arquivado. O envio por e-mail do DocuSign (fluxo antigo) continua disponível com `viaEmail`.
+
 ### 4.5 Comunicação
 
 **SMS** pelo Twilio, número (857) 837-2327. Envio com três travas obrigatórias: cliente autorizou, não pediu STOP, e tem celular válido. A verificação fica dentro da biblioteca de envio — nenhum fluxo novo consegue burlar por esquecimento. Toda mensagem sai identificada e com "Reply STOP to opt out".

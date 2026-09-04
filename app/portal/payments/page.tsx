@@ -26,6 +26,7 @@ const T: Record<string, any> = {
     msgEntry: 'Down payment received. The installments will be debited automatically on the agreed dates.',
     msgSetup: 'Payment method saved. Nothing was charged now; debits start on the agreed date.',
     msgSub: 'Automatic monthly payment set up. The first charge is on the agreed day.',
+    signByEmail: 'Sign using the DocuSign e-mail you received.',
     msgSigned: 'Agreement signed. Thank you!', msgSignPending: 'The agreement is not signed yet. You can sign it below.',
   },
   pt: {
@@ -43,6 +44,7 @@ const T: Record<string, any> = {
     msgEntry: 'Entrada recebida. As parcelas serão debitadas automaticamente nas datas combinadas.',
     msgSetup: 'Forma de pagamento cadastrada. Nada foi cobrado agora; os débitos começam na data combinada.',
     msgSub: 'Débito mensal cadastrado. A primeira cobrança é no dia combinado.',
+    signByEmail: 'Assine pelo e-mail do DocuSign que você recebeu.',
     msgSigned: 'Contrato assinado. Obrigado!', msgSignPending: 'O contrato ainda não foi assinado. Você pode assinar abaixo.',
   },
   es: {
@@ -60,6 +62,7 @@ const T: Record<string, any> = {
     msgEntry: 'Anticipo recibido. Las cuotas se debitarán automáticamente en las fechas acordadas.',
     msgSetup: 'Forma de pago registrada. No se cobró nada ahora; los débitos empiezan en la fecha acordada.',
     msgSub: 'Débito mensual registrado. El primer cobro es el día acordado.',
+    signByEmail: 'Firme con el correo de DocuSign que recibió.',
     msgSigned: 'Contrato firmado. ¡Gracias!', msgSignPending: 'El contrato aún no está firmado. Puede firmarlo abajo.',
   },
 }
@@ -139,9 +142,13 @@ export default function PaymentsPage() {
                 <b>{c.plano ? rotuloPlano(c.plano) : 'Service agreement'}</b>
                 <div style={{ fontSize: 12, color: '#6a7a9a', marginTop: 3 }}>{t.signHint}</div>
               </div>
-              <button onClick={() => abrir(`c${c.id}`, '/api/portal/contract-sign', { id: c.id })} disabled={!!busy} style={botao('#5A1A8A', !!busy)}>
-                {busy === `c${c.id}` ? t.opening : t.sign}
-              </button>
+              {c.embedded ? (
+                <button onClick={() => abrir(`c${c.id}`, '/api/portal/contract-sign', { id: c.id })} disabled={!!busy} style={botao('#5A1A8A', !!busy)}>
+                  {busy === `c${c.id}` ? t.opening : t.sign}
+                </button>
+              ) : (
+                <span style={{ fontSize: 12.5, color: '#5A1A8A', fontWeight: 700 }}>{t.signByEmail}</span>
+              )}
             </div>
           ))}
         </div>

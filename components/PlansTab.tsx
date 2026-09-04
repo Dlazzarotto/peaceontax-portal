@@ -163,7 +163,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
       body: JSON.stringify({ planId, signerTitle }),
     })
     const d = await r.json()
-    if (d.ok) setMsg('✓ Contrato enviado por e-mail via DocuSign. Acompanhe na aba ✍️ Assinaturas.')
+    if (d.ok) setMsg('✓ Contrato enviado. O cliente assina no portal (Pagamentos) e cadastra o débito automático em seguida; você assina pelo e-mail do DocuSign. Acompanhe na aba ✍️ Assinaturas.')
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }

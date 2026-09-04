@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
-import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
+import { criarSessaoDoPlano, stripeClient, contratoPendenteDoPlano } from '@/lib/plan-checkout'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -35,6 +35,10 @@ export async function POST(req: NextRequest) {
   if (!plan) return NextResponse.json({ error: 'Plano não encontrado' }, { status: 404 })
   if (!['awaiting_entry', 'awaiting_setup'].includes(plan.status)) {
     return NextResponse.json({ error: 'Este plano não está aguardando cadastro.' }, { status: 409 })
+  }
+  // Primeiro a assinatura (autorização do débito), depois a conta
+  if (await contratoPendenteDoPlano(db, plan.id)) {
+    return NextResponse.json({ error: 'Assine o contrato antes de cadastrar o débito automático.' }, { status: 409 })
   }
 
   try {

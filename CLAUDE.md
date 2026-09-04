@@ -85,6 +85,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `registrarConsentimento` (portal, ficha do cliente ou palavra-chave); o texto
   que o cliente lê é o de `lib/sms-consent-text.ts`, versionado. START por SMS
   só reativa quem já tinha opt-in.
+- **O cliente age pelo portal, a equipe libera.** Rascunho nunca aparece ao
+  cliente; fatura enviada, plano em `awaiting_*` e contrato enviado aparecem em
+  Pagamentos. Sessão do Stripe de plano só nasce em `lib/plan-checkout.ts`, na
+  hora do clique (o link expira em 24h). Contrato assinado no portal libera o
+  débito (`contract_signed_by_client` em `plan_audit`, conferido pela API do
+  DocuSign). O webhook do Stripe lê a forma real no PaymentIntent e trata o
+  ACH assíncrono.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
@@ -117,6 +124,7 @@ app/api/bookkeeping/ importação (Plaid, CSV, PDF, QuickBooks), regras, relató
 app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento
 app/api/plans/       contratos recorrentes
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)
+app/api/portal/      rotas do cliente: billing (pagar), plan-checkout (débito), contract-sign/return (assinar)
 app/api/stripe/webhook   entrada única dos eventos de pagamento
 app/api/whatsapp/    webhook, fila, conversa, bot
 app/api/sms/webhook  STOP/START e SMS recebidos (Twilio)

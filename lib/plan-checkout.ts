@@ -148,3 +148,21 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
 
   return { url: session.url!, sessionId: session.id }
 }
+
+/**
+ * Contrato enviado para este plano que o cliente ainda não assinou.
+ * Regra: primeiro assina (autorização do débito), depois cadastra a conta.
+ * A assinatura do cliente fica marcada em plan_audit ('contract_signed_by_client')
+ * pela volta do DocuSign; o envelope só fica 'completed' depois que a firma assina.
+ */
+export async function contratoPendenteDoPlano(db: any, planId: string): Promise<{ id: string; embedded: boolean } | null> {
+  const { data: sr } = await db.from('signature_requests')
+    .select('id, status, signers').eq('plan_id', planId).eq('kind', 'contract')
+    .in('status', ['sent', 'delivered']).order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (!sr) return null
+  const { data: assinou } = await db.from('plan_audit')
+    .select('id').eq('plan_id', planId).eq('action', 'contract_signed_by_client').limit(1).maybeSingle()
+  if (assinou) return null
+  const embedded = !!(Array.isArray(sr.signers) && sr.signers[0]?.embedded)
+  return { id: sr.id, embedded }
+}

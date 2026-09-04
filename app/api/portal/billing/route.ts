@@ -38,7 +38,7 @@ export async function GET() {
       .eq('client_id', c.id).in('status', ['awaiting_entry', 'awaiting_setup'])
       .order('created_at', { ascending: false }),
     db.from('signature_requests')
-      .select('id, kind, status, plan_id, created_at')
+      .select('id, kind, status, plan_id, signers, created_at')
       .eq('client_id', c.id).eq('kind', 'contract').in('status', ['sent', 'delivered'])
       .order('created_at', { ascending: false }),
     db.from('invoice_payments')
@@ -59,6 +59,17 @@ export async function GET() {
     : { data: [] as any[] }
   const planoPorId = new Map((planosDosContratos || []).map((p: any) => [p.id, p]))
 
+  // Contrato que o cliente já assinou (a firma assina depois; o envelope ainda
+  // não está 'completed') sai da lista de assinatura e libera o plano.
+  const { data: assinados } = planIds.length
+    ? await db.from('plan_audit').select('plan_id').in('plan_id', planIds).eq('action', 'contract_signed_by_client')
+    : { data: [] as any[] }
+  const jaAssinou = new Set((assinados || []).map((a: any) => a.plan_id))
+  const contratosPendentes = (contratos || []).filter((s: any) => !s.plan_id || !jaAssinou.has(s.plan_id))
+  const planosBloqueados = new Set(contratosPendentes.map((s: any) => s.plan_id).filter(Boolean))
+  // Primeiro assina, depois cadastra o débito: plano com contrato pendente não aparece para cadastro
+  const planosLiberados = (planos || []).filter((p: any) => !planosBloqueados.has(p.id))
+
   return NextResponse.json({
     ok: true,
     client: { id: c.id, name: c.name, business_name: c.business_name, language: c.language, balance: c.balance },
@@ -66,10 +77,15 @@ export async function GET() {
       ...f, saldo: Math.round((Number(f.total) - Number(f.paid_total)) * 100) / 100,
       parcelas: (parcelas || []).filter((p: any) => p.invoice_id === f.id),
       // Fatura parcelada tem plano próprio: o botão certo é cadastrar o débito, não pagar à vista
-      plano: (planos || []).find((p: any) => p.invoice_id === f.id) || null,
+      plano: planosLiberados.find((p: any) => p.invoice_id === f.id) || null,
     })),
-    planos: planos || [],
-    contratos: (contratos || []).map((s: any) => ({ ...s, plano: planoPorId.get(s.plan_id) || null })),
+    planos: planosLiberados,
+    contratos: contratosPendentes.map((s: any) => ({
+      id: s.id, status: s.status, plan_id: s.plan_id, created_at: s.created_at,
+      plano: planoPorId.get(s.plan_id) || null,
+      // Só o contrato enviado para assinatura no portal tem botão; o antigo foi por e-mail do DocuSign
+      embedded: !!(Array.isArray(s.signers) && s.signers[0]?.embedded),
+    })),
     historico: (pagamentos || []).map((p: any) => ({
       ...p, number: (faturas || []).find((f: any) => f.id === p.invoice_id)?.number || null,
     })),
