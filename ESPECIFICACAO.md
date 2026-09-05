@@ -109,6 +109,8 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 **Impressão.** Toda fatura e orçamento gera documento formal com timbre, dados do cliente, itens, parcelas, pagamentos recebidos e saldo.
 
+**Relatórios do sócio.** Botão Relatórios no Financeiro, visível e servido **só ao sócio** (`verRelatorios`; gerente e assistente recebem recusa na rota). Seis relatórios impressos, no mesmo padrão dos contábeis, com período escolhido: **Faturamento por mês** (emitido, recebido e em aberto), **Recebimentos** (por forma e por cliente, com Klarna como financiado), **Contas a receber** (por cliente, com atraso em faixas), **Contratos e parcelamentos** (receita recorrente mensal dos contratos ativos e parcelas a receber), **Faturamento por serviço** (por item do catálogo) e **Estornos e cancelamentos**. Orçamentos, rascunhos e faturas canceladas ficam fora do faturamento. As contas ficam em `lib/relatorios-financeiro.ts`, sem banco, testadas com casos fixos.
+
 **Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — mensalidade no dia acordado, parcela pelo cronograma — e avisa o cliente: por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
 
 ### 4.4 Planos e contratos

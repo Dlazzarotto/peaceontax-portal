@@ -121,7 +121,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 app/dashboard/       área da equipe (clientes, bookkeeping, financeiro, agenda, atendimento)
 app/portal/          área do cliente
 app/api/bookkeeping/ importação (Plaid, CSV, PDF, QuickBooks), regras, relatórios, conciliação
-app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento
+app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento, relatórios (só owner)
 app/api/plans/       contratos recorrentes
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)
 app/api/portal/      rotas do cliente: billing (pagar), plan-checkout (débito), contract-sign/return (assinar)
