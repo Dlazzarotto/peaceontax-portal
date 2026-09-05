@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -22,10 +22,19 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
   const year = parseInt(sp.get('year') || '')
-  const month = sp.get('month')
+  // Mês só entra se for número de 1 a 12: ele é remontado na URL do "Voltar ao P&L"
+  const mesBruto = sp.get('month')
+  const month = mesBruto && /^\d{1,2}$/.test(mesBruto) && +mesBruto >= 1 && +mesBruto <= 12 ? mesBruto : null
   const category = sp.get('category')
   if (!clientId || !year || !category) {
     return NextResponse.json({ error: 'clientId, year e category obrigatórios' }, { status: 400 })
+  }
+  // clientId vira parte de uma URL; para equipe canAccessClient não confere o formato
+  if (!/^[0-9a-fA-F-]{36}$/.test(clientId)) {
+    return NextResponse.json({ error: 'clientId inválido' }, { status: 400 })
+  }
+  if (!(year >= 2000 && year <= 2100)) {
+    return NextResponse.json({ error: 'year inválido' }, { status: 400 })
   }
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
@@ -58,7 +67,7 @@ export async function GET(req: NextRequest) {
       `<html><body style="font-family:Georgia,serif;max-width:700px;margin:40px auto;padding:0 20px">
         <h2 style="color:#b02020">Erro ao carregar o detalhe da conta</h2>
         <p style="font-size:14px;color:#4a5a70">${qErr.message}</p>
-        <p style="font-size:12px;color:#9aaab0">Conta: ${category} · Ano: ${year}</p>
+        <p style="font-size:12px;color:#9aaab0">Conta: ${escaparHtml(category)} · Ano: ${year}</p>
       </body></html>`,
       { status: 500, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
   }
@@ -85,7 +94,7 @@ export async function GET(req: NextRequest) {
       .limit(5000)
 
     if (!todos || todos.length === 0) {
-      diagnostico = `Nenhum lançamento com a conta "${category}" foi encontrado para este cliente em nenhum ano.`
+      diagnostico = `Nenhum lançamento com a conta "${escaparHtml(category)}" foi encontrado para este cliente em nenhum ano.`
     } else {
       const porAno: Record<string, Record<string, number>> = {}
       for (const t of todos as any[]) {
@@ -120,7 +129,7 @@ export async function GET(req: NextRequest) {
 
   const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`
   const barra = barraDoRelatorio({ voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L' })
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${category} — ${period}</title>
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(category)} — ${period}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
     .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;
@@ -155,7 +164,7 @@ export async function GET(req: NextRequest) {
 
   <div class="muted">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
   <h1>${displayName}</h1>
-  <h2>Account detail: <b>${category}</b> — ${period} <span class="muted">(register only: approved entries)</span></h2>
+  <h2>Account detail: <b>${escaparHtml(category)}</b> — ${period} <span class="muted">(register only: approved entries)</span></h2>
 
   <div style="margin-bottom:12px">
     <span class="badge">${list.length} entries</span>
@@ -174,13 +183,13 @@ export async function GET(req: NextRequest) {
       const minority = (positives > 0 && negatives > 0) && ((negatives >= positives && amt > 0) || (positives > negatives && amt < 0))
       return `<tr${minority ? ' class="odd"' : ''}>
         <td style="white-space:nowrap">${fmtDate(t.tx_date)}</td>
-        <td>${String(t.description).slice(0, 90)}</td>
-        <td>${t.payee || '<span class="muted">—</span>'}</td>
-        <td class="muted">${nomeConta.get((t as any).account_id) || '—'}</td>
+        <td>${escaparHtml(String(t.description).slice(0, 90))}</td>
+        <td>${t.payee ? escaparHtml(t.payee) : '<span class="muted">—</span>'}</td>
+        <td class="muted">${escaparHtml(nomeConta.get((t as any).account_id) || '—')}</td>
         <td class="r ${amt < 0 ? 'neg' : 'pos'}">${money(amt)}</td>
       </tr>`
     }).join('') || '<tr><td colspan="5" class="muted">No approved entries in this account for the period.</td></tr>'}
-    <tr class="total"><td colspan="4">Total ${category}</td><td class="r ${total < 0 ? 'neg' : 'pos'}">${money(total)}</td></tr>
+    <tr class="total"><td colspan="4">Total ${escaparHtml(category)}</td><td class="r ${total < 0 ? 'neg' : 'pos'}">${money(total)}</td></tr>
   </table>
 
   <div class="footer">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148 · (833) 732-2327<br>Prepared by ${FIRM.name} · Generated ${new Date().toLocaleDateString('en-US')} · Internal working document — verify before filing</div>

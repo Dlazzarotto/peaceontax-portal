@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -144,7 +144,7 @@ export async function GET(req: NextRequest) {
     `/api/bookkeeping/category-detail?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}&category=${encodeURIComponent(cat)}`
   const catLink = (cat: string, label?: string) =>
     // Mesma aba: o detalhe volta ao P&L pelo botão "Voltar" ou pelo voltar do navegador
-    `<a href="${detailUrl(cat)}" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${label ?? cat}</a>`
+    `<a href="${escaparHtml(detailUrl(cat))}" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${escaparHtml(label ?? cat)}</a>`
 
   const row = (label: string, val: number, indent = true, linkCat?: string) =>
     `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`

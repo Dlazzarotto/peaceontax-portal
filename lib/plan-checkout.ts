@@ -15,7 +15,7 @@
 // em que alguém clica, nunca guardada para mandar depois.
 
 import Stripe from 'stripe'
-import { nextBillingDayET, normalizarDiaCobranca } from '@/lib/plans'
+import { ancoraDeCobranca, normalizarDiaCobranca } from '@/lib/plans'
 import { APP_URL, localeStripe } from '@/lib/avisos'
 
 export const STRIPE_API_VERSION = '2026-06-24.dahlia' as Stripe.LatestApiVersion
@@ -109,8 +109,10 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
       update.status = 'awaiting_setup'
     }
   } else {
-    // Mensalidade: trial até o dia acordado, e o Stripe repete no mesmo dia
-    const anchor = nextBillingDayET(normalizarDiaCobranca(plan.due_day))
+    // Mensalidade: trial até o dia acordado, e o Stripe repete no mesmo dia.
+    // ancoraDeCobranca garante as 48h que o Stripe exige (dia acordado na
+    // véspera cairia em erro e o cliente não conseguiria cadastrar o débito).
+    const anchor = ancoraDeCobranca(normalizarDiaCobranca(plan.due_day))
     const metadata = { planId, planKind: 'bookkeeping', clientId: plan.client_id }
     session = await stripe.checkout.sessions.create({
       mode: 'subscription',

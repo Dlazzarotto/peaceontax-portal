@@ -63,6 +63,28 @@ export function nextBillingDayET(dia: unknown, from = new Date()): Date {
   return new Date(Date.UTC(year, month - 1, Math.min(alvo, ultimoDia), 12, 0, 0))
 }
 
+/**
+ * Folga mínima da 1ª cobrança de assinatura. O Stripe recusa
+ * subscription_data.trial_end a menos de 48 horas de distância
+ * ("Has to be at least 48 hours in the future"); usamos 50 para não
+ * depender do relógio exato em que a requisição chega.
+ */
+export const HORAS_MINIMAS_ANCORA = 50
+
+/**
+ * Data-base da 1ª cobrança de uma mensalidade, aceita pelo Stripe.
+ * É o dia acordado; se ele estiver perto demais (o cliente cadastrou o
+ * débito na véspera), vai para a ocorrência seguinte — o dia do mês é
+ * preservado, e é essa data que fica em next_charge_date e no aviso.
+ */
+export function ancoraDeCobranca(dia: unknown, from = new Date()): Date {
+  let ancora = nextBillingDayET(dia, from)
+  const minimo = from.getTime() + HORAS_MINIMAS_ANCORA * 3600_000
+  // No máximo dois saltos: a próxima ocorrência já fica a ~1 mês daqui
+  for (let i = 0; i < 2 && ancora.getTime() < minimo; i++) ancora = nextBillingDayET(dia, ancora)
+  return ancora
+}
+
 /** @deprecated Use nextBillingDayET(plan.due_day). Mantido para não quebrar chamadas antigas. */
 export function nextDay5ET(from = new Date()): Date {
   return nextBillingDayET(5, from)

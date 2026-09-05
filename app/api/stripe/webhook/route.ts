@@ -2,8 +2,9 @@
 // Trata:
 //   checkout.session.completed → cotações + entrada de parcelamento + bookkeeping
 //                              → FATURAS do módulo financeiro (metadata.invoice_id)
-//   checkout.session.async_payment_succeeded / _failed → fatura paga por ACH
-//                              (o débito em conta leva dias; o 'completed' chega antes do dinheiro)
+//   checkout.session.async_payment_succeeded / _failed → fatura ou entrada de
+//                              parcelamento paga por ACH (o débito em conta leva
+//                              dias; o 'completed' chega antes do dinheiro)
 //   invoice.paid               → conta parcelas pagas / registra mensalidade
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
@@ -90,20 +91,33 @@ export async function POST(req: NextRequest) {
     // ============ ACH DA FATURA: o dinheiro chegou (ou não) dias depois ============
     if (event.type === 'checkout.session.async_payment_succeeded') {
       const session = event.data.object as Stripe.Checkout.Session
-      if (session.metadata?.invoice_id) await handleFaturaPaga(db, stripe, session)
+      const meta = session.metadata ?? {}
+      // O dinheiro entrou: agora sim vale o mesmo tratamento do pagamento à vista
+      if (meta.invoice_id) await handleFaturaPaga(db, stripe, session)
+      else if (meta.planKind === 'installment_entry' && meta.planId) await handleInstallmentEntry(db, stripe, session, meta.planId)
       return NextResponse.json({ received: true })
     }
     if (event.type === 'checkout.session.async_payment_failed') {
       const session = event.data.object as Stripe.Checkout.Session
-      const invoiceId = session.metadata?.invoice_id
-      if (invoiceId) {
+      const meta = session.metadata ?? {}
+      const valor = Number(session.amount_total || 0) / 100
+      if (meta.invoice_id) {
         await db.from('invoice_audit').insert({
-          invoice_id: invoiceId, action: 'stripe_declined',
+          invoice_id: meta.invoice_id, action: 'stripe_declined',
           reason: 'débito em conta (ACH) devolvido pelo banco',
-          next: { session: session.id, valor: Number(session.amount_total || 0) / 100 },
+          next: { session: session.id, valor },
         }).then(() => null, () => null)
-        await notifyClient(db, session.metadata?.client_id,
+        await notifyClient(db, meta.client_id,
           '⚠️ O débito em conta da sua fatura foi devolvido pelo banco. Você pode pagar de novo em Pagamentos ou falar conosco: (833) 732-2327.')
+      } else if (meta.planId) {
+        // O plano não foi ativado (só ativa com o dinheiro confirmado): nada a reverter
+        await db.from('plan_audit').insert({
+          plan_id: meta.planId, action: 'entry_ach_failed',
+          reason: 'débito em conta (ACH) devolvido pelo banco',
+          snapshot: { session: session.id, valor },
+        }).then(() => null, () => null)
+        await notifyClient(db, meta.clientId,
+          '⚠️ O débito em conta da entrada foi devolvido pelo banco. O parcelamento ainda não começou; refaça o pagamento em Pagamentos ou fale conosco: (833) 732-2327.')
       }
       return NextResponse.json({ received: true })
     }
@@ -335,10 +349,26 @@ async function handleInstallmentEntry(
   const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
   if (!plan || plan.status === 'active') return  // idempotência
 
+  // Débito em conta (ACH): o 'completed' chega com o dinheiro ainda em trânsito.
+  // Ativar aqui criaria o agendamento e lançaria uma entrada que pode ser
+  // devolvida dias depois. Esperamos o async_payment_succeeded.
+  if (session.payment_status !== 'paid') {
+    await db.from('plan_audit').insert({
+      plan_id: planId, action: 'entry_processing',
+      snapshot: { session: session.id, status: session.payment_status, valor: Number(session.amount_total || 0) / 100 },
+    }).then(() => null, () => null)
+    await notifyClient(db, plan.client_id,
+      '🏦 Recebemos o pedido de débito em conta da entrada. O banco leva alguns dias para confirmar; assim que entrar, o parcelamento começa e avisamos aqui.')
+    return
+  }
+
   const entryPaidAt = new Date(session.created * 1000)
 
-  const pi = await stripe.paymentIntents.retrieve(session.payment_intent as string)
-  const paymentMethod = pi.payment_method as string
+  const pi = await stripe.paymentIntents.retrieve(session.payment_intent as string, { expand: ['payment_method'] })
+  const pmObj = pi.payment_method as Stripe.PaymentMethod | string | null
+  const paymentMethod = (typeof pmObj === 'string' ? pmObj : pmObj?.id) as string
+  const tipoPm = typeof pmObj === 'string' ? null : pmObj?.type
+  const metodoEntrada = tipoPm === 'us_bank_account' ? 'ach' : tipoPm === 'klarna' ? 'external' : 'card'
 
   // Data da 1ª parcela: a acordada no plano tem prioridade sobre a derivada
   // da data em que a entrada foi paga.
@@ -361,7 +391,7 @@ async function handleInstallmentEntry(
   // A entrada é pagamento da fatura de origem, não parcela
   if (plan.invoice_id && Number(plan.entry_amount) > 0) {
     await lancarRecebimento(db, plan.invoice_id, plan.client_id,
-      round2(Number(plan.entry_amount)), 'card', session.payment_intent as string, session.id)
+      round2(Number(plan.entry_amount)), metodoEntrada, session.payment_intent as string, session.id)
   }
 
   const firstFmt = startDate.toLocaleDateString('pt-BR', { day:'2-digit', month:'long', year:'numeric', timeZone:'America/New_York' })

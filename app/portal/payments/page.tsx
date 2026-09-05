@@ -26,6 +26,8 @@ const T: Record<string, any> = {
     msgEntry: 'Down payment received. The installments will be debited automatically on the agreed dates.',
     msgSetup: 'Payment method saved. Nothing was charged now; debits start on the agreed date.',
     msgSub: 'Automatic monthly payment set up. The first charge is on the agreed day.',
+    planOn: 'Automatic debit is set up — the installments are charged on the scheduled dates.',
+    planWait: 'Sign the agreement above to set up the automatic debit.',
     signByEmail: 'Sign using the DocuSign e-mail you received.',
     msgSigned: 'Agreement signed. Thank you!', msgSignPending: 'The agreement is not signed yet. You can sign it below.',
   },
@@ -44,6 +46,8 @@ const T: Record<string, any> = {
     msgEntry: 'Entrada recebida. As parcelas serão debitadas automaticamente nas datas combinadas.',
     msgSetup: 'Forma de pagamento cadastrada. Nada foi cobrado agora; os débitos começam na data combinada.',
     msgSub: 'Débito mensal cadastrado. A primeira cobrança é no dia combinado.',
+    planOn: 'Débito automático cadastrado — as parcelas são cobradas nas datas do cronograma.',
+    planWait: 'Assine o contrato acima para cadastrar o débito automático.',
     signByEmail: 'Assine pelo e-mail do DocuSign que você recebeu.',
     msgSigned: 'Contrato assinado. Obrigado!', msgSignPending: 'O contrato ainda não foi assinado. Você pode assinar abaixo.',
   },
@@ -62,6 +66,8 @@ const T: Record<string, any> = {
     msgEntry: 'Anticipo recibido. Las cuotas se debitarán automáticamente en las fechas acordadas.',
     msgSetup: 'Forma de pago registrada. No se cobró nada ahora; los débitos empiezan en la fecha acordada.',
     msgSub: 'Débito mensual registrado. El primer cobro es el día acordado.',
+    planOn: 'Débito automático registrado — las cuotas se cobran en las fechas del cronograma.',
+    planWait: 'Firme el contrato de arriba para registrar el débito automático.',
     signByEmail: 'Firme con el correo de DocuSign que recibió.',
     msgSigned: 'Contrato firmado. ¡Gracias!', msgSignPending: 'El contrato aún no está firmado. Puede firmarlo abajo.',
   },
@@ -198,10 +204,16 @@ export default function PaymentsPage() {
               )}
               {!f.plano && <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>{t.payHint}</div>}
             </div>
-            {f.plano ? (
+            {f.plano?.podeCadastrar ? (
               <button onClick={() => abrir(`p${f.plano.id}`, '/api/portal/plan-checkout', { planId: f.plano.id })} disabled={!!busy} style={botao('#F47B20', !!busy)}>
                 {busy === `p${f.plano.id}` ? t.opening : (f.plano.status === 'awaiting_entry' ? t.entry : t.setup)}
               </button>
+            ) : f.plano ? (
+              // Parcelada com débito já cadastrado (ou contrato pendente): não há
+              // pagamento à vista a oferecer — a rota recusaria com erro.
+              <span style={{ fontSize: 12.5, opacity: 0.85, maxWidth: 260 }}>
+                {f.plano.aguardandoContrato ? t.planWait : t.planOn}
+              </span>
             ) : (
               <button onClick={() => abrir(`f${f.id}`, '/api/portal/billing/checkout', { invoiceId: f.id })} disabled={!!busy} style={botao('#F47B20', !!busy)}>
                 {busy === `f${f.id}` ? t.opening : `💳 ${t.pay}`}

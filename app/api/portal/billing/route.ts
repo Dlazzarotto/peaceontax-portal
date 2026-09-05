@@ -33,9 +33,12 @@ export async function GET() {
       .eq('client_id', c.id).eq('doc_type', 'invoice')
       .in('status', ['sent', 'partial', 'overdue', 'paid'])
       .order('issue_date', { ascending: false }).limit(50),
+    // Todos os planos que ainda dizem respeito a uma fatura em aberto, não só os
+    // que aguardam cadastro: uma fatura parcelada com plano ATIVO não pode
+    // oferecer pagamento à vista (a rota recusa), então a tela precisa saber disso.
     db.from('payment_plans')
-      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date')
-      .eq('client_id', c.id).in('status', ['awaiting_entry', 'awaiting_setup'])
+      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date, paid_installments')
+      .eq('client_id', c.id).in('status', ['awaiting_entry', 'awaiting_setup', 'active', 'paused', 'payment_failed'])
       .order('created_at', { ascending: false }),
     db.from('signature_requests')
       .select('id, kind, status, plan_id, signers, created_at')
@@ -67,8 +70,17 @@ export async function GET() {
   const jaAssinou = new Set((assinados || []).map((a: any) => a.plan_id))
   const contratosPendentes = (contratos || []).filter((s: any) => !s.plan_id || !jaAssinou.has(s.plan_id))
   const planosBloqueados = new Set(contratosPendentes.map((s: any) => s.plan_id).filter(Boolean))
-  // Primeiro assina, depois cadastra o débito: plano com contrato pendente não aparece para cadastro
-  const planosLiberados = (planos || []).filter((p: any) => !planosBloqueados.has(p.id))
+
+  // Situação de cada plano para o cliente, com o MESMO critério da rota que cria
+  // a sessão (/api/portal/plan-checkout): aguardando cadastro e contrato assinado.
+  // Sem isso a tela oferece um botão que a rota recusa.
+  const comSituacao = (planos || []).map((p: any) => ({
+    ...p,
+    podeCadastrar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !planosBloqueados.has(p.id),
+    aguardandoContrato: planosBloqueados.has(p.id),
+  }))
+  // Primeiro assina, depois cadastra o débito: só o que o cliente pode agir agora
+  const planosLiberados = comSituacao.filter((p: any) => p.podeCadastrar)
 
   return NextResponse.json({
     ok: true,
@@ -76,8 +88,9 @@ export async function GET() {
     faturas: abertas.map((f: any) => ({
       ...f, saldo: Math.round((Number(f.total) - Number(f.paid_total)) * 100) / 100,
       parcelas: (parcelas || []).filter((p: any) => p.invoice_id === f.id),
-      // Fatura parcelada tem plano próprio: o botão certo é cadastrar o débito, não pagar à vista
-      plano: planosLiberados.find((p: any) => p.invoice_id === f.id) || null,
+      // Fatura parcelada tem plano próprio: pagar à vista é recusado pela rota.
+      // Vai o plano em qualquer situação, com podeCadastrar dizendo se há ação.
+      plano: comSituacao.find((p: any) => p.invoice_id === f.id) || null,
     })),
     planos: planosLiberados,
     contratos: contratosPendentes.map((s: any) => ({
