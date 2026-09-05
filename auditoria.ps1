@@ -57,7 +57,7 @@ Checar "Catalogo unico"              ".\app\api\billing\invoices\route.ts" "pric
 
 Write-Host ""
 Write-Host "=== WEBHOOK DO STRIPE: assinatura conferida ===" -ForegroundColor Cyan
-Checar "Novo webhook do faturamento" ".\app\api\billing\stripe-webhook\route.ts" "timingSafeEqual" "qualquer um marcaria faturas como pagas"
+Checar "Webhook do Stripe confere a assinatura" ".\app\api\stripe\webhook\route.ts" "constructEvent" "qualquer um marcaria faturas como pagas"
 
 Write-Host ""
 Write-Host "=== DUPLICACOES A DECIDIR (nao sao erros, sao escolhas) ===" -ForegroundColor Yellow

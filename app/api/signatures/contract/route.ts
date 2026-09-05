@@ -1,7 +1,16 @@
 // /api/signatures/contract
 //
 // GET  ?planId=...&preview=1  → mostra o contrato preenchido, SEM enviar
-// POST { planId, signerTitle? } → envia via DocuSign
+// POST { planId, signerTitle?, viaEmail? } → envia via DocuSign
+//
+// Padrão: o cliente assina NO PORTAL (assinatura embutida do DocuSign) e,
+// ao terminar, cai direto no cadastro do débito automático no Stripe. Ele
+// recebe e-mail da firma e aviso no portal com o caminho. A firma assina
+// depois, pelo e-mail do DocuSign. Com viaEmail: true, o DocuSign manda o
+// e-mail ao cliente e a assinatura acontece lá (fluxo antigo).
+//
+// Enviar o contrato libera o plano para o cliente (draft → awaiting_*):
+// ele só consegue cadastrar o débito depois de assinar.
 //
 // Os dois usam lib/contract-html.ts: o que você confere na prévia é
 // exatamente o que o cliente recebe para assinar.
@@ -12,6 +21,7 @@ import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import { sendEnvelope } from '@/lib/docusign'
 import { montarContratoHtml, FIRM } from '@/lib/contract-html'
+import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,8 +72,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Somente manager/owner enviam contratos' }, { status: 403 })
   }
 
-  const { planId, signerTitle } = await req.json()
+  const { planId, signerTitle, viaEmail } = await req.json()
   if (!planId) return NextResponse.json({ error: 'planId obrigatório' }, { status: 400 })
+  const noPortal = !viaEmail
 
   const db = serviceDb()
   const plan = await carregarPlano(planId)
@@ -97,7 +108,8 @@ export async function POST(req: NextRequest) {
         fileExtension: 'html',
       },
       signers: [
-        { name: client.name, email: client.email, title: signerTitle || undefined },
+        // Embutido: o DocuSign não manda e-mail ao cliente; a tela abre no portal
+        { name: client.name, email: client.email, title: signerTitle || undefined, ...(noPortal ? { clientUserId: client.id } : {}) },
         { name: 'David Lazzarotto', email: 'david@peaceontax.com' },
       ],
       emailSubject: lang === 'pt'
@@ -113,18 +125,38 @@ export async function POST(req: NextRequest) {
       client_id: client.id, plan_id: planId, kind: 'contract',
       envelope_id: envelopeId,
       signers: [
-        { name: client.name, email: client.email, title: signerTitle || null },
+        { name: client.name, email: client.email, title: signerTitle || null, embedded: noPortal },
         { name: 'David Lazzarotto', email: 'david@peaceontax.com' },
       ],
       created_by: auth.userId,
     }).select('id').single()
 
+    // Libera o plano para o cliente: depois de assinar, ele cadastra o débito
+    if (['draft'].includes(plan.status)) {
+      await db.from('payment_plans').update({
+        status: plan.kind === 'installment' && Number(plan.entry_amount || 0) > 0 ? 'awaiting_entry' : 'awaiting_setup',
+        updated_at: new Date().toISOString(),
+      }).eq('id', planId)
+    }
+
     await db.from('plan_audit').insert({
       plan_id: planId, action: 'contract_sent', performed_by: auth.userId,
-      snapshot: { envelopeId, signatureRequestId: sig?.id },
+      snapshot: { envelopeId, signatureRequestId: sig?.id, noPortal },
     })
 
-    return NextResponse.json({ ok: true, envelopeId })
+    // O cliente fica sabendo pela firma (princípio 4), com o caminho do portal
+    if (noPortal) {
+      const texto = lang === 'pt'
+        ? `✍️ Seu contrato de serviços está pronto para assinatura. Em Pagamentos, clique em "Assinar contrato": depois de assinar, você cadastra o débito automático na mesma tela.`
+        : `✍️ Your service agreement is ready to sign. Under Payments, click "Sign agreement": after signing, you will set up the automatic debit on the same screen.`
+      await avisarNoPortal(db, client.id, texto)
+      await enviarEmail(client.email,
+        lang === 'pt' ? `Contrato de serviços para assinatura — ${FIRM.name}` : `Service agreement ready to sign — ${FIRM.name}`,
+        emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${texto.replace(/^✍️ /, '')}</p>`,
+          botao: { texto: lang === 'pt' ? 'Assinar contrato' : 'Sign agreement', url: `${APP_URL}/portal/payments` } }))
+    }
+
+    return NextResponse.json({ ok: true, envelopeId, noPortal })
   } catch (e) {
     console.error('Contract send error:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

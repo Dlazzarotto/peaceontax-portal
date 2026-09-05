@@ -1,6 +1,6 @@
 # Peace on Tax OS — Especificação do Sistema
 
-**Documento vivo** · Atualizado em 19 de agosto de 2026
+**Documento vivo** · Atualizado em 3 de setembro de 2026
 
 ---
 
@@ -69,6 +69,8 @@ A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimon
 
 O núcleo operacional. Importa movimentação bancária por **Plaid**, **PDF de extrato** ou **CSV**, classifica automaticamente e produz os relatórios.
 
+**Histórico do QuickBooks.** Para trazer o passado sem redigitar: exporta-se do QuickBooks Online o relatório *Transaction List by Date* (ou *Transaction Detail by Account*) em CSV e importa-se na aba Bookkeeping. Cada conta do relatório vira (ou aponta para) uma conta bancária do cliente; a categoria vem do *Split* e, quando o nome casa com uma categoria do sistema, o lançamento entra já aprovado (a decisão foi de uma pessoa no QuickBooks). *Split* sem correspondência pode ser mapeado na prévia ou fica pendente; "-Split-" (várias categorias) sempre fica pendente. O dedupe é o mesmo do CSV e do PDF, e a origem fica marcada como `quickbooks`.
+
 **Motor de classificação** — três pontos do sistema executam a mesma lógica (importação, aplicação de regras e criação de regra), mantidos sincronizados:
 
 - **Casamento por palavra inteira.** Fragmentos com menos de 3 caracteres são ignorados. Evita que "mobil" capture "Mobilizat" ou "bk" capture "BNF BK:ITAU".
@@ -99,11 +101,17 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 **Klarna** merece destaque: o cliente parcela com a financeira, a firma recebe o valor cheio imediatamente e **o risco de inadimplência deixa de ser da firma** — resposta direta ao histórico de contestação de cobrança.
 
-**Cobrança pelo Stripe.** Um único caminho, dentro do Receber: escolhe-se cartão, Klarna ou ACH e o sistema gera o link. Quando o cliente paga, o **webhook** registra o pagamento, o gatilho do banco recalcula o saldo, a fatura vira Paga e o cliente é avisado no portal — sem intervenção humana. Recusas ficam registradas com o motivo.
+**Cobrança pelo Stripe.** Quando a equipe envia a fatura, o cliente recebe e-mail e aviso no portal. Em **Pagamentos**, no portal, ele clica em Pagar e o sistema abre **um link só com as três formas** — cartão, débito em conta (ACH) e Klarna; o cliente escolhe na página do Stripe, e se pedir Klarna a aprovação é feita ali mesmo (recusou, ele escolhe outra forma na mesma tela). A equipe também pode gerar esse link único no Receber, ou um link de forma específica; todo link volta para o portal do cliente e vale 24 horas — no portal ele sempre tem um novo. Quando o cliente paga, o **webhook** descobre a forma usada pelo PaymentIntent (nunca pela lista oferecida), registra o pagamento, o gatilho do banco recalcula o saldo, a fatura vira Paga e o cliente é avisado — sem intervenção humana. Débito em conta leva dias: o pagamento entra como "em processamento" e só vira recebido quando o banco confirma (`async_payment_succeeded`); devolução fica registrada e o cliente é avisado. Recusas ficam registradas com o motivo.
+
+**Fatura parcelada na emissão.** Quando a equipe parcela a fatura, o cliente recebe e-mail e aviso no portal; em Pagamentos ele paga a entrada (se houver) ou cadastra a conta bancária/cartão com o mandato ACH, sem cobrança imediata. A sessão do Stripe é criada na hora em que ele clica (`lib/plan-checkout.ts`, a mesma regra que a equipe usa), porque o link do Checkout expira em 24 horas.
 
 **Estorno.** Sócio faz direto; gerente precisa de senha e motivo. O pagamento vai para `payment_reversals` antes de sair. Se veio do Stripe, o sistema avisa que a devolução do dinheiro precisa ser feita no painel do Stripe — apagar o registro não devolve nada.
 
 **Impressão.** Toda fatura e orçamento gera documento formal com timbre, dados do cliente, itens, parcelas, pagamentos recebidos e saldo.
+
+**Relatórios do sócio.** Botão Relatórios no Financeiro, visível e servido **só ao sócio** (`verRelatorios`; gerente e assistente recebem recusa na rota). Seis relatórios impressos, no mesmo padrão dos contábeis, com período escolhido: **Faturamento por mês** (emitido, recebido e em aberto), **Recebimentos** (por forma e por cliente, com Klarna como financiado), **Contas a receber** (por cliente, com atraso em faixas), **Contratos e parcelamentos** (receita recorrente mensal dos contratos ativos e parcelas a receber), **Faturamento por serviço** (por item do catálogo) e **Estornos e cancelamentos**. Orçamentos, rascunhos e faturas canceladas ficam fora do faturamento. As contas ficam em `lib/relatorios-financeiro.ts`, sem banco, testadas com casos fixos.
+
+**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — mensalidade no dia acordado, parcela pelo cronograma — e avisa o cliente: por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
 
 ### 4.4 Planos e contratos
 
@@ -117,11 +125,15 @@ O **dia da cobrança é definido no acordo** (1 a 28), não mais fixo. Um client
 
 O botão **Ver contrato** abre a prévia sem tocar no DocuSign, para conferência antes do envio.
 
+**Assinatura no portal.** Enviar o contrato libera o plano e avisa o cliente (e-mail da firma e aviso no portal). Em Pagamentos, ele clica em **Assinar contrato**: a tela do DocuSign abre embutida (assinante com `clientUserId`), ele assina o contrato — que já contém a **autorização de débito automático** — e, ao terminar, o sistema confere a assinatura pela API do DocuSign (nunca pelo parâmetro de retorno), registra `contract_signed_by_client` em `plan_audit` e o leva **direto ao Stripe** para cadastrar a conta bancária (ACH) ou o cartão. Enquanto o contrato não está assinado, o plano não aceita cadastro de débito. A firma assina depois, pelo e-mail do DocuSign; quando o envelope completa, a equipe atualiza o status e o PDF assinado é arquivado. O envio por e-mail do DocuSign (fluxo antigo) continua disponível com `viaEmail`.
+
 ### 4.5 Comunicação
 
 **SMS** pelo Twilio, número (857) 837-2327. Envio com três travas obrigatórias: cliente autorizou, não pediu STOP, e tem celular válido. A verificação fica dentro da biblioteca de envio — nenhum fluxo novo consegue burlar por esquecimento. Toda mensagem sai identificada e com "Reply STOP to opt out".
 
 **Consentimento** registrado com data, hora, IP, origem (portal, equipe ou palavra-chave) e o texto exato que o cliente viu. O histórico nunca é sobrescrito.
+
+Três caminhos alimentam esse registro: o **próprio cliente, no portal** (a prova mais forte: ele lê o texto versionado em `lib/sms-consent-text.ts`, marca que concorda e ficam IP e navegador); a **equipe, na ficha do cliente** (exige descrever como o cliente autorizou); e a **palavra-chave por SMS** (webhook `/api/sms/webhook`, assinatura da Twilio conferida). STOP e equivalentes gravam o cancelamento e a biblioteca de envio passa a recusar na hora. START só reativa quem já tinha autorizado antes — um START de quem nunca autorizou não cria consentimento. Mensagens de texto comuns entram na fila do Atendimento no canal `sms`, sem passar pelo bot.
 
 **WhatsApp** pela API do Twilio, com atendimento pelo portal: bot responde consultas de status primeiro, escala para humano quando não souber. Mensagens saem como Peace on Tax; a autoria fica visível só para a equipe. Respeita a janela de 24 horas da Meta — fora dela, apenas templates aprovados.
 
@@ -154,7 +166,9 @@ Além do valor operacional, essa trilha existe por uma razão concreta: **num qu
 
 ## 7. Verificação
 
-Existe um script `auditoria.ps1` na raiz do projeto que confere **20 invariantes** do sistema: o motor de regras nos três pontos, transferências, cartões, isolamento non-profit, formato de datas, permissões em todas as rotas do financeiro e assinatura do webhook.
+Existe um script de auditoria na raiz do projeto (`npm run auditoria`, arquivo `auditoria.mjs`; `auditoria.ps1` é a versão original em PowerShell) que confere os invariantes do sistema: o motor de regras nos três pontos, transferências, cartões, isolamento non-profit, formato de datas, permissões em todas as rotas do financeiro, assinatura dos webhooks do Stripe e da Twilio, travas do SMS, lista fechada de APIs públicas e integridade dos arquivos (acentos corrompidos, BOM, `.bak` versionado).
+
+Junto dele, `npm run typecheck` e `npm run lint` são a trava de qualidade — a Vercel publica mesmo com erro de tipo, então esses três comandos rodam antes de cada push.
 
 Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente instalado — evita horas investigando sintomas de código antigo.
 
@@ -167,13 +181,16 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - Cadastro do WhatsApp Sender (Meta)
 - Teste do envio de contrato pelo DocuSign
 
+**Construído desde a versão anterior deste documento** (conferido no código em 3 de setembro de 2026):
+- Tela de **Atendimento** (fila e conversa) em `app/dashboard/atendimento`, com as rotas de fila, conversa, envio e atribuição
+- Webhook de recebimento do WhatsApp e o bot de consultas (`lib/wa-bot.ts`), determinístico, nível `publico` por padrão
+- Consentimento de SMS **no portal do cliente** (cartão na página inicial, texto versionado) e webhook de SMS recebido com STOP/START/HELP, dedupe por SID e encaminhamento de texto livre ao Atendimento. Migração: `sql/sms-consentimento-portal-v1.sql`
+- **Aviso de cobrança três dias antes do débito**: cron diário na Vercel, SMS com fallback para e-mail e aviso no portal, trilha em `plan_audit`. Exige a variável `CRON_SECRET` no ambiente
+- **Importação do histórico do QuickBooks** pelo relatório exportado (`/api/bookkeeping/import-quickbooks`, prévia com contas, tipos e categorias antes de gravar)
+- Tela de **novo serviço mensal** nos Planos (payroll, sales tax…), com item do catálogo, valor e **dia da cobrança (1 a 28)** escolhidos no acordo; o formulário de bookkeeping ganhou o mesmo campo. O contrato passou a ler o dia acordado (antes lia uma coluna inexistente e imprimia sempre dia 5) e tem cláusulas próprias para serviço mensal, sem a regra de transações incluídas
+
 **A construir:**
-- Tela de **Atendimento** (fila e conversa) — trava a migração do WhatsApp
-- Webhook de recebimento e o bot de consultas
-- Consentimento de SMS no portal do cliente e tratamento de STOP/START
-- Aviso de cobrança três dias antes do débito
-- Tela de novo serviço mensal nos Planos
-- Importação do histórico do QuickBooks (último ano)
+- Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
 **Decisões pendentes:**
 - Módulo Plans × tabela `recurring_plans` (duplicação a resolver)

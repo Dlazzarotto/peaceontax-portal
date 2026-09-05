@@ -71,3 +71,64 @@ export function nextDay5ET(from = new Date()): Date {
 export function fmtDateBR(d: Date | string): string {
   return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'America/New_York' })
 }
+
+// ── Datas civis em ET ───────────────────────────────────────
+/** Ano, mês (1–12) e dia do calendário de Nova York para um instante. */
+export function dataCivilET(from = new Date()): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(from)
+  const get = (t: string) => parseInt(parts.find(p => p.type === t)!.value)
+  return { year: get('year'), month: get('month'), day: get('day') }
+}
+
+/** 'YYYY-MM-DD' de hoje (ET) mais n dias. Meio-dia UTC evita virada de dia por fuso. */
+export function dataISOEmDias(n: number, from = new Date()): string {
+  const { year, month, day } = dataCivilET(from)
+  return new Date(Date.UTC(year, month - 1, day + n, 12, 0, 0)).toISOString().slice(0, 10)
+}
+
+/**
+ * Avança uma data conforme a frequência acordada.
+ *
+ * No mensal, mês curto é tratado: dia 30 + 3 meses a partir de novembro
+ * cairia em "30 de fevereiro", que o JavaScript transborda para 2 de março
+ * — deixando duas parcelas em março e nenhuma em fevereiro. Aqui a data
+ * é limitada ao último dia do mês de destino.
+ * Usada pelo cronograma do parcelamento de fatura e pelo aviso de cobrança.
+ */
+export function avancarData(base: Date, freq: Frequency, passos: number): Date {
+  const d = new Date(base)
+  if (freq === 'weekly') {
+    d.setUTCDate(d.getUTCDate() + 7 * passos)
+    return d
+  }
+  if (freq === 'biweekly') {
+    d.setUTCDate(d.getUTCDate() + 14 * passos)
+    return d
+  }
+  const dia = d.getUTCDate()
+  const ano = d.getUTCFullYear()
+  const mes = d.getUTCMonth() + passos
+  // Dia 0 do mês seguinte = último dia do mês de destino
+  const ultimo = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate()
+  return new Date(Date.UTC(ano, mes, Math.min(dia, ultimo), 12, 0, 0))
+}
+
+/**
+ * Próxima parcela ('YYYY-MM-DD') de um parcelamento ativo criado pelos Planos.
+ * next_charge_date é a data da 1ª parcela (gravada na ativação); as demais
+ * seguem a frequência. paid_installments conta só parcelas, não a entrada.
+ * Null quando não há data-base ou o plano já foi todo pago.
+ */
+export function proximaParcela(plan: {
+  next_charge_date: string | null; frequency: string | null
+  paid_installments: number | null; installments: number | null
+}): string | null {
+  if (!plan.next_charge_date || !plan.frequency) return null
+  const pagas = Number(plan.paid_installments || 0)
+  if (plan.installments != null && pagas >= Number(plan.installments)) return null
+  const base = new Date(`${plan.next_charge_date}T12:00:00Z`)
+  if (isNaN(base.getTime())) return null
+  return avancarData(base, plan.frequency as Frequency, pagas).toISOString().slice(0, 10)
+}

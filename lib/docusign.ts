@@ -62,6 +62,9 @@ export interface Signer {
   email: string
   title?: string          // cargo (business)
   kba?: boolean           // Knowledge-Based Authentication (Form 8879)
+  /** Assinatura EMBUTIDA (no portal): o DocuSign não manda e-mail a este
+   *  assinante; a tela de assinatura é aberta por createRecipientView. */
+  clientUserId?: string
 }
 
 export interface EnvelopeDoc {
@@ -91,6 +94,7 @@ export async function sendEnvelope(params: {
       name: s.name,
       recipientId: String(i + 1),
       routingOrder: String(i + 1),
+      ...(s.clientUserId ? { clientUserId: s.clientUserId } : {}),
       tabs: params.anchorMode !== false
         ? {
             signHereTabs: [{ anchorString: `/sig${i + 1}/`, anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: '0' }],
@@ -156,4 +160,47 @@ export async function downloadSignedPdf(envelopeId: string): Promise<Buffer> {
   })
   if (!res.ok) throw new Error(`Download falhou: ${await res.text()}`)
   return Buffer.from(await res.arrayBuffer())
+}
+
+/** Assinantes do envelope com status individual (sent | delivered | completed | declined…). */
+export async function getRecipients(envelopeId: string): Promise<{
+  recipientId: string; email: string; name: string; status: string; clientUserId?: string; signedDateTime?: string
+}[]> {
+  const token = await getAccessToken()
+  const res = await fetch(`${BASE_PATH}/v2.1/accounts/${ACCOUNT_ID}/envelopes/${envelopeId}/recipients`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`Recipients falhou: ${await res.text()}`)
+  const data = await res.json()
+  return (data.signers || []).map((r: any) => ({
+    recipientId: String(r.recipientId), email: String(r.email || '').toLowerCase(), name: r.name,
+    status: String(r.status || '').toLowerCase(), clientUserId: r.clientUserId, signedDateTime: r.signedDateTime,
+  }))
+}
+
+/**
+ * URL da tela de assinatura embutida para um assinante com clientUserId.
+ * Vale poucos minutos: gerar na hora do clique, nunca guardar.
+ * returnUrl recebe ?event=signing_complete|cancel|decline… — o status real
+ * é conferido pela API (getRecipients), nunca pelo parâmetro.
+ */
+export async function createRecipientView(envelopeId: string, params: {
+  email: string; name: string; clientUserId: string; returnUrl: string
+}): Promise<string> {
+  const token = await getAccessToken()
+  const res = await fetch(`${BASE_PATH}/v2.1/accounts/${ACCOUNT_ID}/envelopes/${envelopeId}/views/recipient`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      returnUrl: params.returnUrl,
+      // 'email': o cliente entrou no portal com e-mail e senha
+      authenticationMethod: 'email',
+      email: params.email,
+      userName: params.name,
+      clientUserId: params.clientUserId,
+    }),
+  })
+  if (!res.ok) throw new Error(`Recipient view falhou: ${await res.text()}`)
+  const data = await res.json()
+  return data.url
 }

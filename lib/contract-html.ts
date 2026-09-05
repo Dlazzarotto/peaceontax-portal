@@ -29,12 +29,16 @@ export function montarContratoHtml(params: {
   const { plan, client, signerTitle, previa } = params
   const lang: 'pt' | 'en' = client.language === 'pt' ? 'pt' : 'en'
   const isInstallment = plan.kind === 'installment'
+  // 'monthly' = outro serviço mensal (payroll, sales tax…): escopo vem da descrição,
+  // sem cláusula de transações incluídas, que é exclusiva do bookkeeping.
+  const isMonthlyService = plan.kind === 'monthly'
   const money = (n: number) => `$${Number(n || 0).toFixed(2)}`
 
   const includedTx = plan.included_transactions
   const overageRate = Number(plan.overage_rate ?? 1.25).toFixed(2)
-  // Data-base da cobrança: definida no acordo; 5 permanece como padrão histórico
-  const diaCobranca = Number(plan.billing_day ?? 5)
+  // Data-base da cobrança: definida no acordo (coluna due_day); 5 permanece como padrão histórico
+  const diaCobranca = Number(plan.due_day ?? 5)
+  const servicoMensal = String(plan.description || '').trim()
 
   const termsPt = isInstallment
     ? `<li>Valor total dos serviços: <b>${money(plan.total)}</b></li>
@@ -42,6 +46,11 @@ export function montarContratoHtml(params: {
        <li>Saldo em <b>${plan.installments} parcela(s) de ${money(plan.installment_amount)}</b>, frequência ${FREQ_LABEL[plan.frequency as Frequency]?.toLowerCase()}, com início 1 período após a entrada, por débito automático autorizado (cartão ou conta bancária ACH).</li>
        <li>O CONTRATANTE reconhece que os serviços descritos foram/estão sendo prestados e que as parcelas são devidas integralmente, não sendo suspensas por qualquer motivo.</li>
        <li><b>Entrega:</b> o serviço somente será finalizado e entregue após a quitação de, no mínimo, <b>75% (setenta e cinco por cento)</b> do valor total contratado.</li>`
+    : isMonthlyService
+    ? `<li><b>Escopo:</b> ${servicoMensal || 'serviço mensal'}: <b>${money(plan.monthly_amount)}/mês</b>.</li>
+       <li><b>Serviços NÃO incluídos</b> (cobrados à parte mediante orçamento): quaisquer serviços fora do escopo descrito acima, inclusive declaração de imposto de renda da empresa e de seus sócios e escrituração contábil (bookkeeping).</li>
+       <li>Cobrança por débito automático autorizado, <b>todo ${diaPorExtenso(diaCobranca, 'pt')} de cada mês</b>.</li>
+       <li>Vigência por prazo indeterminado, podendo ser encerrado por qualquer parte com aviso de 30 dias.</li>`
     : `<li><b>Escopo:</b> serviços mensais de bookkeeping (escrituração contábil) com geração do demonstrativo de resultados (P&L): <b>${money(plan.monthly_amount)}/mês</b>.</li>
        <li><b>Transações incluídas:</b> até <b>${includedTx ?? '—'} transações por mês</b>. Transações excedentes serão cobradas à parte, ao valor de <b>$${overageRate} por transação</b>.</li>
        <li><b>Serviços NÃO incluídos</b> (cobrados à parte mediante orçamento): declaração de imposto de renda da empresa e de seus sócios, Meal Tax, Sales Tax, folha de pagamento, e quaisquer outros serviços fora do escopo de bookkeeping.</li>
@@ -54,6 +63,11 @@ export function montarContratoHtml(params: {
        <li>Balance in <b>${plan.installments} installment(s) of ${money(plan.installment_amount)}</b> (${plan.frequency}), starting one period after the down payment, via authorized automatic debit (card or ACH bank account).</li>
        <li>CLIENT acknowledges the services described have been/are being rendered and installments are fully due and non-suspendable.</li>
        <li><b>Delivery:</b> the service will only be finalized and delivered after at least <b>75% (seventy-five percent)</b> of the total contract amount has been paid.</li>`
+    : isMonthlyService
+    ? `<li><b>Scope:</b> ${servicoMensal || 'monthly service'}: <b>${money(plan.monthly_amount)}/month</b>.</li>
+       <li><b>Services NOT included</b> (billed separately upon quote): any services outside the scope described above, including business and owners' income tax returns and bookkeeping.</li>
+       <li>Billed via authorized automatic debit on <b>the ${diaPorExtenso(diaCobranca, 'en')} of every month</b>.</li>
+       <li>Open-ended term; either party may terminate with 30 days notice.</li>`
     : `<li><b>Scope:</b> monthly bookkeeping services including Profit &amp; Loss (P&amp;L) statement generation: <b>${money(plan.monthly_amount)}/month</b>.</li>
        <li><b>Included transactions:</b> up to <b>${includedTx ?? '—'} transactions per month</b>. Transactions above this limit are billed separately at <b>$${overageRate} per transaction</b>.</li>
        <li><b>Services NOT included</b> (billed separately upon quote): business and owners' income tax returns, Meal Tax, Sales Tax, payroll, and any other services outside the bookkeeping scope.</li>
@@ -63,12 +77,12 @@ export function montarContratoHtml(params: {
   const displayName = client.business_name || client.name
   const t = lang === 'pt'
     ? { title: 'CONTRATO DE PRESTAÇÃO DE SERVIÇOS', between: 'entre', and: 'e',
-        services: isInstallment ? (plan.description || 'Serviços contábeis e fiscais') : 'Bookkeeping mensal',
+        services: isInstallment ? (plan.description || 'Serviços contábeis e fiscais') : isMonthlyService ? (servicoMensal || 'Serviço mensal') : 'Bookkeeping mensal',
         terms: 'TERMOS E CONDIÇÕES', pay: 'PAGAMENTO E AUTORIZAÇÃO DE DÉBITO',
         payText: 'O CONTRATANTE autoriza a Peace on Tax Corp a realizar as cobranças descritas acima por meio do método de pagamento cadastrado via Stripe, nos valores e datas pactuados.',
         sign: 'ASSINATURAS', contractor: 'CONTRATADA', clientLbl: 'CONTRATANTE', scope: 'OBJETO' }
     : { title: 'SERVICE AGREEMENT', between: 'between', and: 'and',
-        services: isInstallment ? (plan.description || 'Accounting and tax services') : 'Monthly bookkeeping',
+        services: isInstallment ? (plan.description || 'Accounting and tax services') : isMonthlyService ? (servicoMensal || 'Monthly service') : 'Monthly bookkeeping',
         terms: 'TERMS AND CONDITIONS', pay: 'PAYMENT AND DEBIT AUTHORIZATION',
         payText: 'CLIENT authorizes Peace on Tax Corp to charge the payment method on file via Stripe for the amounts and dates agreed above.',
         sign: 'SIGNATURES', contractor: 'PROVIDER', clientLbl: 'CLIENT', scope: 'SCOPE' }

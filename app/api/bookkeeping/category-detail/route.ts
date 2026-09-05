@@ -1,10 +1,12 @@
 // GET /api/bookkeeping/category-detail?clientId=...&year=YYYY&month=MM?&category=...
 // Drill-down do P&L: todos os lançamentos DO REGISTRO daquela categoria,
-// para conferência (aberto em nova aba ao clicar na linha do relatório).
+// para conferência. Abre na mesma aba a partir da linha do P&L; a barra
+// fixa tem "Voltar ao P&L" e "Print / Save PDF" (some na impressão).
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -116,6 +118,8 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || 'Client'
   const period = month ? `${month.padStart(2, '0')}/${year}` : String(year)
 
+  const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`
+  const barra = barraDoRelatorio({ voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L' })
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${category} — ${period}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
@@ -135,8 +139,12 @@ export async function GET(req: NextRequest) {
     .warn { border: 1px solid #000; padding: 9px 12px; font-size: 12px; margin: 14px 0; }
     .badge { display:inline-block; font-size:11px; border:1px solid #000; padding:1px 8px; margin-right:5px; }
     .footer { margin-top: 30px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
+    /* Linhas com o sinal menos comum nesta conta (o aviso acima fala delas) */
+    tr.odd td { background: #fff3b0; }
+    ${barra.css}
     @media print { body { margin: 14px auto; } }
   </style></head><body>
+  ${barra.html}
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
     <div>

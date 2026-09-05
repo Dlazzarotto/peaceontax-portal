@@ -14,6 +14,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
+import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 
 export const dynamic = 'force-dynamic'
 
@@ -199,7 +200,11 @@ export async function PATCH(req: NextRequest) {
     if (inv.status !== 'draft') return NextResponse.json({ error: 'Só rascunho pode ser enviado.' }, { status: 400 })
     await db.from('invoices').update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', id)
     await db.from('invoice_audit').insert({ invoice_id: id, action: 'sent', performed_by: auth.userId, staff_level: perms.nivel }).then(() => null, () => null)
-    return NextResponse.json({ ok: true, message: `${inv.number} marcado como enviado.` })
+
+    // O cliente recebe na hora: aviso no portal e e-mail com o caminho para pagar.
+    // Em Pagamentos ele escolhe cartão, débito em conta ou Klarna num link só.
+    const aviso = await avisarClienteDaFatura(db, inv)
+    return NextResponse.json({ ok: true, message: `${inv.number} enviado ao cliente${aviso.email ? ' (e-mail e portal)' : aviso.motivo ? ` (portal; e-mail não enviado: ${aviso.motivo})` : ' (portal)'}.` })
   }
 
   if (action === 'cancel') {
@@ -344,4 +349,35 @@ export async function DELETE(req: NextRequest) {
   const { error } = await db.from('invoices').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true, message: `${inv.number} apagado.` })
+}
+
+/** E-mail e aviso no portal quando a fatura é enviada. Não derruba a operação se o e-mail falhar. */
+async function avisarClienteDaFatura(db: any, inv: any): Promise<{ email: boolean; motivo?: string }> {
+  const { data: c } = await db.from('clients').select('id, name, email, language').eq('id', inv.client_id).maybeSingle()
+  if (!c) return { email: false, motivo: 'cliente não encontrado' }
+  const lang = (c.language || 'en').toLowerCase()
+  const saldo = Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100
+  const valor = `$${saldo.toFixed(2)}`
+  const venc = inv.due_date ? String(inv.due_date).slice(5, 7) + '/' + String(inv.due_date).slice(8, 10) + '/' + String(inv.due_date).slice(0, 4) : null
+  const parcelada = inv.payment_plan === 'installments'
+
+  const texto = lang === 'pt'
+    ? (parcelada
+        ? `🧾 Fatura ${inv.number} (${valor}) enviada. Ela é parcelada: em Pagamentos, cadastre o débito automático.`
+        : `🧾 Fatura ${inv.number} de ${valor}${venc ? `, vencimento ${venc}` : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`)
+    : lang === 'es'
+    ? (parcelada
+        ? `🧾 Factura ${inv.number} (${valor}) enviada. Es en cuotas: en Pagos, registre el débito automático.`
+        : `🧾 Factura ${inv.number} de ${valor}${venc ? `, vence el ${venc}` : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`)
+    : (parcelada
+        ? `🧾 Invoice ${inv.number} (${valor}) sent. It is an installment plan: under Payments, set up automatic debit.`
+        : `🧾 Invoice ${inv.number} for ${valor}${venc ? `, due ${venc}` : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`)
+  await avisarNoPortal(db, c.id, texto)
+
+  if (!c.email || !c.email.includes('@')) return { email: false, motivo: 'cliente sem e-mail' }
+  const ok = await enviarEmail(c.email,
+    lang === 'pt' ? `Fatura ${inv.number} — Peace on Tax` : lang === 'es' ? `Factura ${inv.number} — Peace on Tax` : `Invoice ${inv.number} — Peace on Tax`,
+    emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${texto.replace(/^🧾 /, '')}</p>`,
+      botao: { texto: lang === 'pt' ? (parcelada ? 'Cadastrar débito automático' : 'Ver e pagar a fatura') : lang === 'es' ? (parcelada ? 'Registrar débito automático' : 'Ver y pagar la factura') : (parcelada ? 'Set up automatic debit' : 'View and pay invoice'), url: `${APP_URL}/portal/payments` } }))
+  return { email: ok, motivo: ok ? undefined : 'falha no envio' }
 }

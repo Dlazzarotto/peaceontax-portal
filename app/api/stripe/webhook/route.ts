@@ -2,6 +2,8 @@
 // Trata:
 //   checkout.session.completed → cotações + entrada de parcelamento + bookkeeping
 //                              → FATURAS do módulo financeiro (metadata.invoice_id)
+//   checkout.session.async_payment_succeeded / _failed → fatura paga por ACH
+//                              (o débito em conta leva dias; o 'completed' chega antes do dinheiro)
 //   invoice.paid               → conta parcelas pagas / registra mensalidade
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
@@ -49,7 +51,7 @@ export async function POST(req: NextRequest) {
 
       // ---- Módulo financeiro: fatura paga (cartão, Klarna ou ACH) ----
       if (meta.invoice_id) {
-        await handleFaturaPaga(db, session)
+        await handleFaturaPaga(db, stripe, session)
         return NextResponse.json({ received: true })
       }
 
@@ -78,10 +80,31 @@ export async function POST(req: NextRequest) {
           status: 'active',
           updated_at: new Date().toISOString(),
         }).eq('id', meta.planId)
-        await notifyClient(db, meta.clientId, '✅ Contrato de bookkeeping ativado! A cobrança mensal ocorre na data combinada. Obrigado pela confiança! 🙏')
+        await notifyClient(db, meta.clientId, '✅ Contrato ativado! A cobrança mensal ocorre na data combinada. Obrigado pela confiança! 🙏')
         return NextResponse.json({ received: true })
       }
 
+      return NextResponse.json({ received: true })
+    }
+
+    // ============ ACH DA FATURA: o dinheiro chegou (ou não) dias depois ============
+    if (event.type === 'checkout.session.async_payment_succeeded') {
+      const session = event.data.object as Stripe.Checkout.Session
+      if (session.metadata?.invoice_id) await handleFaturaPaga(db, stripe, session)
+      return NextResponse.json({ received: true })
+    }
+    if (event.type === 'checkout.session.async_payment_failed') {
+      const session = event.data.object as Stripe.Checkout.Session
+      const invoiceId = session.metadata?.invoice_id
+      if (invoiceId) {
+        await db.from('invoice_audit').insert({
+          invoice_id: invoiceId, action: 'stripe_declined',
+          reason: 'débito em conta (ACH) devolvido pelo banco',
+          next: { session: session.id, valor: Number(session.amount_total || 0) / 100 },
+        }).then(() => null, () => null)
+        await notifyClient(db, session.metadata?.client_id,
+          '⚠️ O débito em conta da sua fatura foi devolvido pelo banco. Você pode pagar de novo em Pagamentos ou falar conosco: (833) 732-2327.')
+      }
       return NextResponse.json({ received: true })
     }
 
@@ -171,7 +194,7 @@ export async function POST(req: NextRequest) {
 
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
-        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${(plan.paid_installments||0)+1}/${plan.installments}` : 'mensalidade bookkeeping'}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
+        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${(plan.paid_installments||0)+1}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
       })
 
       await notifyClient(db, plan.client_id, '⚠️ Não conseguimos processar seu pagamento. Uma nova tentativa será feita automaticamente. Se preferir, entre em contato: (833) 732-2327.')
@@ -204,38 +227,79 @@ export async function POST(req: NextRequest) {
 // ---------- handlers ----------
 
 /** Fatura do módulo financeiro quitada pelo Stripe (cartão, Klarna ou ACH) */
-async function handleFaturaPaga(db: ReturnType<typeof adminDb>, session: Stripe.Checkout.Session) {
+/**
+ * Forma realmente usada, lida do PaymentIntent. A sessão pode oferecer
+ * cartão, ACH e Klarna juntos; a lista oferecida não diz o que o cliente
+ * escolheu — só o método do pagamento diz.
+ */
+async function formaDoPagamento(stripe: Stripe, session: Stripe.Checkout.Session): Promise<'card' | 'ach' | 'klarna'> {
+  try {
+    const piId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id
+    if (piId) {
+      const pi = await stripe.paymentIntents.retrieve(piId, { expand: ['payment_method'] })
+      const tipo = (pi.payment_method as Stripe.PaymentMethod | null)?.type
+      if (tipo === 'klarna') return 'klarna'
+      if (tipo === 'us_bank_account') return 'ach'
+      if (tipo) return 'card'
+    }
+  } catch (e) {
+    console.error('formaDoPagamento:', (e as Error).message)
+  }
+  // Sem PaymentIntent legível: só confia na lista quando ela tem uma forma só
+  const tipos = (session as any).payment_method_types as string[] | undefined
+  if (tipos?.length === 1) return tipos[0] === 'klarna' ? 'klarna' : tipos[0] === 'us_bank_account' ? 'ach' : 'card'
+  return 'card'
+}
+
+async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, session: Stripe.Checkout.Session) {
   const meta = session.metadata ?? {}
   const invoiceId = meta.invoice_id
-  if (!invoiceId || session.payment_status !== 'paid') return
+  if (!invoiceId) return
+
+  const { data: inv } = await db.from('invoices')
+    .select('id, client_id, number, total, paid_total').eq('id', invoiceId).maybeSingle()
+  if (!inv) return
+
+  // ACH: o 'completed' chega com o débito ainda em processamento. O dinheiro
+  // é confirmado depois por async_payment_succeeded — aí sim entra como pago.
+  if (session.payment_status !== 'paid') {
+    await db.from('invoice_audit').insert({
+      invoice_id: inv.id, action: 'stripe_processing',
+      next: { session: session.id, valor: Number(session.amount_total || 0) / 100, status: session.payment_status },
+    }).then(() => null, () => null)
+    await notifyClient(db, inv.client_id,
+      `🏦 Recebemos o pedido de débito em conta da fatura ${inv.number}. O banco leva alguns dias para confirmar; avisamos aqui quando entrar.`)
+    return
+  }
 
   // Idempotência: o Stripe reenvia o evento se não confirmarmos
   const { data: jaTem } = await db.from('invoice_payments')
     .select('id').eq('stripe_object', session.id).maybeSingle()
   if (jaTem) return
 
-  const { data: inv } = await db.from('invoices')
-    .select('id, client_id, number, total, paid_total').eq('id', invoiceId).maybeSingle()
-  if (!inv) return
-
-  // Klarna paga integralmente à firma: registra como financiada
-  const viaKlarna = String(meta.forma || '').toLowerCase() === 'klarna'
-    || (session as any).payment_method_types?.includes('klarna')
+  const forma = await formaDoPagamento(stripe, session)
+  const viaKlarna = forma === 'klarna'
 
   await db.from('invoice_payments').insert({
     invoice_id: inv.id,
     client_id: inv.client_id,
     amount: Math.round(Number(session.amount_total || 0)) / 100,
-    method: viaKlarna ? 'external' : 'card',
+    // Klarna paga integralmente à firma: registra como financiada
+    method: viaKlarna ? 'external' : forma === 'ach' ? 'ach' : 'card',
     financier: viaKlarna ? 'Klarna' : null,
-    reference: (session.payment_intent as string) || session.id,
+    reference: (typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id) || session.id,
     stripe_object: session.id,
     received_at: new Date().toISOString(),
   })
 
+  if (viaKlarna) {
+    await db.from('invoices').update({ payment_plan: 'financed', financier: 'Klarna', updated_at: new Date().toISOString() })
+      .eq('id', inv.id).then(() => null, () => null)
+  }
+
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'stripe_paid',
-    next: { valor: Number(session.amount_total || 0) / 100, session: session.id, klarna: viaKlarna },
+    next: { valor: Number(session.amount_total || 0) / 100, session: session.id, forma, klarna: viaKlarna },
   }).then(() => null, () => null)
 
   await notifyClient(db, inv.client_id,

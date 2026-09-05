@@ -196,10 +196,10 @@ export async function DELETE(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get('mode')
   if (mode === 'no_payee') {
     const clientId = req.nextUrl.searchParams.get('clientId')
-    let q = serviceDb().from('bookkeeping_rules').delete()
+    let q = serviceDb().from('bookkeeping_rules').delete({ count: 'exact' })
       .or('payee.is.null,payee.eq.')
     if (clientId) q = q.or(`client_id.eq.${clientId},client_id.is.null`)
-    const { error, count } = await q.select('id', { count: 'exact' }) as any
+    const { error, count } = await q
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     return NextResponse.json({ ok: true, deleted: count ?? 0 })
   }
