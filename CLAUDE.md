@@ -98,6 +98,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 
 ## Convenções de arquivo
 
+- **Relatório em HTML não interpola dado dentro de `<script>`.** O que vem da
+  URL ou do banco vai em atributo escapado (`escaparHtml` de
+  `lib/relatorio-barra.ts`) e o script é fixo. `JSON.stringify` dentro de
+  script **não** protege: ele não escapa `</script>`.
+- **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
+  aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
 - **UTF-8 sem BOM, sempre.** O projeto já sofreu com acentos corrompidos
   (o "ã" virando "A" com til mais "£") por arquivos copiados de ZIP e
   editados no Windows. A

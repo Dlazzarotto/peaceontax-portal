@@ -4,6 +4,7 @@
 // em sms_consent_log com data, hora, IP e navegador.
 
 import { useEffect, useState } from 'react'
+import { fmtUS } from '@/lib/format'
 
 const T: Record<string, any> = {
   en: {
@@ -68,7 +69,6 @@ export default function SmsConsent({ lang }: { lang: string }) {
   }
 
   if (!s) return null
-  const fmt = (iso: string) => new Date(iso).toLocaleDateString('en-US')
 
   return (
     <div style={{ background: '#fff', borderRadius: 14, padding: 20, border: '1px solid #e2e8f4', marginBottom: 28 }}>
@@ -77,7 +77,7 @@ export default function SmsConsent({ lang }: { lang: string }) {
       {s.consent ? (
         <>
           <p style={{ fontSize: 13.5, color: '#1a6b4a', background: '#e8f5ee', borderRadius: 8, padding: '10px 14px', margin: '0 0 12px' }}>
-            ✓ {t.on(fmt(s.consentAt || new Date().toISOString()))} <span style={{ color: '#3a4a5a' }}>({s.phone})</span>
+            ✓ {t.on(fmtUS(s.consentAt) || fmtUS(new Date().toISOString()))} <span style={{ color: '#3a4a5a' }}>({s.phone})</span>
           </p>
           <button onClick={() => enviar('opt_out')} disabled={busy}
             style={{ padding: '8px 14px', background: '#fff', color: '#b02020', border: '1.5px solid #b02020', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
@@ -87,7 +87,7 @@ export default function SmsConsent({ lang }: { lang: string }) {
       ) : (
         <>
           <p style={{ fontSize: 13.5, color: '#3a4a5a', margin: '0 0 12px', lineHeight: 1.5 }}>
-            {s.optedOutAt ? t.stopped(fmt(s.optedOutAt)) : t.off}
+            {s.optedOutAt ? t.stopped(fmtUS(s.optedOutAt)) : t.off}
           </p>
           <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#6a7a9a', marginBottom: 4 }}>{t.phone}</label>
           <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="(857) 555-1234"

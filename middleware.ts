@@ -12,6 +12,9 @@ const API_PUBLIC = [
   '/api/sms/webhook',  // Twilio: STOP/START e mensagens recebidas — validado por X-Twilio-Signature
   '/api/cron',         // rotinas agendadas da Vercel — validado por CRON_SECRET (Authorization: Bearer)
   '/api/firm/setup',   // aceite de convite — quem aceita ainda nao tem login
+  // Volta do DocuSign: se a sessão expirou durante a assinatura, o middleware
+  // devolveria JSON cru. A rota confere a sessão e o dono, e manda ao login.
+  '/api/portal/contract-return',
 ]
 
 const FIRM_ONLY   = ['/dashboard', '/clients', '/invitations', '/bookkeeping', '/reports', '/settings']

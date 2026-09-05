@@ -9,6 +9,7 @@
 
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { fmtUS, money } from '@/lib/format'
 
 const T: Record<string, any> = {
   en: {
@@ -73,8 +74,6 @@ const T: Record<string, any> = {
   },
 }
 
-const fmtUS = (iso: string | null) => iso ? `${String(iso).slice(5, 7)}/${String(iso).slice(8, 10)}/${String(iso).slice(0, 4)}` : ''
-const money = (n: any) => `$${Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const METODO: Record<string, string> = { card: 'Card', ach: 'ACH', external: 'Klarna', cash: 'Cash', zelle: 'Zelle', venmo: 'Venmo', check: 'Check', wire: 'Wire' }
 
 export default function PaymentsPage() {

@@ -1,6 +1,6 @@
-﻿# ============================================================
-#  AUDITORIA DO PORTAL â€” confere se o que estÃ¡ instalado
-#  corresponde Ã s decisÃµes tomadas na construÃ§Ã£o.
+# ============================================================
+#  AUDITORIA DO PORTAL — confere se o que está instalado
+#  corresponde às decisões tomadas na construção.
 #  Rode na raiz do projeto:  .\auditoria.ps1
 # ============================================================
 

@@ -9,6 +9,8 @@
 // parênteses), Georgia/Times. Datas MM/DD/YYYY, moeda em dólar.
 
 import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { money, fmtUS } from '@/lib/format'
+import { round2 } from '@/lib/plans'
 import { FIRM } from '@/lib/contract-html'
 
 export type Periodo = { from: string; to: string }   // YYYY-MM-DD, inclusivo
@@ -23,16 +25,8 @@ export const RELATORIOS = [
 ] as const
 export type RelatorioId = typeof RELATORIOS[number]['id']
 
-export const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
-export const money = (n: number) => {
-  const v = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-  return `${n < 0 ? '-' : ''}$${v}`
-}
-export const fmtUS = (iso: string | null | undefined) => {
-  if (!iso) return ''
-  const s = String(iso).slice(0, 10)
-  return `${s.slice(5, 7)}/${s.slice(8, 10)}/${s.slice(0, 4)}`
-}
+export { round2 } from '@/lib/plans'
+export { money, fmtUS } from '@/lib/format'
 const MESES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 export const rotuloMes = (ym: string) => `${MESES[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`
 export const nomeCliente = (c: any) => c?.business_name || c?.name || '—'

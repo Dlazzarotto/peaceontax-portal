@@ -6,15 +6,18 @@
 // registrado em plan_audit o que foi avisado, quando e por qual canal.
 //
 // Canal: SMS pela lib/sms.ts (que só envia com consentimento). Sem SMS
-// possível, e-mail pelo Resend. Em qualquer caso, aviso no portal.
+// possível, e-mail pelo Resend e aviso no portal, os dois por lib/avisos.ts —
+// assim o remetente, o rodapé com a marca e o tratamento de erro do envio são
+// os mesmos de todo aviso que sai da firma.
 // Idempotente: a chave aviso{N}d:{plano}:{data} em sms_sent_marker impede
 // repetir — o cron pode rodar mais de uma vez no dia sem duplicar.
 
 import { serviceDb } from '@/lib/api-auth'
 import { enviarSms } from '@/lib/sms'
 import { nextBillingDayET, proximaParcela, dataISOEmDias } from '@/lib/plans'
-
-const FONE_FIRMA = '(833) 732-2327'
+import { enviarEmail, avisarNoPortal, emailComMarca } from '@/lib/avisos'
+import { FIRM } from '@/lib/contract-html'
+import { fmtUS } from '@/lib/format'
 
 export type Candidato = {
   planId: string; clientId: string; clientName: string; email: string | null; lang: string
@@ -26,47 +29,27 @@ export type ResultadoAviso = Candidato & {
   detalhe?: string
 }
 
-/** Data 'MM/DD/YYYY' para o cliente (padrão dos EUA). */
-function fmtUS(iso: string): string {
-  const [y, m, d] = iso.split('-')
-  return `${m}/${d}/${y}`
-}
-
 function textoAviso(c: Candidato, dias: number): { sms: string; assunto: string; html: string } {
   const valor = `$${c.valor.toFixed(2)}`
   const data = fmtUS(c.data)
   const lang = (c.lang || 'en').toLowerCase()
   let sms: string, assunto: string
   if (lang === 'pt') {
-    sms = `Lembrete: em ${dias} dias (${data}) será debitado ${valor} referente a ${c.descricao}, no método de pagamento cadastrado. Dúvidas: ${FONE_FIRMA}.`
+    sms = `Lembrete: em ${dias} dias (${data}) será debitado ${valor} referente a ${c.descricao}, no método de pagamento cadastrado. Dúvidas: ${FIRM.phone}.`
     assunto = `Lembrete de cobrança — ${data}`
   } else if (lang === 'es') {
-    sms = `Recordatorio: en ${dias} días (${data}) se debitará ${valor} por ${c.descricao} del método de pago registrado. Dudas: ${FONE_FIRMA}.`
+    sms = `Recordatorio: en ${dias} días (${data}) se debitará ${valor} por ${c.descricao} del método de pago registrado. Dudas: ${FIRM.phone}.`
     assunto = `Recordatorio de cobro — ${data}`
   } else {
-    sms = `Reminder: in ${dias} days (${data}) ${valor} will be charged for ${c.descricao} to your payment method on file. Questions: ${FONE_FIRMA}.`
+    sms = `Reminder: in ${dias} days (${data}) ${valor} will be charged for ${c.descricao} to your payment method on file. Questions: ${FIRM.phone}.`
     assunto = `Upcoming charge reminder — ${data}`
   }
-  const html = `<div style="font-family:Georgia,serif;font-size:15px;color:#0f2340;line-height:1.6">
-    <p>${c.clientName ? (lang === 'pt' ? `Olá, ${c.clientName}.` : lang === 'es' ? `Hola, ${c.clientName}.` : `Hello, ${c.clientName}.`) : ''}</p>
-    <p>${sms}</p>
-    <p style="color:#6a7a9a;font-size:13px">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148 · ${FONE_FIRMA} · info@peaceontax.com</p>
-  </div>`
+  // Saudação e rodapé com a marca vêm de emailComMarca: mudou o endereço ou o
+  // telefone da firma num lugar, muda em todo aviso.
+  const html = emailComMarca({ lang, nome: c.clientName, corpoHtml: `<p>${sms}</p>` })
   return { sms, assunto, html }
 }
 
-async function enviarEmail(to: string, subject: string, html: string): Promise<boolean> {
-  const key = process.env.RESEND_API_KEY
-  if (!key) return false
-  const from = process.env.RESEND_FROM_EMAIL || 'noreply@peaceontax.com'
-  const r = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({ from: `Peace on Tax <${from}>`, to, subject, html }),
-  })
-  if (!r.ok) console.error('[avisos] Resend:', await r.text().catch(() => ''))
-  return r.ok
-}
 
 /**
  * Encontra os planos ativos cujo próximo débito cai exatamente em `alvo`.
@@ -152,10 +135,7 @@ export async function executarAvisosDeCobranca(opts: { diasAntes?: number; dry?:
     }
 
     // 3. Portal — sempre, é o registro que o cliente vê ao entrar
-    await db.from('chat_messages').insert({
-      client_id: c.clientId, role: 'assistant', channel: 'portal',
-      content: `🔔 ${txt.sms}`,
-    }).then(() => null, () => null)
+    await avisarNoPortal(db, c.clientId, `🔔 ${txt.sms}`)
 
     // 4. Trilha: o que foi avisado, quando e por onde
     await db.from('plan_audit').insert({

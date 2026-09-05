@@ -126,6 +126,9 @@ titulo('COMUNICACAO: travas dentro da biblioteca')
 checar('SMS: consentimento/STOP conferidos no envio', 'lib/sms.ts', /consent|opt_out|STOP/i, 'fluxo novo poderia burlar por esquecimento')
 checar('SMS: consentimento do portal passa pela lib', 'app/api/portal/sms-consent/route.ts', 'registrarConsentimento', 'trilha (IP, hora, texto) ficaria incompleta')
 checar('SMS: texto do consentimento versionado', 'lib/sms-consent-text.ts', 'SMS_CONSENT_VERSION', 'registro antigo nao saberia o que o cliente leu')
+checar('Aviso de cobranca usa a lib de avisos (marca e erro tratados)', 'lib/billing-reminders.ts', "from '@/lib/avisos'", 'e-mail duplicado sai com rodape antigo e derruba o cron na falha de rede')
+checar('Formato do cliente vem de um lugar so', 'lib/format.ts', 'export function fmtUS', 'cada tela com a sua data e a sua moeda')
+checar('Volta do DocuSign alcanca a rota (senao vira JSON 401)', 'middleware.ts', '/api/portal/contract-return', 'sessao expirada devolveria JSON cru em vez do login')
 checar('SMS: START sem opt-in anterior nao vira consentimento', 'app/api/sms/webhook/route.ts', "eq('action', 'opt_in')", 'um START criaria consentimento do nada')
 
 titulo('ACESSO: APIs publicas sao lista fechada')
@@ -146,7 +149,7 @@ titulo('TEXTO: acentos corrompidos (mojibake) e BOM')
 // Em portugues, "Ã" so aparece em maiusculas (NÃO, PRESTAÇÃO) e nunca seguido
 // de um caractere da faixa U+0080-U+00BF - por isso o padrao nao da falso positivo.
 const mojibake = /[\u00C3\u00C2][\u0080-\u00BF]|\u00E2\u20AC/
-const exts = ['.ts', '.tsx', '.sql', '.md', '.mjs']
+const exts = ['.ts', '.tsx', '.sql', '.md', '.mjs', '.ps1']
 let corrompidos = 0, boms = 0
 for (const p of arquivos(raiz, exts)) {
   const texto = readFileSync(p, 'utf8')
