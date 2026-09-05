@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -148,6 +149,7 @@ export async function GET(req: NextRequest) {
   const row = (label: string, val: number, indent = true, linkCat?: string) =>
     `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`
 
+  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>P&L ${period} — ${displayName}</title>
 <style>
@@ -171,9 +173,9 @@ export async function GET(req: NextRequest) {
   tr.nonpnl td { font-size:13px; }
   .warn { margin-top:18px; border:1px solid #000; padding:9px 12px; font-size:12px; }
   .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
-  .printbtn { position:fixed; top:18px; right:18px; background:#2D3278; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:8px; cursor:pointer; min-height:48px; }
   a { color:#000; }
-  @media print { body { padding:0; } .sheet { padding:0; } .printbtn { display:none; } }
+  ${barra.css}
+  @media print { body { padding:0; } .sheet { padding:0; } }
 </style></head><body>
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
@@ -183,7 +185,7 @@ export async function GET(req: NextRequest) {
     </div>
   </div>
 
-<button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
+${barra.html}
 <div class="sheet">
   <h1>${displayName}</h1>
   <h2>Profit and Loss</h2>

@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -117,6 +118,8 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || 'Client'
   const period = month ? `${month.padStart(2, '0')}/${year}` : String(year)
 
+  const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`
+  const barra = barraDoRelatorio({ voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L' })
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${category} — ${period}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
@@ -138,25 +141,10 @@ export async function GET(req: NextRequest) {
     .footer { margin-top: 30px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
     /* Linhas com o sinal menos comum nesta conta (o aviso acima fala delas) */
     tr.odd td { background: #fff3b0; }
-    .barra { position: fixed; top: 18px; right: 18px; display: flex; gap: 8px; }
-    .barra button { border: none; font-size: 15px; font-weight: 700; padding: 13px 20px; border-radius: 8px; cursor: pointer; min-height: 48px; font-family: inherit; }
-    .voltar { background: #fff; color: #2D3278; border: 1.5px solid #2D3278 !important; }
-    .printbtn { background: #2D3278; color: #fff; }
-    @media print { body { margin: 14px auto; } .barra { display: none; } }
+    ${barra.css}
+    @media print { body { margin: 14px auto; } }
   </style></head><body>
-  <div class="barra">
-    <button class="voltar" onclick="voltarAoPnl()">← Voltar ao P&amp;L</button>
-    <button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
-  </div>
-  <script>
-    // Veio do P&L na mesma aba: volta pelo histórico. Abriu por link direto
-    // ou em aba nova: abre o P&L do mesmo período.
-    function voltarAoPnl() {
-      var pnl = ${JSON.stringify(`/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`)};
-      if (window.history.length > 1 && document.referrer && document.referrer.indexOf('/api/bookkeeping/pnl') !== -1) window.history.back();
-      else window.location.href = pnl;
-    }
-  </script>
+  ${barra.html}
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
     <div>

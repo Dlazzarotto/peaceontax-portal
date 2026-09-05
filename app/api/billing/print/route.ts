@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 
 export const dynamic = 'force-dynamic'
 
@@ -111,6 +112,7 @@ export async function GET(req: NextRequest) {
       </tbody>
     </table>` : ''
 
+  const barra = barraDoRelatorio({ voltarPara: '/dashboard/billing', rotuloImprimir: 'Imprimir / Salvar PDF' })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>${inv.number} — ${FIRM.name}</title><style>
   body { font-family: Georgia, "Times New Roman", serif; font-size: 12.5px; color:#000;
@@ -139,11 +141,10 @@ export async function GET(req: NextRequest) {
   .obs { border-left:3px solid #000; padding-left:10px; font-size:11.5px; margin-top:16px; }
   .rodape { margin-top:26px; border-top:1px solid #000; padding-top:8px;
             font-size:10px; text-align:center; }
-  .imprimir { position:fixed; top:14px; right:14px; background:#2D3278; color:#fff; border:none;
-              padding:12px 18px; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; }
-  @media print { .imprimir { display:none; } body { margin:0; } }
+  ${barra.css}
+  @media print { body { margin:0; } }
 </style></head><body>
-  <button class="imprimir" onclick="window.print()">Imprimir / Salvar PDF</button>
+  ${barra.html}
 
   <div class="timbre">
     <img src="${FIRM.logo}" alt="${FIRM.name}" />
