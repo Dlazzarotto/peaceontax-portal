@@ -56,6 +56,8 @@ checar('Importacao: limpa metadados de wire', 'lib/apply-rules.ts', 'limparRuido
 checar('Aplicar regras: palavra inteira', 'app/api/bookkeeping/categorize/route.ts', 'casaTexto', 'motor divergente')
 checar('Aplicar regras: limpa metadados', 'app/api/bookkeeping/categorize/route.ts', 'limparRuido', 'motor divergente')
 checar('Criar/editar regra: palavra inteira', 'app/api/bookkeeping/rules/route.ts', 'casaTexto', 'terceiro motor esquecido')
+checar('Editar regra grava o escopo (global x cliente)', 'app/api/bookkeeping/rules/route.ts', 'client_id: novoClientId', 'trocar de Global para Cliente respondia ok e nao gravava')
+checar('Regra geral nao fica presa a conta de um cliente', 'app/api/bookkeeping/rules/route.ts', 'const contaFinal', 'regra de todos os clientes com conta bancaria de um so')
 
 titulo('TRANSFERENCIAS E CARTAO')
 checar("So com 'transfer to/from'", 'lib/apply-rules.ts', 'sentidoTransferencia', 'espelho por valor gerava falsos')

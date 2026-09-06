@@ -1,6 +1,8 @@
 // GET    /api/bookkeeping/rules?clientId=...  — regras do cliente + globais
 // POST   /api/bookkeeping/rules               — cria regra (manager/owner)
 // DELETE /api/bookkeeping/rules?id=...        — exclui regra (manager/owner)
+// PATCH  /api/bookkeeping/rules { id, scope?, ... } — edita regra, inclusive o
+//        escopo: 'global' (todos os clientes, client_id nulo) ou 'client'.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -242,8 +244,52 @@ export async function PATCH(req: NextRequest) {
 
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
 
+  // ── Escopo: geral (todos os clientes) × só este cliente ──
+  // A tela manda `scope` em toda edição. Sem ler aqui, trocar de Global para
+  // Cliente respondia ok e não gravava nada: o formulário mudava e o banco
+  // continuava igual. Omitir `scope` mantém o escopo atual.
+  let global = b.scope !== undefined ? b.scope === 'global' : existing.client_id === null
+  const clienteAlvo = b.clientId || existing.client_id
+
+  // Non-profit: a regra é SEMPRE da própria entidade (mesma trava do POST)
+  if (global && clienteAlvo) {
+    const { data: cliPatch } = await db.from('clients')
+      .select('business_kind').eq('id', clienteAlvo).maybeSingle()
+    if (cliPatch?.business_kind === 'nonprofit') {
+      return NextResponse.json({
+        error: 'Este cliente é uma organização sem fins lucrativos — as regras valem apenas para ela. Escolha "Só este cliente".',
+      }, { status: 400 })
+    }
+  }
+  if (!global && !clienteAlvo) {
+    return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
+  }
+  const novoClientId: string | null = global ? null : clienteAlvo
+  // A conta bancária pertence a um cliente: regra geral não fica presa a uma conta
+  const contaFinal: string | null = global ? null : ruleAccountP
+  const mudouEscopo = (existing.client_id === null) !== global
+
+  // Trocou de escopo? A mesma trava de duplicata do POST, agora no escopo novo
+  if (mudouEscopo && pattern) {
+    let eq = db.from('bookkeeping_rules')
+      .select('id, name, pattern, direction, account_id').neq('id', b.id)
+    eq = global ? eq.is('client_id', null) : eq.eq('client_id', novoClientId)
+    const { data: irmas } = await eq
+    const norm = (p2: string | null) => (p2 || '').split('|').map((x: string) => x.trim()).filter(Boolean).sort().join('|')
+    const dup = (irmas || []).find((r: any) =>
+      (r.direction === direction || r.direction === 'both' || direction === 'both') &&
+      norm(r.pattern) === norm(pattern) &&
+      String(r.account_id || '') === String(contaFinal || ''))
+    if (dup) {
+      return NextResponse.json({
+        error: `Já existe uma regra ${global ? 'geral' : 'deste cliente'} com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.`,
+      }, { status: 409 })
+    }
+  }
+
   const { error } = await db.from('bookkeeping_rules').update({
-    account_id: ruleAccountP,
+    client_id: novoClientId,
+    account_id: contaFinal,
     name, pattern, category, direction,
     match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
   }).eq('id', b.id)
@@ -259,7 +305,7 @@ export async function PATCH(req: NextRequest) {
       .in('status', ['pending', 'auto'])
       .limit(5000)
     for (const tx of (txs || [])) {
-      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
+      if (contaFinal && (tx as any).account_id !== contaFinal) continue
       const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -328,7 +374,7 @@ export async function PATCH(req: NextRequest) {
       .in('status', ['approved', 'reviewed'])
       .limit(5000)
     for (const tx of (regTxs || [])) {
-      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
+      if (contaFinal && (tx as any).account_id !== contaFinal) continue
       const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -361,5 +407,13 @@ export async function PATCH(req: NextRequest) {
     })
   }
 
-  return NextResponse.json({ ok: true, applied, registerChanged })
+  return NextResponse.json({
+    ok: true, applied, registerChanged,
+    scope: global ? 'global' : 'client',
+    aviso: mudouEscopo
+      ? (global
+          ? 'A regra passou a valer para todos os clientes.'
+          : 'A regra passou a valer só para este cliente — deixa de ser aplicada aos demais. O que já foi classificado nos outros continua como está.')
+      : undefined,
+  })
 }

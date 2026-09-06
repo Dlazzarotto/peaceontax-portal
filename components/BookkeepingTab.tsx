@@ -669,7 +669,7 @@ export default function BookkeepingTab({ clientId }: Props) {
           body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
         })
       }
-      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações${r.registerChanged ? ` · 🔒 ${r.registerChanged} do REGISTRO reclassificadas` : ''}.`)
+      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações${r.registerChanged ? ` · 🔒 ${r.registerChanged} do REGISTRO reclassificadas` : ''}.${r.aviso ? ` ${r.aviso}` : ''}`)
       setReclassOn(false); setReclassPwd(''); setReclassReason('')
       setView('banking')
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRAccount(''); setEditRuleId(null)
