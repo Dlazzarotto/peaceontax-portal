@@ -26,6 +26,9 @@ npm install --legacy-peer-deps   # obrigatório o --legacy-peer-deps (mesmo flag
 npm run typecheck                # tsc --noEmit — tem de passar limpo
 npm run lint                     # ESLint (next/core-web-vitals) — sem erros; avisos são dívida conhecida
 npm run auditoria                # 30+ invariantes do sistema; sai com 1 se algum falhar
+npm run migrar -- sql/x.sql      # aplica migração no Supabase e anota em schema_migrations
+                                 # precisa de SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN
+                                 # (API, por HTTPS) SÓ no ambiente. --pendentes lista o que falta.
 npm run build                    # next build
 npm run dev                      # servidor local (precisa de .env.local, ver .env.example)
 ```
@@ -167,5 +170,7 @@ middleware.ts        controle de acesso por rota
   histórico já faz.
 - Migração de banco: arquivo SQL novo em `sql/`, idempotente, com bloco de
   conferência no fim (padrão de `sql/whatsapp-atendimento-v1.sql`). Ela **não**
-  roda sozinha — quem faz o deploy precisa rodá-la no Supabase, e isso deve
-  constar na entrega.
+  roda no deploy: aplica-se com `npm run migrar -- sql/<arquivo>.sql` (que
+  anota em `public.schema_migrations`) ou à mão no SQL Editor — e nesse caso
+  `npm run migrar -- --registrar sql/<arquivo>.sql` anota que foi feito.
+  A entrega sempre diz qual migração precisa rodar.
