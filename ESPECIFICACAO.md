@@ -191,6 +191,9 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **Importação do histórico do QuickBooks** pelo relatório exportado (`/api/bookkeeping/import-quickbooks`, prévia com contas, tipos e categorias antes de gravar)
 - Tela de **novo serviço mensal** nos Planos (payroll, sales tax…), com item do catálogo, valor e **dia da cobrança (1 a 28)** escolhidos no acordo; o formulário de bookkeeping ganhou o mesmo campo. O contrato passou a ler o dia acordado (antes lia uma coluna inexistente e imprimia sempre dia 5) e tem cláusulas próprias para serviço mensal, sem a regra de transações incluídas
 
+- **Fornecedores e clientes (Listas)** passou a permitir mudar o escopo do cadastro (geral × de um cliente), o tipo e a conta contábil — antes só renomeava, e o cadastro geral nem editava. Trocar a conta ajusta também a regra que classifica o nome, senão a conta voltaria na importação seguinte. Escopo geral é de gerente ou sócio. Migração: `sql/payees-escopo-v1.sql`
+- **Painel da equipe refeito** (`/dashboard`): sócio vê resultado do mês com comparação contra o mesmo período do mês anterior, recebido no ano, recorrente contratado, contas a receber com aging e 12 meses de recebimentos; gerente e assistente veem carteira, operação e agenda. A fila do bookkeeping deixou de ser um número só: **sem classificação** (`pending`) e **aguardando aprovação** (`auto`) são contas separadas, por cliente — juntas, o número não se mexia quando a equipe classificava. O contador de "documentos com classificação incerta" saiu: não existe estado de conferido em `documents`, então ele só crescia. Contas em `lib/painel.ts`; migração: `sql/painel-v1.sql`
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 

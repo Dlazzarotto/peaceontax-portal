@@ -104,6 +104,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   script **não** protege: ele não escapa `</script>`.
 - **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
   aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
+- **Número que a tela mostra tem definição num módulo puro**, não na página:
+  o painel (`/dashboard`) conta em `lib/painel.ts` e reaproveita o aging e a
+  receita recorrente de `lib/relatorios-financeiro.ts`. Duas telas nunca
+  devem calcular o mesmo indicador de jeitos diferentes.
+- **Fila do bookkeeping são dois números, não um**: `pending` (sem
+  classificação) e `auto` (classificado, aguardando aprovação). Somados,
+  o painel não se mexe quando a equipe classifica — foi o que aconteceu.
 - **UTF-8 sem BOM, sempre.** O projeto já sofreu com acentos corrompidos
   (o "ã" virando "A" com til mais "£") por arquivos copiados de ZIP e
   editados no Windows. A
