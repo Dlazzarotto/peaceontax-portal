@@ -13,6 +13,11 @@
 //   SUPABASE_ACCESS_TOKEN  token pessoal do Supabase + NEXT_PUBLIC_SUPABASE_URL
 //                          (ou SUPABASE_PROJECT_REF) → usa a API de gestão, por
 //                          HTTPS. Serve onde a porta do Postgres é bloqueada.
+//   Só SUPABASE_PROJECT_REF, sem token → também usa a API, mas sem mandar o
+//                          cabeçalho: é o caso do Claude Code na nuvem com o
+//                          token guardado como "API credential" do ambiente —
+//                          o proxy anexa o Bearer ao sair, e o token nunca
+//                          entra na sessão. É a forma mais segura.
 //
 // Cada arquivo roda inteiro, na ordem em que foi passado. Os arquivos de sql/
 // são idempotentes por regra do projeto, então repetir não estraga — mas o
@@ -57,10 +62,10 @@ async function viaApi(sql) {
   const ref = process.env.SUPABASE_PROJECT_REF
     || (process.env.NEXT_PUBLIC_SUPABASE_URL || '').match(/^https:\/\/([a-z0-9]+)\.supabase\.co/)?.[1]
   if (!ref) throw new Error('Defina SUPABASE_PROJECT_REF ou NEXT_PUBLIC_SUPABASE_URL')
+  const headers = { 'content-type': 'application/json' }
+  if (process.env.SUPABASE_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.SUPABASE_ACCESS_TOKEN}`
   const r = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${process.env.SUPABASE_ACCESS_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ query: sql }),
+    method: 'POST', headers, body: JSON.stringify({ query: sql }),
   })
   const texto = await r.text()
   if (!r.ok) throw new Error(`API ${r.status}: ${texto.slice(0, 600)}`)
@@ -70,6 +75,7 @@ async function viaApi(sql) {
 function escolherExecutor() {
   if (process.env.SUPABASE_DB_URL) return { nome: 'psql', run: viaPsql }
   if (process.env.SUPABASE_ACCESS_TOKEN) return { nome: 'API de gestão', run: viaApi }
+  if (process.env.SUPABASE_PROJECT_REF) return { nome: 'API de gestão (credencial anexada pelo proxy)', run: viaApi }
   return null
 }
 
@@ -107,7 +113,7 @@ async function main() {
 
   const exec = escolherExecutor()
   if (!exec) {
-    console.error('Sem credencial. Defina SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN (API), só no ambiente.')
+    console.error('Sem credencial. Defina SUPABASE_DB_URL (psql), SUPABASE_ACCESS_TOKEN (API) ou, com o token como API credential do ambiente, SUPABASE_PROJECT_REF.')
     process.exit(2)
   }
   console.log(`Conexão: ${exec.nome}`)
