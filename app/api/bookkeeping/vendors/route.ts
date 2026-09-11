@@ -3,6 +3,7 @@
 // com seção de candidatos a 1099 (Contract Labor / Rent / Legal ≥ $600 no ano).
 
 import { NextRequest, NextResponse } from 'next/server'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 
@@ -84,6 +85,7 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || ''
   const money = (n: number) => `$${n.toFixed(2)}`
 
+  const barra = barraDoRelatorio({ voltarPara: '/dashboard/bookkeeping' })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Vendors ${year} — ${displayName}</title>
 <style>
@@ -107,8 +109,8 @@ export async function GET(req: NextRequest) {
   .k1099 { background:#fff7e0; }
   .warn { margin-top:14px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
   .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
-  .printbtn { position:fixed; top:18px; right:18px; background:#2D3278; color:#fff; border:none; font-size:15px; font-weight:700; padding:13px 20px; border-radius:10px; cursor:pointer; min-height:48px; }
-  @media print { body { background:#fff; padding:0; } .sheet { box-shadow:none; } .printbtn { display:none; } }
+  ${barra.css}
+  @media print { body { background:#fff; padding:0; } .sheet { box-shadow:none; } }
 </style></head><body>
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
@@ -118,7 +120,7 @@ export async function GET(req: NextRequest) {
     </div>
   </div>
 
-<button class="printbtn" onclick="window.print()">🖨️ Print / Save PDF</button>
+${barra.html}
 <div class="sheet">
   <h1>${displayName}</h1>
   <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${year} (cash basis, payments only)</h2>

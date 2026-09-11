@@ -1,11 +1,14 @@
 // GET    /api/bookkeeping/rules?clientId=...  — regras do cliente + globais
 // POST   /api/bookkeeping/rules               — cria regra (manager/owner)
 // DELETE /api/bookkeeping/rules?id=...        — exclui regra (manager/owner)
+// PATCH  /api/bookkeeping/rules { id, scope?, ... } — edita regra, inclusive o
+//        escopo: 'global' (todos os clientes, client_id nulo) ou 'client'.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { textoGenerico, MOTIVO_GENERICO } from '@/lib/regra-texto'
 
 
 // Mesmo motor de casamento das demais rotas: palavra inteira, sem fragmentos
@@ -22,6 +25,9 @@ const casaTexto = (desc: string, v: string, tipo: string): boolean => {
     ? new RegExp('^' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
     : new RegExp('(^|[^a-z0-9])' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
 }
+
+// Regra cujo texto é só jargão do banco casa com quase tudo — a tela avisa.
+const marcarGenericas = (rules: any[]) => rules.map(r => ({ ...r, generica: textoGenerico(r.pattern) }))
 
 async function requireManager(userId: string) {
   const level = await getStaffLevel(userId)
@@ -40,7 +46,7 @@ export async function GET(req: NextRequest) {
       .select('*').is('client_id', null)
       .order('name', { ascending: true })
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ rules: data || [], businessKind: 'regular', scope: 'global' })
+    return NextResponse.json({ rules: marcarGenericas(data || []), businessKind: 'regular', scope: 'global' })
   }
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   const { data: cli } = await db0.from('clients')
@@ -56,7 +62,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({
-    rules: data || [],
+    rules: marcarGenericas(data || []),
     businessKind: cli?.business_kind || 'regular',
   })
 }
@@ -98,6 +104,7 @@ export async function POST(req: NextRequest) {
   if (name.length < 2) return NextResponse.json({ error: 'Nome da regra obrigatório' }, { status: 400 })
   if (!category) return NextResponse.json({ error: 'Categoria obrigatória' }, { status: 400 })
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição (descrição ou valor)' }, { status: 400 })
+  if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
   if (!payee) return NextResponse.json({ error: 'Payee é obrigatório na regra — informe o favorecido (Vendor/Customer)' }, { status: 400 })
   if (amountOp && (amountValue == null || isNaN(amountValue))) {
     return NextResponse.json({ error: 'Valor da condição inválido' }, { status: 400 })
@@ -196,10 +203,10 @@ export async function DELETE(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get('mode')
   if (mode === 'no_payee') {
     const clientId = req.nextUrl.searchParams.get('clientId')
-    let q = serviceDb().from('bookkeeping_rules').delete()
+    let q = serviceDb().from('bookkeeping_rules').delete({ count: 'exact' })
       .or('payee.is.null,payee.eq.')
     if (clientId) q = q.or(`client_id.eq.${clientId},client_id.is.null`)
-    const { error, count } = await q.select('id', { count: 'exact' }) as any
+    const { error, count } = await q
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
     return NextResponse.json({ ok: true, deleted: count ?? 0 })
   }
@@ -241,9 +248,54 @@ export async function PATCH(req: NextRequest) {
   const payee = b.payee !== undefined ? (String(b.payee).trim() || null) : existing.payee
 
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
+  if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
+
+  // ── Escopo: geral (todos os clientes) × só este cliente ──
+  // A tela manda `scope` em toda edição. Sem ler aqui, trocar de Global para
+  // Cliente respondia ok e não gravava nada: o formulário mudava e o banco
+  // continuava igual. Omitir `scope` mantém o escopo atual.
+  let global = b.scope !== undefined ? b.scope === 'global' : existing.client_id === null
+  const clienteAlvo = b.clientId || existing.client_id
+
+  // Non-profit: a regra é SEMPRE da própria entidade (mesma trava do POST)
+  if (global && clienteAlvo) {
+    const { data: cliPatch } = await db.from('clients')
+      .select('business_kind').eq('id', clienteAlvo).maybeSingle()
+    if (cliPatch?.business_kind === 'nonprofit') {
+      return NextResponse.json({
+        error: 'Este cliente é uma organização sem fins lucrativos — as regras valem apenas para ela. Escolha "Só este cliente".',
+      }, { status: 400 })
+    }
+  }
+  if (!global && !clienteAlvo) {
+    return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
+  }
+  const novoClientId: string | null = global ? null : clienteAlvo
+  // A conta bancária pertence a um cliente: regra geral não fica presa a uma conta
+  const contaFinal: string | null = global ? null : ruleAccountP
+  const mudouEscopo = (existing.client_id === null) !== global
+
+  // Trocou de escopo? A mesma trava de duplicata do POST, agora no escopo novo
+  if (mudouEscopo && pattern) {
+    let eq = db.from('bookkeeping_rules')
+      .select('id, name, pattern, direction, account_id').neq('id', b.id)
+    eq = global ? eq.is('client_id', null) : eq.eq('client_id', novoClientId)
+    const { data: irmas } = await eq
+    const norm = (p2: string | null) => (p2 || '').split('|').map((x: string) => x.trim()).filter(Boolean).sort().join('|')
+    const dup = (irmas || []).find((r: any) =>
+      (r.direction === direction || r.direction === 'both' || direction === 'both') &&
+      norm(r.pattern) === norm(pattern) &&
+      String(r.account_id || '') === String(contaFinal || ''))
+    if (dup) {
+      return NextResponse.json({
+        error: `Já existe uma regra ${global ? 'geral' : 'deste cliente'} com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.`,
+      }, { status: 409 })
+    }
+  }
 
   const { error } = await db.from('bookkeeping_rules').update({
-    account_id: ruleAccountP,
+    client_id: novoClientId,
+    account_id: contaFinal,
     name, pattern, category, direction,
     match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
   }).eq('id', b.id)
@@ -259,7 +311,7 @@ export async function PATCH(req: NextRequest) {
       .in('status', ['pending', 'auto'])
       .limit(5000)
     for (const tx of (txs || [])) {
-      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
+      if (contaFinal && (tx as any).account_id !== contaFinal) continue
       const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -328,7 +380,7 @@ export async function PATCH(req: NextRequest) {
       .in('status', ['approved', 'reviewed'])
       .limit(5000)
     for (const tx of (regTxs || [])) {
-      if (ruleAccountP && (tx as any).account_id !== ruleAccountP) continue
+      if (contaFinal && (tx as any).account_id !== contaFinal) continue
       const desc = limparRuido(String(tx.description).toLowerCase())
       const amount = Number(tx.amount)
       if (direction === 'in' && amount <= 0) continue
@@ -361,5 +413,13 @@ export async function PATCH(req: NextRequest) {
     })
   }
 
-  return NextResponse.json({ ok: true, applied, registerChanged })
+  return NextResponse.json({
+    ok: true, applied, registerChanged,
+    scope: global ? 'global' : 'client',
+    aviso: mudouEscopo
+      ? (global
+          ? 'A regra passou a valer para todos os clientes.'
+          : 'A regra passou a valer só para este cliente — deixa de ser aplicada aos demais. O que já foi classificado nos outros continua como está.')
+      : undefined,
+  })
 }

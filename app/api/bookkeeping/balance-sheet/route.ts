@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
+import { barraDoRelatorio } from '@/lib/relatorio-barra'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,6 +75,7 @@ export async function GET(req: NextRequest) {
   const totalLiab = totalCards
   const net = totalAssets - totalLiab
 
+  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Balance Sheet ${year} — ${name}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 700px; margin: 40px auto; color: #000; padding: 0 20px; }
@@ -93,8 +95,10 @@ export async function GET(req: NextRequest) {
     .net td { border-top: 1px solid #000; border-bottom: 3px double #000; font-weight: 700; }
     .warn { border: 1px solid #000; padding: 9px 12px; font-size: 12px; margin-top: 22px; }
     .footer { margin-top: 32px; font-size: 11px; border-top: 1px solid #000; padding-top: 10px; text-align: center; line-height: 1.6; }
+    ${barra.css}
     @media print { body { margin: 16px auto; } }
   </style></head><body>
+  ${barra.html}
   <div class="timbre">
     <img src="https://peaceontax-portal.vercel.app/logo.png" alt="Peace on Tax Corp" />
     <div>

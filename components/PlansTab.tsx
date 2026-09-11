@@ -1,18 +1,29 @@
 'use client'
-// PlansTab — Parcelamento (entrada % + parcelas) e Contrato Bookkeeping mensal (dia 5)
+// PlansTab — Parcelamento (entrada % + parcelas), Contrato Bookkeeping mensal
+// e outros serviços mensais (payroll, sales tax…). O dia da cobrança (1–28)
+// é definido no acordo; 5 é só o padrão histórico.
 // Criação: SÓ manager/owner. Cancelamento sempre com motivo.
 
 import { useState, useEffect } from 'react'
+import { nextBillingDayET, DIA_MAXIMO_SEGURO } from '@/lib/plans'
 
 interface Plan {
-  id: string; kind: 'installment'|'bookkeeping'
+  id: string; kind: 'installment'|'bookkeeping'|'monthly'
   total: number|null; entry_pct: number|null; entry_amount: number|null
   frequency: string|null; installments: number|null; installment_amount: number|null
   monthly_amount: number|null; due_day: number|null
   description: string|null; status: string
+  included_transactions: number|null
   paid_installments: number; entry_paid_at: string|null; next_charge_date: string|null
   cancel_reason: string|null; created_at: string
 }
+
+interface Servico { id: string; code: string; label: string; amount: number; kind: string }
+
+const KIND_LABEL: Record<string,string> = {
+  installment: '📆 Parcelamento', bookkeeping: '📚 Bookkeeping mensal', monthly: '🧾 Serviço mensal',
+}
+const DIAS = Array.from({ length: DIA_MAXIMO_SEGURO }, (_, i) => i + 1)
 
 interface Props { clientId: string; clientName: string }
 
@@ -28,6 +39,7 @@ const FREQ_LABEL: Record<string,string> = { weekly:'Semanal', biweekly:'Quinzena
 
 export default function PlansTab({ clientId, clientName }: Props) {
   const [plans, setPlans] = useState<Plan[]>([])
+  const [services, setServices] = useState<Servico[]>([])
   const [level, setLevel] = useState('junior')
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
@@ -43,6 +55,13 @@ export default function PlansTab({ clientId, clientName }: Props) {
   const [showBk, setShowBk] = useState(false)
   const [monthly, setMonthly] = useState(''); const [descBk, setDescBk] = useState('Bookkeeping mensal')
   const [includedTx, setIncludedTx] = useState('100')
+  const [bkDay, setBkDay] = useState('5')
+
+  // Form outro serviço mensal (payroll, sales tax…)
+  const [showMon, setShowMon] = useState(false)
+  const [monService, setMonService] = useState('')
+  const [monAmount, setMonAmount] = useState(''); const [monDesc, setMonDesc] = useState('')
+  const [monDay, setMonDay] = useState('5')
 
   // Cancelamento
   const [cancelId, setCancelId] = useState<string|null>(null)
@@ -52,6 +71,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
   const [editPlan, setEditPlan] = useState<Plan|null>(null)
   const [eEntryPct, setEEntryPct] = useState(''); const [eFreq, setEFreq] = useState('monthly')
   const [eN, setEN] = useState(''); const [eMonthly, setEMonthly] = useState(''); const [eTx, setETx] = useState('')
+  const [eDay, setEDay] = useState('5'); const [eDesc, setEDesc] = useState('')
 
   // Pausa/retomada (só bookkeeping)
   const [pauseTarget, setPauseTarget] = useState<{ id:string; action:'pause'|'resume' }|null>(null)
@@ -63,7 +83,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
     setLoading(true)
     const r = await fetch(`/api/plans?clientId=${clientId}`)
     const d = await r.json()
-    setPlans(d.plans || []); setLevel(d.level || 'junior'); setLoading(false)
+    setPlans(d.plans || []); setServices(d.services || []); setLevel(d.level || 'junior'); setLoading(false)
   }
   useEffect(() => { load() }, [clientId])
 
@@ -94,13 +114,39 @@ export default function PlansTab({ clientId, clientName }: Props) {
     setBusy(true); setMsg('')
     const r = await fetch('/api/plans', {
       method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, kind:'bookkeeping', monthlyAmount: Number(monthly), includedTransactions: Number(includedTx), description: descBk }),
+      body: JSON.stringify({ clientId, kind:'bookkeeping', monthlyAmount: Number(monthly), includedTransactions: Number(includedTx), dueDay: Number(bkDay), description: descBk }),
     })
     const d = await r.json()
     if (d.ok) { setMsg('✓ Contrato criado — gere o link de assinatura.'); setShowBk(false); load() }
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }
+
+  // Escolher um item do catálogo preenche valor e descrição; os dois continuam editáveis
+  const pickService = (id: string) => {
+    setMonService(id)
+    const item = services.find(x => x.id === id)
+    if (item) { setMonAmount(String(item.amount)); setMonDesc(item.label) }
+  }
+
+  const createMonthly = async () => {
+    setBusy(true); setMsg('')
+    const r = await fetch('/api/plans', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        clientId, kind:'monthly', monthlyAmount: Number(monAmount), dueDay: Number(monDay),
+        serviceId: monService || undefined, description: monDesc.trim() || undefined,
+      }),
+    })
+    const d = await r.json()
+    if (d.ok) { setMsg('✓ Serviço mensal criado — gere o link de assinatura.'); setShowMon(false); load() }
+    else setMsg(`Erro: ${d.error}`)
+    setBusy(false)
+  }
+
+  // Prévia da primeira cobrança para o dia escolhido (mesma regra do checkout)
+  const primeiraCobranca = (dia: string) =>
+    nextBillingDayET(Number(dia)).toLocaleDateString('pt-BR', { timeZone: 'UTC' })
 
   const sendContract = async (planId: string) => {
     let signerTitle: string | undefined
@@ -117,7 +163,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
       body: JSON.stringify({ planId, signerTitle }),
     })
     const d = await r.json()
-    if (d.ok) setMsg('✓ Contrato enviado por e-mail via DocuSign. Acompanhe na aba ✍️ Assinaturas.')
+    if (d.ok) setMsg('✓ Contrato enviado. O cliente assina no portal (Pagamentos) e cadastra o débito automático em seguida; você assina pelo e-mail do DocuSign. Acompanhe na aba ✍️ Assinaturas.')
     else setMsg(`Erro: ${d.error}`)
     setBusy(false)
   }
@@ -141,7 +187,8 @@ export default function PlansTab({ clientId, clientName }: Props) {
     if (editPlan.kind === 'installment') {
       body.entryPct = Number(eEntryPct); body.frequency = eFreq; body.installments = Number(eN)
     } else {
-      body.monthlyAmount = Number(eMonthly); body.includedTransactions = Number(eTx)
+      body.monthlyAmount = Number(eMonthly); body.dueDay = Number(eDay); body.description = eDesc
+      if (editPlan.kind === 'bookkeeping') body.includedTransactions = Number(eTx)
     }
     const r = await fetch('/api/plans', {
       method:'PATCH', headers:{'content-type':'application/json'},
@@ -200,11 +247,14 @@ export default function PlansTab({ clientId, clientName }: Props) {
       {/* Botões de criação */}
       {canManage && (
         <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap' }}>
-          <button onClick={() => { setShowInst(s => !s); setShowBk(false) }} style={outlineBtn('#2D3278')}>
+          <button onClick={() => { setShowInst(s => !s); setShowBk(false); setShowMon(false) }} style={outlineBtn('#2D3278')}>
             📆 Novo parcelamento
           </button>
-          <button onClick={() => { setShowBk(s => !s); setShowInst(false) }} style={outlineBtn('#1a6b4a')}>
+          <button onClick={() => { setShowBk(s => !s); setShowInst(false); setShowMon(false) }} style={outlineBtn('#1a6b4a')}>
             📚 Novo contrato bookkeeping
+          </button>
+          <button onClick={() => { setShowMon(s => !s); setShowInst(false); setShowBk(false) }} style={outlineBtn('#7a4a10')}>
+            🧾 Novo serviço mensal
           </button>
         </div>
       )}
@@ -270,15 +320,62 @@ export default function PlansTab({ clientId, clientName }: Props) {
               <input type="number" value={includedTx} onChange={e => setIncludedTx(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
             </div>
             <div>
+              <label style={label}>Dia da cobrança</label>
+              <select value={bkDay} onChange={e => setBkDay(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                {DIAS.map(d => <option key={d} value={d}>todo dia {d}</option>)}
+              </select>
+            </div>
+            <div>
               <label style={label}>Descrição</label>
               <input value={descBk} onChange={e => setDescBk(e.target.value)} style={{ ...input, width:'100%' }} />
             </div>
           </div>
           <p style={{ fontSize:13, color:'#1a6b4a', background:'#e8f5ee', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
-            📅 Cobrança automática <strong>todo dia 5</strong>. Escopo: bookkeeping + P&L. Transações acima do limite: <strong>$1.25/transação</strong> (cobradas à parte). Impostos e outros serviços NÃO incluídos.
+            📅 Cobrança automática <strong>todo dia {bkDay}</strong> (primeira em <strong>{primeiraCobranca(bkDay)}</strong>). Escopo: bookkeeping + P&L. Transações acima do limite: <strong>$1.25/transação</strong> (cobradas à parte). Impostos e outros serviços NÃO incluídos.
+            Dias 29 a 31 não existem em todo mês, por isso a escolha vai até {DIA_MAXIMO_SEGURO}.
           </p>
           <button onClick={createBookkeeping} disabled={busy || !monthly} style={btn('#1a6b4a', busy || !monthly)}>
             {busy ? 'Criando…' : 'Criar contrato'}
+          </button>
+        </div>
+      )}
+
+      {/* Form: Outro serviço mensal (payroll, sales tax…) */}
+      {showMon && (
+        <div style={{ background:'#fff', borderRadius:14, padding:20, border:'2px solid #7a4a10', marginBottom:16 }}>
+          <h3 style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#0f2340', margin:'0 0 14px' }}>
+            🧾 Serviço mensal — {clientName}
+          </h3>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px, 1fr))', gap:12, marginBottom:12 }}>
+            <div>
+              <label style={label}>Serviço do catálogo (opcional)</label>
+              <select value={monService} onChange={e => pickService(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                <option value="">— escolher —</option>
+                {services.map(sv => <option key={sv.id} value={sv.id}>{sv.label} (${Number(sv.amount).toFixed(2)})</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={label}>Valor mensal ($)</label>
+              <input type="number" value={monAmount} onChange={e => setMonAmount(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+            </div>
+            <div>
+              <label style={label}>Dia da cobrança</label>
+              <select value={monDay} onChange={e => setMonDay(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                {DIAS.map(d => <option key={d} value={d}>todo dia {d}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ marginBottom:12 }}>
+            <label style={label}>Descrição do serviço *</label>
+            <input value={monDesc} onChange={e => setMonDesc(e.target.value)}
+              placeholder="Ex.: Payroll mensal (até 5 funcionários)" style={{ ...input, width:'100%' }} />
+          </div>
+          <p style={{ fontSize:13, color:'#7a4a10', background:'#fbf3e6', borderRadius:8, padding:'10px 14px', marginBottom:12 }}>
+            📅 Cobrança automática <strong>todo dia {monDay}</strong> (primeira em <strong>{primeiraCobranca(monDay)}</strong>), por débito autorizado no contrato.
+            O sistema recusa dois planos ativos com a mesma descrição para o mesmo cliente. Bookkeeping tem contrato próprio, com transações incluídas.
+          </p>
+          <button onClick={createMonthly} disabled={busy || !monAmount || !monDesc.trim()} style={btn('#7a4a10', busy || !monAmount || !monDesc.trim())}>
+            {busy ? 'Criando…' : 'Criar serviço mensal'}
           </button>
         </div>
       )}
@@ -302,7 +399,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, flexWrap:'wrap', gap:8 }}>
                 <div>
                   <span style={{ fontSize:15, fontWeight:700, color:'#0f2340' }}>
-                    {p.kind === 'installment' ? '📆 Parcelamento' : '📚 Bookkeeping mensal'}
+                    {KIND_LABEL[p.kind] || p.kind}
                   </span>
                   <span style={{ marginLeft:10, fontSize:11, padding:'2px 10px', borderRadius:20, fontWeight:700,
                     background:`${STATUS_COLOR[p.status]}18`, color:STATUS_COLOR[p.status] }}>
@@ -328,7 +425,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
                   </>
                 ) : (
                   <>
-                    Vencimento: <strong>todo dia {p.due_day}</strong> · Mensalidades pagas: <strong>{p.paid_installments}</strong>{(p as any).included_transactions ? <> · Transações incluídas: <strong>{(p as any).included_transactions}/mês</strong> (excedente $1.25)</> : null}
+                    Vencimento: <strong>todo dia {p.due_day ?? 5}</strong> · Mensalidades pagas: <strong>{p.paid_installments}</strong>{p.kind === 'bookkeeping' && p.included_transactions ? <> · Transações incluídas: <strong>{p.included_transactions}/mês</strong> (excedente $1.25)</> : null}
                     {p.next_charge_date && <><br/>Primeira cobrança: <strong>{new Date(p.next_charge_date+'T12:00:00Z').toLocaleDateString('pt-BR')}</strong></>}
                   </>
                 )}
@@ -344,7 +441,8 @@ export default function PlansTab({ clientId, clientName }: Props) {
                       <button onClick={() => {
                         setEditPlan(p)
                         setEEntryPct(String(p.entry_pct ?? 30)); setEFreq(p.frequency || 'monthly'); setEN(String(p.installments ?? 6))
-                        setEMonthly(String(p.monthly_amount ?? '')); setETx(String((p as any).included_transactions ?? 100))
+                        setEMonthly(String(p.monthly_amount ?? '')); setETx(String(p.included_transactions ?? 100))
+                        setEDay(String(p.due_day ?? 5)); setEDesc(p.description || '')
                       }} disabled={busy} style={outlineBtn('#2D3278')}>
                         ✏️ Editar
                       </button>
@@ -392,7 +490,7 @@ export default function PlansTab({ clientId, clientName }: Props) {
           alignItems:'center', justifyContent:'center', zIndex:2000 }}>
           <div style={{ background:'#fff', borderRadius:16, padding:24, width:440, maxWidth:'92vw' }}>
             <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>
-              ✏️ Editar {editPlan.kind === 'installment' ? 'parcelamento' : 'contrato bookkeeping'}
+              ✏️ Editar {editPlan.kind === 'installment' ? 'parcelamento' : editPlan.kind === 'monthly' ? 'serviço mensal' : 'contrato bookkeeping'}
             </h3>
             <p style={{ fontSize:12.5, color:'#6a7a9a', margin:'0 0 14px' }}>
               Permitido enquanto a entrada não foi paga / contrato não ativado. Links antigos são invalidados.
@@ -423,8 +521,20 @@ export default function PlansTab({ clientId, clientName }: Props) {
                   <input type="number" value={eMonthly} onChange={e => setEMonthly(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
                 </div>
                 <div>
-                  <label style={label}>Transações incluídas</label>
-                  <input type="number" value={eTx} onChange={e => setETx(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+                  <label style={label}>Dia da cobrança</label>
+                  <select value={eDay} onChange={e => setEDay(e.target.value)} style={{ ...input, width:'100%', cursor:'pointer' }}>
+                    {DIAS.map(d => <option key={d} value={d}>todo dia {d}</option>)}
+                  </select>
+                </div>
+                {editPlan.kind === 'bookkeeping' && (
+                  <div>
+                    <label style={label}>Transações incluídas</label>
+                    <input type="number" value={eTx} onChange={e => setETx(e.target.value)} min={1} style={{ ...input, width:'100%' }} />
+                  </div>
+                )}
+                <div style={{ gridColumn: editPlan.kind === 'bookkeeping' ? 'auto' : '1 / -1' }}>
+                  <label style={label}>Descrição</label>
+                  <input value={eDesc} onChange={e => setEDesc(e.target.value)} style={{ ...input, width:'100%' }} />
                 </div>
               </div>
             )}
@@ -454,8 +564,8 @@ export default function PlansTab({ clientId, clientName }: Props) {
             </h3>
             <p style={{ fontSize:13, color:'#6a7a9a', margin:'0 0 14px' }}>
               {pauseTarget.action === 'pause'
-                ? 'As cobranças do dia 5 ficam suspensas até retomar. O contrato é preservado.'
-                : 'As cobranças mensais do dia 5 voltam a ocorrer normalmente.'}
+                ? `As cobranças do dia ${plans.find(x => x.id === pauseTarget.id)?.due_day ?? 5} ficam suspensas até retomar. O contrato é preservado.`
+                : `As cobranças mensais do dia ${plans.find(x => x.id === pauseTarget.id)?.due_day ?? 5} voltam a ocorrer normalmente.`}
             </p>
             <label style={label}>Motivo *</label>
             <textarea value={pauseReason} onChange={e => setPauseReason(e.target.value)} rows={2}

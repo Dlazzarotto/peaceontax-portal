@@ -71,6 +71,13 @@ export default function BillingPage() {
   const [busca, setBusca] = useState('')
   const [soAbertas, setSoAbertas] = useState(false)
   const [aba, setAba] = useState<'docs' | 'contratos' | 'parcelamentos'>('docs')
+  // Relatórios do sócio (a rota recusa quem não é owner; aqui só a tela)
+  const [relAberto, setRelAberto] = useState(false)
+  const anoAtual = new Date().getFullYear()
+  const [relDe, setRelDe] = useState(`${anoAtual}-01-01`)
+  const [relAte, setRelAte] = useState(`${anoAtual}-12-31`)
+  const abrirRelatorio = (id: string) =>
+    window.open(`/api/billing/reports?report=${id}&from=${relDe}&to=${relAte}`, '_blank')
   // Parcelamento de fatura em aberto
   const [pcDados, setPcDados] = useState<any>({ plans: [], invoices: [] })
   const [pcFatura, setPcFatura] = useState('')
@@ -407,7 +414,7 @@ export default function BillingPage() {
             { id: 'reports', rotulo: 'Relatórios', desc: 'Faturamento e recebimentos', cor: '#5A1A8A',
               somenteSocio: true,
               icone: <><path d="M3 3v18h18" /><path d="M7 15v3M12 10v8M17 6v12" /></>,
-              onClick: () => setMsg('Relatórios de faturamento entram na próxima etapa.') },
+              onClick: () => { setRelAberto(v => !v); setAbrirNovo(false) } },
           ].filter(b => !b.somenteSocio || perms?.verRelatorios).map((b, idx, arr) => (
             <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <button onClick={b.onClick}
@@ -429,6 +436,46 @@ export default function BillingPage() {
           ))}
         </div>
       </section>
+
+      {/* Relatórios — só o sócio vê o botão, e só o sócio passa na rota */}
+      {relAberto && perms?.verRelatorios && (
+        <section style={{ ...card, padding: '18px 22px', border: '2px solid #5A1A8A' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 15, color: '#0F2340', margin: 0 }}>📊 Relatórios do sócio</h3>
+            <span style={{ fontSize: 12, color: '#6A7A9A' }}>Abrem em nova aba, prontos para imprimir ou salvar em PDF.</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>Período</span>
+            <input type="date" value={relDe} onChange={e => setRelDe(e.target.value)} style={{ padding: '7px 10px', border: '1.5px solid #E2E8F4', borderRadius: 8, fontSize: 13 }} />
+            <span style={{ fontSize: 12, color: '#6A7A9A' }}>até</span>
+            <input type="date" value={relAte} onChange={e => setRelAte(e.target.value)} style={{ padding: '7px 10px', border: '1.5px solid #E2E8F4', borderRadius: 8, fontSize: 13 }} />
+            {[
+              ['Este ano', `${anoAtual}-01-01`, `${anoAtual}-12-31`],
+              ['Ano passado', `${anoAtual - 1}-01-01`, `${anoAtual - 1}-12-31`],
+              ['Este mês', new Date().toISOString().slice(0, 8) + '01', new Date(anoAtual, new Date().getMonth() + 1, 0).toISOString().slice(0, 10)],
+            ].map(([r, de, ate]) => (
+              <button key={r} onClick={() => { setRelDe(de); setRelAte(ate) }}
+                style={{ background: '#fff', border: '1.5px solid #E2E8F4', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 700, color: '#2D3278', cursor: 'pointer' }}>{r}</button>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+            {[
+              ['faturamento', 'Faturamento por mês', 'Emitido, recebido e em aberto, mês a mês'],
+              ['recebimentos', 'Recebimentos', 'Por forma de pagamento e por cliente'],
+              ['aberto', 'Contas a receber', 'Saldo em aberto por cliente e atraso (hoje)'],
+              ['recorrente', 'Contratos e parcelamentos', 'Receita recorrente mensal e parcelas a receber (hoje)'],
+              ['servicos', 'Faturamento por serviço', 'O que foi faturado, por item do catálogo'],
+              ['estornos', 'Estornos e cancelamentos', 'Pagamentos estornados e faturas canceladas'],
+            ].map(([id, titulo, desc]) => (
+              <button key={id} onClick={() => abrirRelatorio(id)}
+                style={{ background: '#fff', border: '1.5px solid #E2E8F4', borderRadius: 12, padding: '12px 14px', textAlign: 'left' as const, cursor: 'pointer' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{titulo}</div>
+                <div style={{ fontSize: 12, color: '#6A7A9A', marginTop: 3 }}>{desc}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #E2E8F4' }}>
         {([['docs', 'Orçamentos e faturas'], ['contratos', 'Contratos recorrentes'], ['parcelamentos', 'Parcelamentos']] as const).map(([k, r]) => (

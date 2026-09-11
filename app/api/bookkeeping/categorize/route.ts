@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { textoGenerico } from '@/lib/regra-texto'
 
 export const maxDuration = 300  // Vercel Pro: até 300s — lotes grandes na sugestão da IA
 
@@ -83,7 +84,7 @@ export async function POST(req: NextRequest) {
   const soDoCliente = cli?.business_kind === 'nonprofit'
 
   let rq = db.from('bookkeeping_rules')
-    .select('pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
+    .select('id, name, pattern, category, priority, client_id, direction, match_type, amount_op, amount_value, payee, account_id')
   rq = soDoCliente
     ? rq.eq('client_id', clientId)
     : rq.or(`client_id.eq.${clientId},client_id.is.null`)
@@ -143,10 +144,20 @@ export async function POST(req: NextRequest) {
   // lançamento, o que estourava o tempo em clientes com muitos movimentos.
   const lotes = new Map<string, { category: string; payee: string | null; ids: string[] }>()
 
+  // Quantos lançamentos cada regra levou — uma regra que leva quase tudo é
+  // sinal de texto genérico, e a resposta avisa em vez de deixar passar.
+  const porRegra = new Map<string, { nome: string; pattern: string | null; category: string; n: number; generica: boolean }>()
+
   for (const tx of txs) {
     const desc = limparRuido(String(tx.description).toLowerCase())
     const rule = (rules || []).find((r: any) => ruleMatches(r, desc, Number(tx.amount), tx.account_id || null))
     if (!rule) { unresolved.push(tx); continue }
+    const contagem = porRegra.get(rule.id) || {
+      nome: rule.name || rule.pattern || rule.category, pattern: rule.pattern, category: rule.category,
+      n: 0, generica: textoGenerico(rule.pattern),
+    }
+    contagem.n++
+    porRegra.set(rule.id, contagem)
     const chave = `${rule.category}||${rule.payee || ''}`
     const grupo = lotes.get(chave) || { category: rule.category as string, payee: (rule.payee || null) as string | null, ids: [] as string[] }
     grupo.ids.push(tx.id)
@@ -457,8 +468,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Alerta: regra genérica, ou uma regra só levando um quarto do que foi avaliado
+  const regrasOrdenadas = Array.from(porRegra.values()).sort((a, b) => b.n - a.n)
+  const suspeitas = regrasOrdenadas.filter(r => r.generica || (r.n >= 20 && r.n / txs.length >= 0.25))
+  const alerta = suspeitas.length
+    ? suspeitas.map(r => `a regra "${r.nome}" (${r.category}${r.pattern ? `, texto "${r.pattern}"` : ''}) levou ${r.n} de ${txs.length} lançamento(s)`
+        + (r.generica ? ' — o texto é só jargão do banco e casa com quase tudo; edite a regra e use o nome do comerciante' : ' — confira se o texto não está amplo demais')).join(' · ')
+    : undefined
+
   return NextResponse.json({
     ok: true, ruled, ai: aiAuto, review, payeesFilled, transfers,
+    porRegra: regrasOrdenadas.slice(0, 8).map(r => ({ nome: r.nome, category: r.category, n: r.n })),
+    alerta,
     contasDeFora: contasDeFora.size ? Array.from(contasDeFora) : undefined,
     transferenciaExterna: transferenciaExterna || undefined,
     avaliadas: txs.length,

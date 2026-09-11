@@ -1,6 +1,6 @@
-﻿# ============================================================
-#  AUDITORIA DO PORTAL â€” confere se o que estÃ¡ instalado
-#  corresponde Ã s decisÃµes tomadas na construÃ§Ã£o.
+# ============================================================
+#  AUDITORIA DO PORTAL — confere se o que está instalado
+#  corresponde às decisões tomadas na construção.
 #  Rode na raiz do projeto:  .\auditoria.ps1
 # ============================================================
 
@@ -57,7 +57,7 @@ Checar "Catalogo unico"              ".\app\api\billing\invoices\route.ts" "pric
 
 Write-Host ""
 Write-Host "=== WEBHOOK DO STRIPE: assinatura conferida ===" -ForegroundColor Cyan
-Checar "Novo webhook do faturamento" ".\app\api\billing\stripe-webhook\route.ts" "timingSafeEqual" "qualquer um marcaria faturas como pagas"
+Checar "Webhook do Stripe confere a assinatura" ".\app\api\stripe\webhook\route.ts" "constructEvent" "qualquer um marcaria faturas como pagas"
 
 Write-Host ""
 Write-Host "=== DUPLICACOES A DECIDIR (nao sao erros, sao escolhas) ===" -ForegroundColor Yellow

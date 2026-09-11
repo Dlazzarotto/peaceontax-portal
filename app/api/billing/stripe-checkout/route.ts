@@ -38,7 +38,10 @@ export async function POST(req: NextRequest) {
   const { invoiceId } = body
   // Forma no Stripe: cartão, Klarna (cliente parcela, você recebe integral)
   // ou débito em conta (ACH). Klarna e ACH precisam estar habilitados no painel.
-  const forma = ['card', 'klarna', 'us_bank_account'].includes(body.forma) ? body.forma : 'card'
+  // 'todas' = um link só com cartão, ACH e Klarna; o cliente escolhe na página
+  // do Stripe (é o mesmo que ele tem no portal). A forma usada vem do webhook.
+  const forma = ['card', 'klarna', 'us_bank_account', 'todas'].includes(body.forma) ? body.forma : 'card'
+  const formas = forma === 'todas' ? ['card', 'us_bank_account', 'klarna'] : [forma]
   if (!invoiceId) return NextResponse.json({ error: 'invoiceId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
@@ -59,7 +62,7 @@ export async function POST(req: NextRequest) {
 
   const corpo: Record<string, string> = {
     mode: 'payment',
-    'payment_method_types[0]': forma,
+    ...Object.fromEntries(formas.map((f, i) => [`payment_method_types[${i}]`, f])),
     'line_items[0][price_data][currency]': 'usd',
     'line_items[0][price_data][unit_amount]': String(Math.round(saldo * 100)),
     'line_items[0][price_data][product_data][name]': `Fatura ${inv.number} — ${cli.business_name || cli.name || 'Cliente'}`,
@@ -71,8 +74,9 @@ export async function POST(req: NextRequest) {
     'payment_intent_data[metadata][forma]': forma,
     'metadata[invoice_number]': inv.number,
     'metadata[client_id]': inv.client_id,
-    success_url: `${origem}/dashboard/billing?pago=${inv.number}`,
-    cancel_url: `${origem}/dashboard/billing?cancelado=${inv.number}`,
+    // Quem clica no link é o cliente: ele volta para o portal, não para o painel da equipe
+    success_url: `${origem}/portal/payments?pago=${inv.number}`,
+    cancel_url: `${origem}/portal/payments?cancelado=${inv.number}`,
   }
   if (cli.email) corpo.customer_email = cli.email
 
@@ -118,6 +122,8 @@ export async function POST(req: NextRequest) {
     forma,
     message: forma === 'klarna'
       ? `Link Klarna de $${saldo.toFixed(2)} gerado para ${inv.number} — o cliente parcela e você recebe o valor integral.`
+      : forma === 'todas'
+      ? `Link de $${saldo.toFixed(2)} gerado para ${inv.number}: o cliente escolhe cartão, débito em conta ou Klarna. Vale por 24 horas; no portal ele sempre tem um link novo.`
       : `Link de pagamento de $${saldo.toFixed(2)} gerado para ${inv.number}.`,
   })
 }

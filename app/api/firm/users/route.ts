@@ -71,8 +71,9 @@ export async function GET() {
 
   try {
     const db = supabaseAdmin()
-    const { data: { users }, error } = await db.auth.admin.listUsers()
+    const { data, error } = await db.auth.admin.listUsers()
     if (error) throw error
+    const users = data.users
 
     // Nível real de cada um, vindo de staff_roles
     const { data: papeis } = await db.from('staff_roles').select('user_id, level')
@@ -88,7 +89,7 @@ export async function GET() {
         nivelReal:    mapa.get(u.id) || null,     // null = ainda não registrado
         title:        u.user_metadata?.title || '',
         phone:        u.user_metadata?.phone || '',
-        active:       !u.banned_until,
+        active:       !(u as any).banned_until,   // campo do admin API ausente no tipo User desta versão do SDK
         created_at:   u.created_at,
         last_sign_in: u.last_sign_in_at,
       }))

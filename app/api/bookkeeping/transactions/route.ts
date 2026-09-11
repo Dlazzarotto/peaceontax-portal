@@ -93,9 +93,9 @@ export async function POST(req: NextRequest) {
     update.category = null; update.category_confidence = null; update.categorized_by = null
   }
 
-  let q = db.from('bank_transactions').update(update).in('id', ids).eq('client_id', sample.client_id)
+  let q = db.from('bank_transactions').update(update, { count: 'exact' }).in('id', ids).eq('client_id', sample.client_id)
   if (action === 'approve') q = q.not('category', 'is', null)   // só aprova o que tem categoria
-  const { error, count } = await q.select('id', { count: 'exact' }) as any
+  const { error, count } = await q
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true, affected: count ?? ids.length })

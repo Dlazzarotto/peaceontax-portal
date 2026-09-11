@@ -1,4 +1,4 @@
-﻿import { redirect } from 'next/navigation'
+import { redirect } from 'next/navigation'
 import { getUser, getRole } from '@/lib/supabase-server'
 import { createClient } from '@supabase/supabase-js'
 import PortalNav from '@/components/PortalNav'
