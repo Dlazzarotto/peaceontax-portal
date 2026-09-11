@@ -30,6 +30,17 @@ import { spawnSync } from 'node:child_process'
 import { join, basename } from 'node:path'
 
 const RAIZ = new URL('..', import.meta.url).pathname
+
+// O fetch do Node ignora HTTPS_PROXY. No Claude Code na nuvem é o proxy que
+// anexa a credencial, então sem isto a chamada sai sem token e morre em 403.
+// Node 22.21+ liga o proxy com NODE_USE_ENV_PROXY=1, mas só na partida do
+// processo — por isso o script se relança uma vez com a variável, e pronto.
+if (process.env.HTTPS_PROXY && !process.env.NODE_USE_ENV_PROXY) {
+  const filho = spawnSync(process.execPath, [process.argv[1], ...process.argv.slice(2)], {
+    stdio: 'inherit', env: { ...process.env, NODE_USE_ENV_PROXY: '1' },
+  })
+  process.exit(filho.status ?? 1)
+}
 const LIVRO = `
 create table if not exists public.schema_migrations (
   arquivo     text primary key,
@@ -65,7 +76,7 @@ async function viaApi(sql) {
   const headers = { 'content-type': 'application/json' }
   if (process.env.SUPABASE_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.SUPABASE_ACCESS_TOKEN}`
   const r = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
-    method: 'POST', headers, body: JSON.stringify({ query: sql }),
+    method: 'POST', headers, body: JSON.stringify({ query: sql, read_only: false }),
   })
   const texto = await r.text()
   if (!r.ok) throw new Error(`API ${r.status}: ${texto.slice(0, 600)}`)
