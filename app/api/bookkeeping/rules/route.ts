@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { textoGenerico, MOTIVO_GENERICO } from '@/lib/regra-texto'
 
 
 // Mesmo motor de casamento das demais rotas: palavra inteira, sem fragmentos
@@ -24,6 +25,9 @@ const casaTexto = (desc: string, v: string, tipo: string): boolean => {
     ? new RegExp('^' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
     : new RegExp('(^|[^a-z0-9])' + escaparRegra(v) + '([^a-z0-9]|$)', 'i').test(desc)
 }
+
+// Regra cujo texto é só jargão do banco casa com quase tudo — a tela avisa.
+const marcarGenericas = (rules: any[]) => rules.map(r => ({ ...r, generica: textoGenerico(r.pattern) }))
 
 async function requireManager(userId: string) {
   const level = await getStaffLevel(userId)
@@ -42,7 +46,7 @@ export async function GET(req: NextRequest) {
       .select('*').is('client_id', null)
       .order('name', { ascending: true })
     if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-    return NextResponse.json({ rules: data || [], businessKind: 'regular', scope: 'global' })
+    return NextResponse.json({ rules: marcarGenericas(data || []), businessKind: 'regular', scope: 'global' })
   }
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   const { data: cli } = await db0.from('clients')
@@ -58,7 +62,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({
-    rules: data || [],
+    rules: marcarGenericas(data || []),
     businessKind: cli?.business_kind || 'regular',
   })
 }
@@ -100,6 +104,7 @@ export async function POST(req: NextRequest) {
   if (name.length < 2) return NextResponse.json({ error: 'Nome da regra obrigatório' }, { status: 400 })
   if (!category) return NextResponse.json({ error: 'Categoria obrigatória' }, { status: 400 })
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição (descrição ou valor)' }, { status: 400 })
+  if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
   if (!payee) return NextResponse.json({ error: 'Payee é obrigatório na regra — informe o favorecido (Vendor/Customer)' }, { status: 400 })
   if (amountOp && (amountValue == null || isNaN(amountValue))) {
     return NextResponse.json({ error: 'Valor da condição inválido' }, { status: 400 })
@@ -243,6 +248,7 @@ export async function PATCH(req: NextRequest) {
   const payee = b.payee !== undefined ? (String(b.payee).trim() || null) : existing.payee
 
   if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
+  if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
 
   // ── Escopo: geral (todos os clientes) × só este cliente ──
   // A tela manda `scope` em toda edição. Sem ler aqui, trocar de Global para

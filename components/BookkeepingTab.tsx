@@ -4,6 +4,7 @@
 // Categorização automática (regras + IA) chega no módulo 5.2.
 
 import { useState, useEffect, useRef } from 'react'
+import { sugerirTexto } from '@/lib/regra-texto'
 import ReconcileTab from '@/components/ReconcileTab'
 
 // Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
@@ -597,7 +598,8 @@ export default function BookkeepingTab({ clientId }: Props) {
         + ` · ${(d.review ?? 0) + (d.ai ?? 0)} sem regra (para sua decisão)`
         + (d.contasDeFora?.length
             ? ` · ⚠️ lançamentos citam a(s) conta(s) ${d.contasDeFora.join(', ')}, que não estão cadastradas neste cliente — se forem dele, cadastre; se não, isso é dinheiro de fora (receita), não transferência.`
-            : ''))
+            : '')
+        + (d.alerta ? ` · ⚠️ ${d.alerta}` : ''))
     else setMsg(`Erro: ${d.error}`)
     setCategorizing(false); load()
   }
@@ -725,9 +727,9 @@ export default function BookkeepingTab({ clientId }: Props) {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
   })
 
-  const suggestPattern = (desc: string) => desc
-    .replace(/\d{2}\/\d{2}/g, '').replace(/#?\d{4,}/g, '').replace(/x{4,}/gi, '')
-    .replace(/\s+/g, ' ').trim().toLowerCase().split(' ').slice(0, 3).join(' ')
+  // Sugestão sem o jargão do banco: "PURCHASE AUTHORIZED ON 09/12 BJS WHOLESALE"
+  // vira "bjs wholesale", não "purchase authorized on" (que casava com tudo).
+  const suggestPattern = (desc: string) => sugerirTexto(desc)
 
   // Última conta usada para este payee NESTE cliente (histórico) — ou a regra dele
   const lastCategoryForPayee = (payee: string): string | null => {
@@ -1540,6 +1542,12 @@ export default function BookkeepingTab({ clientId }: Props) {
                 <span style={{ fontSize:10.5, padding:'1px 8px', borderRadius:12, background: r.client_id ? '#2D327815' : '#5a1a8a15', color: r.client_id ? '#2D3278' : '#5a1a8a', fontWeight:700 }}>
                   {r.client_id ? 'Cliente' : 'Global'}
                 </span>
+                {r.generica && (
+                  <span title="O texto é só jargão do banco e casa com quase todo lançamento. Edite e use o nome do comerciante."
+                    style={{ fontSize:10.5, padding:'1px 8px', borderRadius:12, background:'#fee2e2', color:'#b02020', fontWeight:700 }}>
+                    ⚠️ texto genérico — casa com tudo
+                  </span>
+                )}
                 <button onClick={() => {
                     setEditRuleId(r.id)
                     setRName(r.name || ''); setRDirection(r.direction || 'both')
