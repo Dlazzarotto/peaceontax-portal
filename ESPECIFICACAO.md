@@ -196,6 +196,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **Texto de regra não pode ser jargão do banco.** A sugestão do modal era as três primeiras palavras do extrato — em banco que começa com "PURCHASE AUTHORIZED ON", a regra nascia com esse texto e casava com todo lançamento (foi assim que Payroll Fees engoliu BJ's e Facebook). Agora a sugestão tira o jargão (`lib/regra-texto.ts`), a rota recusa texto genérico ao criar ou editar, a lista de regras marca as que já existem assim, e o "Aplicar regras" avisa quando uma regra sozinha leva um quarto dos lançamentos. O motor de casamento não mudou.
 
+- **Plano mensal e parcelamento são coisas diferentes (regra do sócio).** *Plano* (bookkeeping, payroll, sales tax) é mensal: cada débito pago vira uma fatura própria do mês, quitada, com item, recebimento e trilha (`invoice_audit.recurring_invoiced`), e o plano pode ser cancelado. *Parcelamento* é sempre de uma fatura de serviço realizado: nasce no Financeiro (fatura → Parcelar), cada parcela dá baixa na fatura de origem, e **não se cancela — só se quita antecipadamente**: o recebimento manual do saldo na fatura encerra o débito no Stripe, liquida as parcelas restantes e conclui o plano (`plan_audit.paid_off_early`). Antes do débito começar, desistir devolve a fatura à cobrança à vista. A tela de Planos não cria mais parcelamento solto. O webhook passou a ler a assinatura e o pagamento nos dois formatos da API do Stripe (`lib/stripe-invoice.ts`): a partir da versão Basil o `invoice.subscription` sumiu do objeto e as mensalidades pagas eram ignoradas em silêncio.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
