@@ -196,6 +196,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **Texto de regra não pode ser jargão do banco.** A sugestão do modal era as três primeiras palavras do extrato — em banco que começa com "PURCHASE AUTHORIZED ON", a regra nascia com esse texto e casava com todo lançamento (foi assim que Payroll Fees engoliu BJ's e Facebook). Agora a sugestão tira o jargão (`lib/regra-texto.ts`), a rota recusa texto genérico ao criar ou editar, a lista de regras marca as que já existem assim, e o "Aplicar regras" avisa quando uma regra sozinha leva um quarto dos lançamentos. O motor de casamento não mudou.
 
+- **Toda cobrança recorrente paga vira fatura quitada no financeiro.** Mensalidade (bookkeeping/payroll/sales tax) e parcela de plano nascido de orçamento geram, no `invoice.paid` do Stripe, uma fatura própria com item, recebimento e trilha (`invoice_audit.recurring_invoiced`); parcela de plano nascido de fatura dá baixa na fatura de origem. O webhook passou a ler a assinatura e o pagamento nos dois formatos da API do Stripe (`lib/stripe-invoice.ts`): a partir da versão Basil o `invoice.subscription` sumiu do objeto e as mensalidades pagas eram ignoradas em silêncio.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
