@@ -247,9 +247,11 @@ export default function PlansTab({ clientId, clientName }: Props) {
       {/* Botões de criação */}
       {canManage && (
         <div style={{ display:'flex', gap:10, marginBottom:16, flexWrap:'wrap' }}>
-          <button onClick={() => { setShowInst(s => !s); setShowBk(false); setShowMon(false) }} style={outlineBtn('#2D3278')}>
-            📆 Novo parcelamento
-          </button>
+          {/* Parcelamento nasce no Financeiro (fatura → Parcelar): é sempre de uma fatura */}
+          <span title="Parcelamento é sempre de uma fatura de serviço realizado. Emita a fatura no Financeiro e use Parcelar nela."
+            style={{ alignSelf:'center', fontSize:12.5, color:'#6a7a9a' }}>
+            Parcelamento: pela fatura, no Financeiro →
+          </span>
           <button onClick={() => { setShowBk(s => !s); setShowInst(false); setShowMon(false) }} style={outlineBtn('#1a6b4a')}>
             📚 Novo contrato bookkeeping
           </button>

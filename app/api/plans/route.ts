@@ -4,6 +4,7 @@
 //   Bookkeeping:  { clientId, kind:'bookkeeping', monthlyAmount, includedTransactions, dueDay?, description? }
 //   Outro mensal: { clientId, kind:'monthly', monthlyAmount, dueDay?, serviceId?, description }
 // DELETE /api/plans?id=...&reason=...   — cancela plano (manager/owner, motivo obrigatório)
+//        parcelamento em andamento NÃO cancela: só quitação antecipada (billing/payments)
 // PATCH  /api/plans                     — edita plano ainda não ativado
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -52,53 +53,12 @@ export async function POST(req: NextRequest) {
   let payload: Record<string, unknown>
 
   if (kind === 'installment') {
-    let quoteId: string | null = null
-    let quoteTotal: number | null = null
-    let quoteDesc: string | null = null
-
-    if (body.quoteId) {
-      const { data: quote } = await db.from('quotes')
-        .select('id, total, status, est_number, fiscal_year')
-        .eq('id', body.quoteId).eq('client_id', clientId).single()
-      if (!quote) return NextResponse.json({ error: 'Cotação não encontrada' }, { status: 404 })
-      if (!['draft','sent'].includes(quote.status)) {
-        return NextResponse.json({ error: `Cotação em status '${quote.status}' não pode ser parcelada` }, { status: 409 })
-      }
-      if (Number(quote.total) <= 0) return NextResponse.json({ error: 'Cotação sem valor' }, { status: 400 })
-
-      const { data: existingPlan } = await db.from('payment_plans')
-        .select('id, status').eq('quote_id', quote.id)
-        .not('status', 'in', '(cancelled,completed)').maybeSingle()
-      if (existingPlan) return NextResponse.json({ error: 'Já existe parcelamento ativo para esta cotação' }, { status: 409 })
-
-      quoteId = quote.id
-      quoteTotal = Number(quote.total)
-      quoteDesc = `Estimate ${quote.est_number || ''} — Ano fiscal ${quote.fiscal_year}`.trim()
-    }
-
-    const total = quoteTotal ?? Number(body.total)
-    const entryPct = Number(body.entryPct)
-    const installments = Number(body.installments)
-    const frequency = body.frequency
-
-    if (!total || total <= 0 || total > 500000) return NextResponse.json({ error: 'Total inválido' }, { status: 400 })
-    if (isNaN(entryPct) || entryPct < 0 || entryPct > 90) return NextResponse.json({ error: 'Entrada deve ser 0–90%' }, { status: 400 })
-    if (!installments || installments < 1 || installments > 60) return NextResponse.json({ error: 'Parcelas: 1 a 60' }, { status: 400 })
-    if (!['weekly','biweekly','monthly'].includes(frequency)) return NextResponse.json({ error: 'Frequência inválida' }, { status: 400 })
-    if (entryPct === 0) return NextResponse.json({ error: 'Parcelamento exige entrada — defina a % (a autorização ACH é coletada no pagamento da entrada).' }, { status: 400 })
-
-    const calc = calcInstallmentPlan(total, entryPct, installments)
-    if (calc.perInstallment < 1) return NextResponse.json({ error: 'Parcela abaixo de $1 — reduza a quantidade' }, { status: 400 })
-
-    payload = {
-      client_id: clientId, kind, total,
-      entry_pct: entryPct, entry_amount: calc.entry,
-      frequency, installments, installment_amount: calc.perInstallment,
-      description: description || quoteDesc || null,
-      quote_id: quoteId,
-      status: 'draft', created_by: auth.userId,
-    }
-
+    // Regra do sócio: parcelamento é de uma FATURA de serviço realizado.
+    // Nasce no financeiro (fatura → Parcelar), com cronograma na própria
+    // fatura; a parcela dá baixa nela. Aqui não se cria mais parcelamento solto.
+    return NextResponse.json({
+      error: 'Parcelamento é sempre de uma fatura: emita a fatura do serviço no Financeiro e use "Parcelar" nela. Aqui ficam só os contratos mensais.',
+    }, { status: 400 })
   } else if (kind === 'bookkeeping' || kind === 'monthly') {
     // 'bookkeeping' = escrituração (transações incluídas + excedente)
     // 'monthly'     = qualquer outro serviço mensal (payroll, sales tax…)
@@ -185,6 +145,17 @@ export async function DELETE(req: NextRequest) {
   if (!plan) return NextResponse.json({ error: 'Plano não encontrado' }, { status: 404 })
   if (plan.status === 'cancelled') return NextResponse.json({ error: 'Já cancelado' }, { status: 409 })
 
+  // Parcelamento de fatura em andamento não se cancela — só se quita
+  // antecipadamente (recebimento do saldo na fatura, que encerra o débito).
+  // Antes do débito começar (entrada/cadastro pendentes) pode desistir: a
+  // fatura volta a ser cobrada à vista.
+  const emAndamento = ['active', 'paused', 'payment_failed'].includes(plan.status)
+  if (plan.kind === 'installment' && emAndamento) {
+    return NextResponse.json({
+      error: 'Parcelamento de fatura não se cancela — só se quita antecipadamente. No Financeiro, abra a fatura e registre o recebimento do saldo restante: isso encerra o débito automático.',
+    }, { status: 409 })
+  }
+
   try {
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion })
     if (plan.stripe_schedule_id) {
@@ -199,6 +170,13 @@ export async function DELETE(req: NextRequest) {
   await db.from('payment_plans').update({
     status: 'cancelled', cancel_reason: reason, updated_at: new Date().toISOString(),
   }).eq('id', id)
+
+  // Desistência antes do débito começar: a fatura volta a ser à vista
+  if (plan.kind === 'installment' && plan.invoice_id) {
+    await db.from('invoice_installments').delete().eq('invoice_id', plan.invoice_id).eq('status', 'scheduled')
+    await db.from('invoices').update({ payment_plan: 'full', updated_at: new Date().toISOString() })
+      .eq('id', plan.invoice_id).in('status', ['sent', 'partial', 'overdue'])
+  }
 
   await db.from('plan_audit').insert({
     plan_id: id, action: 'cancelled', reason, performed_by: auth.userId,

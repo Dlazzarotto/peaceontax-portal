@@ -5,9 +5,9 @@
 //   checkout.session.async_payment_succeeded / _failed → fatura ou entrada de
 //                              parcelamento paga por ACH (o débito em conta leva
 //                              dias; o 'completed' chega antes do dinheiro)
-//   invoice.paid               → conta parcelas pagas / emite a fatura da cobrança
-//                                (mensalidade e parcela de plano sem fatura de origem)
-//                                — lê a assinatura nos dois formatos da API (lib/stripe-invoice)
+//   invoice.paid               → parcela: baixa na fatura de origem
+//                                mensalidade: emite a fatura do mês, quitada
+//                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
 //   customer.subscription.deleted → encerra plano
@@ -165,14 +165,18 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       }).eq('id', plan.id)
 
-      // Parcelamento nascido de fatura: baixa a parcela e lança o recebimento
-      // na fatura de origem. Parcelamento nascido de orçamento (sem fatura)
-      // e mensalidade: cada cobrança vira uma fatura própria, quitada — todo
-      // dinheiro que entra tem documento e aparece no financeiro.
-      if (isInstallment && plan.invoice_id) {
-        await sincronizarParcela(db, stripe, plan, invoice, paid)
+      // Regra do sócio (especificação): parcelamento é SEMPRE de uma fatura —
+      // a parcela dá baixa na fatura de origem. Mensalidade (bookkeeping,
+      // payroll, sales tax) é outra coisa: cada mês vira uma fatura própria,
+      // quitada, para todo dinheiro que entra ter documento no financeiro.
+      if (isInstallment) {
+        if (plan.invoice_id) await sincronizarParcela(db, stripe, plan, invoice, paid)
+        else await db.from('plan_alerts').insert({
+          plan_id: plan.id, client_id: plan.client_id, type: 'sem_fatura',
+          message: `Parcela ${paid}/${plan.installments} recebida de um parcelamento antigo, sem fatura de origem — registre o recebimento à mão no financeiro.`,
+        }).then(() => null, () => null)
       } else {
-        await gerarFaturaDaCobranca(db, stripe, plan, invoice, isInstallment ? paid : null)
+        await gerarFaturaDaMensalidade(db, stripe, plan, invoice)
       }
 
       if (finished) {
@@ -542,25 +546,21 @@ async function sincronizarParcela(
 }
 
 /**
- * Cobrança recorrente paga vira fatura quitada — sustentação contábil: todo
- * dinheiro que entra tem documento de origem e aparece no financeiro.
- * Vale para a mensalidade (bookkeeping/payroll/sales tax) e para a parcela
- * de plano nascido de orçamento, que não tem fatura de origem (`parcela` =
- * número da parcela; null na mensalidade).
+ * Mensalidade paga vira fatura quitada — sustentação contábil: todo dinheiro
+ * que entra tem documento de origem e aparece no financeiro (aging, painel,
+ * relatórios). Uma fatura por mês de competência, no valor combinado.
  *
  * A numeração usa a MESMA função do banco que a tela usa (next_invoice_number),
  * que é atômica. Reimplementar aqui criaria corrida entre a tela e o webhook.
  *
  * O índice único (plan_id, competencia) impede fatura repetida quando o
- * Stripe reenvia o evento. Na mensalidade a competência é o mês; na parcela
- * é o dia do período (parcela semanal teria duas no mesmo mês).
+ * Stripe reenvia o evento.
  */
-async function gerarFaturaDaCobranca(
-  db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, invoice: Stripe.Invoice, parcela: number | null,
+async function gerarFaturaDaMensalidade(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, invoice: Stripe.Invoice,
 ) {
   const d = dataDaCompetencia(invoice)
-  const dia = d.toISOString().slice(0, 10)
-  const competencia = parcela ? dia : `${dia.slice(0, 7)}-01`
+  const competencia = `${d.toISOString().slice(0, 7)}-01`
 
   const { data: ja } = await db.from('invoices')
     .select('id').eq('plan_id', plan.id).eq('competencia', competencia).maybeSingle()
@@ -573,9 +573,7 @@ async function gerarFaturaDaCobranca(
   if (numErr || !num) { console.error('Numeração da cobrança recorrente:', numErr); return }
 
   const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
-  const descricao = parcela
-    ? `${plan.description || 'Parcelamento'} — parcela ${parcela}/${plan.installments}`
-    : `${plan.description || 'Serviço mensal'} — ${mesRef}`
+  const descricao = `${plan.description || 'Serviço mensal'} — ${mesRef}`
 
   const { data: inv, error: invErr } = await db.from('invoices').insert({
     client_id: plan.client_id,
@@ -617,12 +615,11 @@ async function gerarFaturaDaCobranca(
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'recurring_invoiced',
-    next: { planId: plan.id, competencia, parcela, valor, stripeInvoice: invoice.id },
+    next: { planId: plan.id, competencia, valor, stripeInvoice: invoice.id },
   }).then(() => null, () => null)
 
-  await notifyClient(db, plan.client_id, parcela
-    ? `✅ Recebemos a parcela ${parcela}/${plan.installments}. A fatura ${inv.number} está disponível no portal. Obrigado! 🙏`
-    : `✅ Recebemos o pagamento de ${mesRef}. A fatura ${inv.number} está disponível no portal. Obrigado! 🙏`)
+  await notifyClient(db, plan.client_id,
+    `✅ Recebemos o pagamento de ${mesRef}. A fatura ${inv.number} está disponível no portal. Obrigado! 🙏`)
 }
 
 let cachedProductId: string | null = null

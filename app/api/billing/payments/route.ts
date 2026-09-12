@@ -6,9 +6,16 @@
 //
 // Só gerente ou sócio: quem emite não dá baixa.
 // Dinheiro, Zelle e Venmo são à vista — o banco recusa valor parcial.
+//
+// Fatura PARCELADA (débito automático em andamento): recebimento manual só
+// para QUITAR o saldo — é a quitação antecipada, o único jeito de encerrar
+// um parcelamento. Ao quitar, o débito no Stripe é cancelado, as parcelas
+// restantes ficam liquidadas e o plano vai para 'completed'. Parcela avulsa
+// à mão não existe: desalinharia o cronograma e o Stripe cobraria em dobro.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 
@@ -125,6 +132,19 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
+  // Parcelamento em andamento nesta fatura?
+  const { data: plano } = await db.from('payment_plans')
+    .select('id, status, installments, paid_installments, stripe_schedule_id, stripe_subscription_id')
+    .eq('invoice_id', inv.id).eq('kind', 'installment')
+    .in('status', ['active', 'paused', 'payment_failed', 'awaiting_entry', 'awaiting_setup'])
+    .maybeSingle()
+  const quitacao = !!plano && Math.abs(valor - saldo) < 0.005
+  if (plano && !quitacao) {
+    return NextResponse.json({
+      error: `Esta fatura está parcelada com débito automático. Recebimento manual só para quitar o saldo restante ($${saldo.toFixed(2)}) — a quitação antecipada encerra o débito. Parcela avulsa é cobrada pelo Stripe.`,
+    }, { status: 409 })
+  }
+
   const { error } = await db.from('invoice_payments').insert({
     invoice_id: inv.id,
     client_id: inv.client_id,
@@ -145,11 +165,48 @@ export async function POST(req: NextRequest) {
     staff_level: perms.nivel, next: { amount: valor, method },
   }).then(() => null, () => null)
 
+  let notaQuitacao = ''
+  if (plano && quitacao) notaQuitacao = await quitarParcelamento(db, plano, inv.id, auth.userId)
+
   const restante = Math.round((saldo - valor) * 100) / 100
   return NextResponse.json({
     ok: true,
-    message: restante > 0
+    message: (restante > 0
       ? `Recebido $${valor.toFixed(2)} em ${inv.number} · saldo $${restante.toFixed(2)}`
-      : `${inv.number} quitada com $${valor.toFixed(2)}`,
+      : `${inv.number} quitada com $${valor.toFixed(2)}`) + notaQuitacao,
   })
+}
+
+/**
+ * Quitação antecipada: encerra o débito no Stripe, liquida as parcelas que
+ * ainda estavam no cronograma e conclui o plano. Tudo com trilha.
+ */
+async function quitarParcelamento(db: any, plano: any, invoiceId: string, userId: string): Promise<string> {
+  let stripeOk = true
+  try {
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion })
+    if (plano.stripe_schedule_id) await stripe.subscriptionSchedules.cancel(plano.stripe_schedule_id)
+    else if (plano.stripe_subscription_id) await stripe.subscriptions.cancel(plano.stripe_subscription_id)
+  } catch (e) {
+    stripeOk = false
+    console.error('Quitação: cancelar débito no Stripe:', (e as Error).message)
+  }
+
+  const agora = new Date().toISOString()
+  await db.from('invoice_installments')
+    .update({ status: 'paid', paid_at: agora })
+    .eq('invoice_id', invoiceId).eq('status', 'scheduled')
+
+  await db.from('payment_plans').update({
+    status: 'completed', paid_installments: plano.installments, updated_at: agora,
+  }).eq('id', plano.id)
+
+  await db.from('plan_audit').insert({
+    plan_id: plano.id, action: 'paid_off_early', performed_by: userId,
+    snapshot: { previous_status: plano.status, stripe_cancelado: stripeOk },
+  }).then(() => null, () => null)
+
+  return stripeOk
+    ? ' · parcelamento quitado antecipadamente; débito automático encerrado'
+    : ' · parcelamento quitado, MAS o débito no Stripe não pôde ser cancelado — cancele a assinatura no painel do Stripe para não cobrar de novo'
 }

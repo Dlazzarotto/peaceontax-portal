@@ -95,6 +95,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   débito (`contract_signed_by_client` em `plan_audit`, conferido pela API do
   DocuSign). O webhook do Stripe lê a forma real no PaymentIntent e trata o
   ACH assíncrono.
+- **Plano mensal ≠ parcelamento.** Mensalidade paga vira fatura do mês
+  (webhook `invoice.paid`, `lib/stripe-invoice.ts` lê os dois formatos da
+  API). Parcelamento é sempre de uma fatura, não se cancela em andamento —
+  só quitação antecipada (`billing/payments`), que cancela o débito no Stripe.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
