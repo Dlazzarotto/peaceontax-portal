@@ -16,7 +16,8 @@
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
-//   customer.subscription.deleted → encerra plano
+//   customer.subscription.paused  → Stripe pausou a cobrança: plano pausado + alerta
+//   customer.subscription.deleted → encerra plano (+ alerta se não foi combinado)
 
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
@@ -286,10 +287,33 @@ export async function POST(req: NextRequest) {
     }
 
     // ============ ASSINATURA ENCERRADA NO STRIPE ============
+    // ============ ASSINATURA PAUSADA PELO STRIPE ============
+    // O Stripe pausa sozinho quando as tentativas de cobrança se esgotam
+    // (Manage failed payments). Sem tratar, o plano continuava 'active' aqui
+    // enquanto o débito tinha parado lá — ninguém percebia até o cliente
+    // reclamar. A volta é automática: o próximo invoice.paid põe em 'active'.
+    if (event.type === 'customer.subscription.paused') {
+      const sub = event.data.object as Stripe.Subscription
+      const { data: plan } = await db.from('payment_plans')
+        .select('id, status, kind, description, client_id, clients(name)')
+        .eq('stripe_subscription_id', sub.id).maybeSingle()
+      if (plan && !['completed', 'cancelled', 'paused'].includes(plan.status)) {
+        await db.from('payment_plans').update({
+          status: 'paused', updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+        const nome = (plan.clients as any)?.name || plan.client_id
+        await db.from('plan_alerts').insert({
+          plan_id: plan.id, client_id: plan.client_id, type: 'paused_by_stripe',
+          message: `⏸️ O Stripe pausou a cobrança de ${nome} (${plan.description || plan.kind}) — as tentativas de débito se esgotaram. Nada será cobrado até resolver: fale com o cliente e cobre pela fatura em aberto.`,
+        }).then(() => null, () => null)
+      }
+      return NextResponse.json({ received: true })
+    }
+
     if (event.type === 'customer.subscription.deleted') {
       const sub = event.data.object as Stripe.Subscription
       const { data: plan } = await db.from('payment_plans')
-        .select('id, status, kind, installments, paid_installments, client_id')
+        .select('id, status, kind, description, installments, paid_installments, client_id, clients(name)')
         .eq('stripe_subscription_id', sub.id).maybeSingle()
       if (plan && !['completed','cancelled'].includes(plan.status)) {
         const done = plan.kind === 'installment' && plan.paid_installments >= plan.installments
@@ -297,6 +321,16 @@ export async function POST(req: NextRequest) {
           status: done ? 'completed' : 'cancelled',
           updated_at: new Date().toISOString(),
         }).eq('id', plan.id)
+        // Cancelamento vindo do Stripe (fim das tentativas, ação manual no
+        // painel) não passou pela equipe: sem aviso, um contrato de cliente
+        // sumia em silêncio.
+        if (!done) {
+          const nome = (plan.clients as any)?.name || plan.client_id
+          await db.from('plan_alerts').insert({
+            plan_id: plan.id, client_id: plan.client_id, type: 'cancelled_by_stripe',
+            message: `⚠️ A assinatura de ${nome} (${plan.description || plan.kind}) foi ENCERRADA no Stripe e o contrato ficou cancelado aqui. Se não foi combinado, refaça o contrato com o cliente.`,
+          }).then(() => null, () => null)
+        }
       }
       return NextResponse.json({ received: true })
     }
