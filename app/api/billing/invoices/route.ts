@@ -2,12 +2,15 @@
 //
 // GET    ?doc=&status=&clientId=   → lista + clientes + suas permissões
 // POST   { clientId, docType, dueDate, paymentPlan, expectedMethod, discount, notes, items[] }
-// PATCH  { id, action: 'send' | 'cancel' | 'duplicate' }
+// PATCH  { id, action: 'send' | 'resend' | 'cancel' | 'duplicate' | 'edit' }
+//          resend → repete o AVISO da fatura ao cliente (e-mail + portal), sem
+//                   mexer no status; serve à fatura que nasceu enviada pelo Stripe
+//          remind → LEMBRETE DE COBRANÇA: outro texto, sabe se está vencida
 // DELETE ?id=
 //
 // Permissões (lib/billing-perms):
 //   assistente → SÓ cria (nasce rascunho)
-//   gerente    → envia, recebe, duplica, cancela, apaga
+//   gerente    → envia, reenvia, recebe, duplica, cancela, apaga
 //   sócio      → tudo + relatórios
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -15,6 +18,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
+import { fmtUS, money } from '@/lib/format'
 
 export const dynamic = 'force-dynamic'
 
@@ -207,6 +211,49 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: true, message: `${inv.number} enviado ao cliente${aviso.email ? ' (e-mail e portal)' : aviso.motivo ? ` (portal; e-mail não enviado: ${aviso.motivo})` : ' (portal)'}.` })
   }
 
+  // Reenviar ao cliente: e-mail perdido, caixa de spam, cliente trocou de
+  // e-mail, ou a fatura nasceu já enviada (mensalidade vinda do Stripe, que
+  // nunca passa por rascunho e por isso nunca teve o botão Enviar).
+  // NÃO mexe no status nem em valor: só repete o aviso.
+  if (action === 'resend' || action === 'remind') {
+    const lembrete = action === 'remind'
+    if (!perms.cancelar) {
+      return NextResponse.json({ error: `${lembrete ? 'Cobrar' : 'Reenviar'} ao cliente é de gerente ou sócio.` }, { status: 403 })
+    }
+    if (inv.status === 'draft') {
+      return NextResponse.json({ error: 'Ainda é rascunho — use Enviar.' }, { status: 400 })
+    }
+    if (inv.status === 'void') {
+      return NextResponse.json({ error: 'Fatura cancelada não vai ao cliente.' }, { status: 409 })
+    }
+    const saldoAberto = Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100
+    if (saldoAberto <= 0) {
+      return NextResponse.json({
+        error: 'Fatura quitada: não há o que cobrar. Para mandar o documento ao cliente, use Imprimir.',
+      }, { status: 409 })
+    }
+
+    // Quantas vezes o cliente já foi avisado desta fatura — a equipe vê o
+    // número antes de insistir de novo.
+    const { count: jaAvisado } = await db.from('invoice_audit')
+      .select('id', { count: 'exact', head: true })
+      .eq('invoice_id', id).in('action', ['sent', 'resent', 'reminded'])
+
+    const aviso = await avisarClienteDaFatura(db, inv, lembrete ? 'lembrete' : 'envio')
+    await db.from('invoice_audit').insert({
+      invoice_id: id, action: lembrete ? 'reminded' : 'resent',
+      performed_by: auth.userId, staff_level: perms.nivel,
+      next: { email: aviso.email, motivo: aviso.motivo || null, avisoNumero: (jaAvisado ?? 0) + 1 },
+    }).then(() => null, () => null)
+
+    return NextResponse.json({
+      ok: true,
+      message: `${inv.number}: ${lembrete ? 'lembrete de cobrança enviado' : 'reenviado'} ao cliente`
+        + (aviso.email ? ' (e-mail e portal)' : aviso.motivo ? ` (portal; e-mail não enviado: ${aviso.motivo})` : ' (portal)')
+        + ` · ${(jaAvisado ?? 0) + 1}º aviso desta fatura`,
+    })
+  }
+
   if (action === 'cancel') {
     if (!perms.cancelar) return NextResponse.json({ error: RECUSA.cancelar }, { status: 403 })
     if (Number(inv.paid_total) > 0) {
@@ -352,32 +399,63 @@ export async function DELETE(req: NextRequest) {
 }
 
 /** E-mail e aviso no portal quando a fatura é enviada. Não derruba a operação se o e-mail falhar. */
-async function avisarClienteDaFatura(db: any, inv: any): Promise<{ email: boolean; motivo?: string }> {
+async function avisarClienteDaFatura(
+  db: any, inv: any, tom: 'envio' | 'lembrete' = 'envio',
+): Promise<{ email: boolean; motivo?: string }> {
   const { data: c } = await db.from('clients').select('id, name, email, language').eq('id', inv.client_id).maybeSingle()
   if (!c) return { email: false, motivo: 'cliente não encontrado' }
   const lang = (c.language || 'en').toLowerCase()
-  const saldo = Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100
-  const valor = `$${saldo.toFixed(2)}`
-  const venc = inv.due_date ? String(inv.due_date).slice(5, 7) + '/' + String(inv.due_date).slice(8, 10) + '/' + String(inv.due_date).slice(0, 4) : null
+  const valor = money(Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100)
+  const venc = fmtUS(inv.due_date)
   const parcelada = inv.payment_plan === 'installments'
+  // Vencida? Comparação por data civil, sem passar por fuso.
+  const hoje = new Date().toISOString().slice(0, 10)
+  const vencida = !!inv.due_date && String(inv.due_date).slice(0, 10) < hoje
 
-  const texto = lang === 'pt'
-    ? (parcelada
-        ? `🧾 Fatura ${inv.number} (${valor}) enviada. Ela é parcelada: em Pagamentos, cadastre o débito automático.`
-        : `🧾 Fatura ${inv.number} de ${valor}${venc ? `, vencimento ${venc}` : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`)
-    : lang === 'es'
-    ? (parcelada
-        ? `🧾 Factura ${inv.number} (${valor}) enviada. Es en cuotas: en Pagos, registre el débito automático.`
-        : `🧾 Factura ${inv.number} de ${valor}${venc ? `, vence el ${venc}` : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`)
-    : (parcelada
-        ? `🧾 Invoice ${inv.number} (${valor}) sent. It is an installment plan: under Payments, set up automatic debit.`
-        : `🧾 Invoice ${inv.number} for ${valor}${venc ? `, due ${venc}` : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`)
-  await avisarNoPortal(db, c.id, texto)
+  // Envio e cobrança não dizem a mesma coisa. Quem pede o documento de novo
+  // não é quem está atrasado, e o cliente percebe a diferença.
+  const T: Record<string, { texto: string; assunto: string; botao: string }> = {
+    pt: {
+      texto: tom === 'lembrete'
+        ? (parcelada
+            ? `⏰ Lembrete: a fatura ${inv.number} está parcelada e o débito automático não foi concluído. Em Pagamentos você regulariza ou refaz o cadastro do débito.`
+            : `⏰ Lembrete: a fatura ${inv.number} de ${valor}${venc ? (vencida ? ` venceu em ${venc}` : ` vence em ${venc}`) : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`)
+        : (parcelada
+            ? `🧾 Fatura ${inv.number} (${valor}) enviada. Ela é parcelada: em Pagamentos, cadastre o débito automático.`
+            : `🧾 Fatura ${inv.number} de ${valor}${venc ? `, vencimento ${venc}` : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`),
+      assunto: tom === 'lembrete' ? `Lembrete: fatura ${inv.number} — Peace on Tax` : `Fatura ${inv.number} — Peace on Tax`,
+      botao: tom === 'lembrete' ? 'Pagar agora' : (parcelada ? 'Cadastrar débito automático' : 'Ver e pagar a fatura'),
+    },
+    es: {
+      texto: tom === 'lembrete'
+        ? (parcelada
+            ? `⏰ Recordatorio: la factura ${inv.number} está en cuotas y el débito automático no se completó. En Pagos puede regularizar o registrar el débito de nuevo.`
+            : `⏰ Recordatorio: la factura ${inv.number} de ${valor}${venc ? (vencida ? ` venció el ${venc}` : ` vence el ${venc}`) : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`)
+        : (parcelada
+            ? `🧾 Factura ${inv.number} (${valor}) enviada. Es en cuotas: en Pagos, registre el débito automático.`
+            : `🧾 Factura ${inv.number} de ${valor}${venc ? `, vence el ${venc}` : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`),
+      assunto: tom === 'lembrete' ? `Recordatorio: factura ${inv.number} — Peace on Tax` : `Factura ${inv.number} — Peace on Tax`,
+      botao: tom === 'lembrete' ? 'Pagar ahora' : (parcelada ? 'Registrar débito automático' : 'Ver y pagar la factura'),
+    },
+    en: {
+      texto: tom === 'lembrete'
+        ? (parcelada
+            ? `⏰ Reminder: invoice ${inv.number} is on an installment plan and the automatic debit did not go through. Under Payments you can settle it or set up the debit again.`
+            : `⏰ Reminder: invoice ${inv.number} for ${valor}${venc ? (vencida ? ` was due on ${venc}` : ` is due on ${venc}`) : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`)
+        : (parcelada
+            ? `🧾 Invoice ${inv.number} (${valor}) sent. It is an installment plan: under Payments, set up automatic debit.`
+            : `🧾 Invoice ${inv.number} for ${valor}${venc ? `, due ${venc}` : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`),
+      assunto: tom === 'lembrete' ? `Reminder: invoice ${inv.number} — Peace on Tax` : `Invoice ${inv.number} — Peace on Tax`,
+      botao: tom === 'lembrete' ? 'Pay now' : (parcelada ? 'Set up automatic debit' : 'View and pay invoice'),
+    },
+  }
+  const t = T[lang] || T.en
+  await avisarNoPortal(db, c.id, t.texto)
 
   if (!c.email || !c.email.includes('@')) return { email: false, motivo: 'cliente sem e-mail' }
-  const ok = await enviarEmail(c.email,
-    lang === 'pt' ? `Fatura ${inv.number} — Peace on Tax` : lang === 'es' ? `Factura ${inv.number} — Peace on Tax` : `Invoice ${inv.number} — Peace on Tax`,
-    emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${texto.replace(/^🧾 /, '')}</p>`,
-      botao: { texto: lang === 'pt' ? (parcelada ? 'Cadastrar débito automático' : 'Ver e pagar a fatura') : lang === 'es' ? (parcelada ? 'Registrar débito automático' : 'Ver y pagar la factura') : (parcelada ? 'Set up automatic debit' : 'View and pay invoice'), url: `${APP_URL}/portal/payments` } }))
+  const ok = await enviarEmail(c.email, t.assunto,
+    emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${t.texto.replace(/^[🧾⏰] /, '')}</p>`,
+      botao: { texto: t.botao, url: `${APP_URL}/portal/payments` } }))
   return { email: ok, motivo: ok ? undefined : 'falha no envio' }
 }
+

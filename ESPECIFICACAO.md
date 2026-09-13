@@ -202,6 +202,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **Forma de pagamento, PaymentIntent e motivo de recusa não vêm no evento**: `invoice.payments` é campo expansível e o webhook nunca o traz. Quem precisa desses dados busca a invoice na API com `expand` (uma chamada, reaproveitada). Sem isso, todo recebimento era gravado como cartão, mesmo os de ACH.
 - **Reprocessar cobrança já registrada é barrado por ESTADO** (fatura quitada, ou parcela paga com aquela invoice), não por sinal do Stripe: `paid_out_of_band` também sumiu do payload. Reenviar o mesmo evento dez vezes grava uma vez só. O webhook passou a ler a assinatura e o pagamento nos dois formatos da API do Stripe (`lib/stripe-invoice.ts`): a partir da versão Basil o `invoice.subscription` sumiu do objeto e as mensalidades pagas eram ignoradas em silêncio.
 
+- **Reenviar e cobrar são botões diferentes na fatura.** *Reenviar* repete o aviso da emissão ("aqui está sua fatura, com o link de pagamento") — serve a quem perdeu o e-mail e à fatura de mensalidade, que nasce enviada pelo Stripe e nunca passou por rascunho, então nunca teve botão. *Lembrete* (que vira **Cobrar** quando a fatura está vencida) manda texto de cobrança, e sabe dizer se venceu ou está por vencer; em fatura parcelada, fala do débito automático em vez de pedir pagamento. Nenhum dos dois mexe em valor ou situação. Ambos ficam na trilha (`invoice_audit.resent` / `reminded`) com o número do aviso, e a resposta diz à equipe quantas vezes aquele cliente já foi avisado daquela fatura. Permissão de gerente ou sócio, a mesma de enviar.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
