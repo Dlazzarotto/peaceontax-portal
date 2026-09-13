@@ -97,8 +97,16 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   ACH assíncrono.
 - **Plano mensal ≠ parcelamento. Primeiro emite, depois cobra.** A fatura
   do mês nasce em aberto no `invoice.finalized` do Stripe e guarda
-  `stripe_invoice`; o `invoice.paid` só dá baixa (`lib/stripe-invoice.ts` lê
-  os dois formatos da API). Débito que falha deixa a fatura em aberto com o
+  `stripe_invoice`; o `invoice.paid` só dá baixa.
+- **O payload do webhook do Stripe é pobre — confira antes de ler um campo.**
+  O endpoint está em `2026-06-24.dahlia`: a invoice do evento NÃO traz
+  `subscription`, `payment_intent`, `charge`, `paid_out_of_band` nem
+  `payments` (expansível). O SDK 17.7.0 ainda declara esses campos nos tipos,
+  então `typecheck` passa e o campo vem vazio em produção — foi assim que as
+  mensalidades sumiram. `lib/stripe-invoice.ts` lê só o que o payload garante;
+  método de pagamento e motivo de recusa exigem buscar a invoice com `expand`.
+  Competência sai de `lines[0].period.start` (o serviço), nunca de
+  `invoice.period_start`. Débito que falha deixa a fatura em aberto com o
   motivo; `billing/recharge` cobra de novo; baixa manual marca a invoice do
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
   sempre de uma fatura, não se cancela em andamento — só quitação antecipada

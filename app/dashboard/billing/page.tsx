@@ -291,6 +291,11 @@ export default function BillingPage() {
     load()
   }
 
+  // Vencida pela data civil, sem passar por fuso — muda o rótulo do botão
+  // de cobrança de "Lembrete" para "Cobrar".
+  const vencida = (inv: Inv) =>
+    !!inv.due_date && String(inv.due_date).slice(0, 10) < new Date().toISOString().slice(0, 10)
+
   const acao = async (inv: Inv, action: string, pergunta?: string) => {
     if (pergunta && !confirm(pergunta)) return
     setBusy(true); setMsg('')
@@ -692,6 +697,19 @@ export default function BillingPage() {
                         {inv.status === 'draft' && perms?.cancelar && (
                           <button onClick={() => acao(inv, 'send')} disabled={busy} style={acaoBtn('#2D3278')}>Enviar</button>
                         )}
+                        {/* Fatura em aberto que já saiu do rascunho — inclusive a de
+                            mensalidade, que nasce enviada pelo Stripe e nunca teve
+                            botão. Reenviar repete o documento; Lembrete cobra. */}
+                        {inv.status !== 'draft' && inv.status !== 'void' && inv.saldo > 0 && perms?.cancelar && (<>
+                          <button onClick={() => acao(inv, 'resend',
+                              `Reenviar ${inv.number} para ${inv.cliente}?\n\nMesmo aviso da emissão: "aqui está sua fatura, com o link de pagamento". Nada muda no valor nem na situação.`)}
+                            disabled={busy} style={acaoBtn('#2D3278')}>Reenviar</button>
+                          <button onClick={() => acao(inv, 'remind',
+                              `Enviar lembrete de cobrança de ${inv.number} para ${inv.cliente}?\n\nTexto de cobrança — diz se a fatura está vencida e pede o pagamento.`)}
+                            disabled={busy} style={acaoBtn(vencida(inv) ? '#B02020' : '#C06010')}>
+                            {vencida(inv) ? 'Cobrar' : 'Lembrete'}
+                          </button>
+                        </>)}
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#1A6B4A')}>Receber</button>
                         )}

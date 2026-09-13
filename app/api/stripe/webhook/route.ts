@@ -24,7 +24,7 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
-import { assinaturaDaInvoice, intentDaInvoice, dataDaCompetencia, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
+import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
 
@@ -155,9 +155,8 @@ export async function POST(req: NextRequest) {
       const invoice = event.data.object as Stripe.Invoice
       const subId = assinaturaDaInvoice(invoice)
       if (!subId) return NextResponse.json({ received: true, ignorado: 'invoice sem assinatura' })
-      const { data: plan } = await db.from('payment_plans')
-        .select('*').eq('stripe_subscription_id', subId).maybeSingle()
-      if (!plan) return NextResponse.json({ received: true })
+      const plan = await planoDaCobranca(db, invoice, subId)
+      if (!plan) return NextResponse.json({ received: true, ignorado: 'plano não encontrado' })
       if ((invoice.amount_due ?? 0) <= 0) return NextResponse.json({ received: true })   // trial de $0
 
       if (plan.kind === 'installment') {
@@ -181,16 +180,26 @@ export async function POST(req: NextRequest) {
       const subId = assinaturaDaInvoice(invoice)
       if (!subId) return NextResponse.json({ received: true, ignorado: 'invoice sem assinatura' })
 
-      const { data: plan } = await db.from('payment_plans')
-        .select('*').eq('stripe_subscription_id', subId).maybeSingle()
-      if (!plan) return NextResponse.json({ received: true })
+      const plan = await planoDaCobranca(db, invoice, subId)
+      if (!plan) return NextResponse.json({ received: true, ignorado: 'plano não encontrado' })
 
       // Ignora invoices de $0 (trial do bookkeeping)
-      if ((invoice.amount_paid ?? 0) <= 0 && !pagaForaDoStripe(invoice)) return NextResponse.json({ received: true })
+      if ((invoice.amount_paid ?? 0) <= 0) return NextResponse.json({ received: true })
 
-      // Baixa manual nossa (Zelle, dinheiro) marcada no Stripe como paga fora
-      // dele: o dinheiro já está registrado; aqui só não pode entrar de novo.
-      const foraDoStripe = pagaForaDoStripe(invoice)
+      // Idempotência pelo ESTADO, não pelo evento: esta cobrança já entrou?
+      // O Stripe reenvia eventos, e a equipe reenvia à mão para recuperar
+      // cobrança perdida. Sem esta trava, cada reenvio somava +1 em
+      // paid_installments — no parcelamento isso dá baixa numa parcela que
+      // ninguém pagou e pode concluir o plano antes da hora.
+      // Vale também para a baixa manual (Zelle/dinheiro): a fatura já quitada
+      // barra o evento mesmo que o sinal paid_out_of_band não venha.
+      if (await cobrancaJaRegistrada(db, plan, invoice)) {
+        return NextResponse.json({ received: true, ignorado: 'cobrança já registrada' })
+      }
+
+      // Baixa manual nossa (Zelle, dinheiro): o dinheiro já está registrado.
+      // O sinal não vem no payload — só na invoice buscada com expand.
+      const foraDoStripe = pagaForaDoStripe(await comPagamentos(stripe, invoice))
 
       const isInstallment = plan.kind === 'installment'
       const paid = foraDoStripe ? Number(plan.paid_installments || 0) : (plan.paid_installments || 0) + 1
@@ -241,13 +250,12 @@ export async function POST(req: NextRequest) {
       const subId = assinaturaDaInvoice(invoice)
       if (!subId) return NextResponse.json({ received: true })
 
-      const { data: plan } = await db.from('payment_plans')
-        .select('*, clients(name)').eq('stripe_subscription_id', subId).maybeSingle()
-      if (!plan) return NextResponse.json({ received: true })
+      const plan = await planoDaCobranca(db, invoice, subId, '*, clients(name)')
+      if (!plan) return NextResponse.json({ received: true, ignorado: 'plano não encontrado' })
 
       const clientName = (plan.clients as any)?.name || plan.client_id
       const amount = ((invoice.amount_due ?? 0) / 100).toFixed(2)
-      const motivo = motivoDaFalha(invoice)
+      const motivo = motivoDaFalha(await comPagamentos(stripe, invoice))
 
       await db.from('payment_plans').update({
         status: 'payment_failed', updated_at: new Date().toISOString(),
@@ -626,10 +634,17 @@ async function lancarRecebimento(
 /** Descobre o método do pagamento no Stripe. Cai em 'card' se não conseguir. */
 async function metodoDoPagamento(stripe: Stripe, invoice: Stripe.Invoice): Promise<string> {
   try {
-    const piId = intentDaInvoice(invoice)
+    const cheia = await comPagamentos(stripe, invoice)
+    // Método REAL, do PaymentIntent expandido. A lista payment_method_types da
+    // invoice só diz o que foi OFERECIDO (aqui vem sempre card + us_bank_account).
+    for (const p of (cheia?.payments?.data || [])) {
+      const pi = p?.payment?.payment_intent
+      const t = (pi && typeof pi === 'object' && pi.payment_method?.type) || null
+      if (t) return t === 'us_bank_account' ? 'ach' : 'card'
+    }
+    const piId = intentDaInvoice(cheia)
     if (!piId) return 'card'
     const pi = await stripe.paymentIntents.retrieve(piId, { expand: ['payment_method'] })
-    // O método usado, não a lista oferecida
     const t = (pi.payment_method as Stripe.PaymentMethod | null)?.type || (pi.payment_method_types || [])[0]
     return t === 'us_bank_account' ? 'ach' : 'card'
   } catch {
@@ -645,7 +660,7 @@ async function sincronizarParcela(
   const valor = round2((invoice.amount_paid ?? 0) / 100)
   const metodo = await metodoDoPagamento(stripe, invoice)
 
-  const intent = intentDaInvoice(invoice)
+  const intent = intentDaInvoice(await comPagamentos(stripe, invoice))
   const { data: atual } = await db.from('invoice_installments')
     .select('status').eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
   if (atual?.status === 'paid') return   // baixa manual já feita (Zelle/dinheiro)
@@ -657,6 +672,78 @@ async function sincronizarParcela(
   }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
 
   await lancarRecebimento(db, plan.invoice_id, plan.client_id, valor, metodo, intent, invoice.id as string)
+}
+
+/**
+ * O evento traz a invoice SEM o campo `payments` (expansível). Forma de
+ * pagamento, PaymentIntent e motivo de recusa só existem na invoice buscada
+ * na API com expand. Uma chamada, reaproveitada por quem precisar.
+ */
+const cacheInvoice = new Map<string, any>()
+async function comPagamentos(stripe: Stripe, invoice: Stripe.Invoice): Promise<any> {
+  if ((invoice as any).payments) return invoice
+  const invId = invoice.id
+  if (!invId) return invoice
+  if (cacheInvoice.has(invId)) return cacheInvoice.get(invId)
+  try {
+    const cheia = await stripe.invoices.retrieve(invId, {
+      expand: ['payments.data.payment.payment_intent.payment_method'],
+    })
+    cacheInvoice.set(invId, cheia)
+    return cheia
+  } catch (e) {
+    console.error('expandir invoice:', (e as Error).message)
+    return invoice
+  }
+}
+
+/**
+ * O plano desta cobrança. O metadata da assinatura viaja dentro da própria
+ * invoice (parent.subscription_details.metadata.planId) e vale mais que a
+ * busca por stripe_subscription_id: plano criado por SubscriptionSchedule
+ * nasce sem assinatura, então esse campo pode estar vazio no nosso banco.
+ */
+async function planoDaCobranca(
+  db: ReturnType<typeof adminDb>, invoice: Stripe.Invoice, subId: string | null, campos = '*',
+): Promise<any | null> {
+  const { planId } = planoDaInvoice(invoice)
+  if (planId) {
+    const { data } = await db.from('payment_plans').select(campos).eq('id', planId).maybeSingle()
+    if (data) {
+      // Assinatura conhecida agora: grava para os próximos eventos e telas
+      if (subId && (data as any).stripe_subscription_id !== subId) {
+        await db.from('payment_plans').update({ stripe_subscription_id: subId }).eq('id', planId)
+          .then(() => null, () => null)
+      }
+      return data
+    }
+  }
+  if (!subId) return null
+  const { data } = await db.from('payment_plans').select(campos).eq('stripe_subscription_id', subId).maybeSingle()
+  return data || null
+}
+
+/**
+ * Esta invoice do Stripe já virou dinheiro no nosso registro?
+ * A chave é a própria invoice, não o id do evento: o Stripe pode emitir
+ * eventos diferentes para a mesma cobrança, e o que não pode repetir é o
+ * lançamento. Consulta o ESTADO gravado, então funciona igual num reenvio
+ * feito hoje ou daqui a um mês.
+ */
+async function cobrancaJaRegistrada(
+  db: ReturnType<typeof adminDb>, plan: any, invoice: Stripe.Invoice,
+): Promise<boolean> {
+  if (!invoice.id) return false
+  if (plan.kind === 'installment') {
+    if (!plan.invoice_id) return false
+    const { data } = await db.from('invoice_installments')
+      .select('id').eq('invoice_id', plan.invoice_id)
+      .eq('stripe_invoice', invoice.id).eq('status', 'paid').maybeSingle()
+    return !!data
+  }
+  const { data } = await db.from('invoices')
+    .select('total, paid_total').eq('stripe_invoice', invoice.id).maybeSingle()
+  return !!data && Number(data.paid_total || 0) >= Number(data.total || 0)
 }
 
 /**
@@ -740,7 +827,8 @@ async function baixarMensalidade(
   if (Number(inv.paid_total || 0) >= Number(inv.total)) return   // já quitada (baixa manual)
 
   const metodo = await metodoDoPagamento(stripe, invoice)
-  await lancarRecebimento(db, inv.id, plan.client_id, valor, metodo, intentDaInvoice(invoice), invoice.id as string)
+  const intent = intentDaInvoice(await comPagamentos(stripe, invoice))
+  await lancarRecebimento(db, inv.id, plan.client_id, valor, metodo, intent, invoice.id as string)
 
   // O gatilho do banco fecha paid_total e a situação. Se não houver gatilho,
   // a fatura ficaria 'sent' com saldo — conferimos e corrigimos.
