@@ -5,19 +5,26 @@
 //   checkout.session.async_payment_succeeded / _failed → fatura ou entrada de
 //                              parcelamento paga por ACH (o débito em conta leva
 //                              dias; o 'completed' chega antes do dinheiro)
+//   invoice.finalized          → PRIMEIRO EMITE, DEPOIS COBRA: mensalidade vira
+//                                fatura em aberto antes do débito; parcela
+//                                recebe a invoice do Stripe no cronograma
 //   invoice.paid               → parcela: baixa na fatura de origem
-//                                mensalidade: emite a fatura do mês, quitada
+//                                mensalidade: baixa na fatura do mês (cria se
+//                                o finalized não tiver chegado)
+//   invoice.payment_failed     → fatura fica em aberto com o motivo (NSF etc.);
+//                                parcela marcada 'failed'; alerta à equipe
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
-//   customer.subscription.deleted → encerra plano
+//   customer.subscription.paused  → Stripe pausou a cobrança: plano pausado + alerta
+//   customer.subscription.deleted → encerra plano (+ alerta se não foi combinado)
 
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
-import { assinaturaDaInvoice, intentDaInvoice, dataDaCompetencia } from '@/lib/stripe-invoice'
+import { assinaturaDaInvoice, intentDaInvoice, dataDaCompetencia, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
 
@@ -143,6 +150,32 @@ export async function POST(req: NextRequest) {
     }
 
     // ============ PARCELA / MENSALIDADE PAGA ============
+    // ============ FATURA EMITIDA (antes do débito) ============
+    if (event.type === 'invoice.finalized') {
+      const invoice = event.data.object as Stripe.Invoice
+      const subId = assinaturaDaInvoice(invoice)
+      if (!subId) return NextResponse.json({ received: true, ignorado: 'invoice sem assinatura' })
+      const { data: plan } = await db.from('payment_plans')
+        .select('*').eq('stripe_subscription_id', subId).maybeSingle()
+      if (!plan) return NextResponse.json({ received: true })
+      if ((invoice.amount_due ?? 0) <= 0) return NextResponse.json({ received: true })   // trial de $0
+
+      if (plan.kind === 'installment') {
+        if (plan.invoice_id) {
+          const seq = (plan.paid_installments || 0) + 1
+          await db.from('invoice_installments').update({ stripe_invoice: invoice.id })
+            .eq('invoice_id', plan.invoice_id).eq('seq', seq).in('status', ['scheduled', 'failed'])
+        }
+      } else {
+        const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
+        if (inv?.recemCriada) {
+          await notifyClient(db, plan.client_id,
+            `🧾 A fatura ${inv.number} (${inv.mesRef}) está disponível no portal. O débito automático acontece em ${vencimentoDaInvoice(invoice).slice(5, 7)}/${vencimentoDaInvoice(invoice).slice(8, 10)}.`)
+        }
+      }
+      return NextResponse.json({ received: true })
+    }
+
     if (event.type === 'invoice.paid') {
       const invoice = event.data.object as Stripe.Invoice
       const subId = assinaturaDaInvoice(invoice)
@@ -153,30 +186,36 @@ export async function POST(req: NextRequest) {
       if (!plan) return NextResponse.json({ received: true })
 
       // Ignora invoices de $0 (trial do bookkeeping)
-      if ((invoice.amount_paid ?? 0) <= 0) return NextResponse.json({ received: true })
+      if ((invoice.amount_paid ?? 0) <= 0 && !pagaForaDoStripe(invoice)) return NextResponse.json({ received: true })
 
-      const paid = (plan.paid_installments || 0) + 1
+      // Baixa manual nossa (Zelle, dinheiro) marcada no Stripe como paga fora
+      // dele: o dinheiro já está registrado; aqui só não pode entrar de novo.
+      const foraDoStripe = pagaForaDoStripe(invoice)
+
       const isInstallment = plan.kind === 'installment'
+      const paid = foraDoStripe ? Number(plan.paid_installments || 0) : (plan.paid_installments || 0) + 1
       const finished = isInstallment && paid >= plan.installments
 
-      await db.from('payment_plans').update({
-        paid_installments: paid,
-        status: finished ? 'completed' : 'active',
-        updated_at: new Date().toISOString(),
-      }).eq('id', plan.id)
+      if (!foraDoStripe) {
+        await db.from('payment_plans').update({
+          paid_installments: paid,
+          status: finished ? 'completed' : 'active',
+          updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+      }
 
       // Regra do sócio (especificação): parcelamento é SEMPRE de uma fatura —
       // a parcela dá baixa na fatura de origem. Mensalidade (bookkeeping,
-      // payroll, sales tax) é outra coisa: cada mês vira uma fatura própria,
-      // quitada, para todo dinheiro que entra ter documento no financeiro.
+      // payroll, sales tax) é outra coisa: a fatura do mês já nasceu no
+      // finalized (ou nasce agora) e aqui recebe a baixa.
       if (isInstallment) {
-        if (plan.invoice_id) await sincronizarParcela(db, stripe, plan, invoice, paid)
-        else await db.from('plan_alerts').insert({
+        if (plan.invoice_id && !foraDoStripe) await sincronizarParcela(db, stripe, plan, invoice, paid)
+        else if (!plan.invoice_id) await db.from('plan_alerts').insert({
           plan_id: plan.id, client_id: plan.client_id, type: 'sem_fatura',
           message: `Parcela ${paid}/${plan.installments} recebida de um parcelamento antigo, sem fatura de origem — registre o recebimento à mão no financeiro.`,
         }).then(() => null, () => null)
-      } else {
-        await gerarFaturaDaMensalidade(db, stripe, plan, invoice)
+      } else if (!foraDoStripe) {
+        await baixarMensalidade(db, stripe, plan, invoice)
       }
 
       if (finished) {
@@ -208,10 +247,35 @@ export async function POST(req: NextRequest) {
 
       const clientName = (plan.clients as any)?.name || plan.client_id
       const amount = ((invoice.amount_due ?? 0) / 100).toFixed(2)
+      const motivo = motivoDaFalha(invoice)
 
       await db.from('payment_plans').update({
         status: 'payment_failed', updated_at: new Date().toISOString(),
       }).eq('id', plan.id)
+
+      // A fatura fica EM ABERTO, com o motivo na trilha: dá para cobrar de
+      // novo (billing/recharge) ou receber por fora e tirar da linha do Stripe.
+      if (plan.kind === 'installment') {
+        if (plan.invoice_id) {
+          const seq = (plan.paid_installments || 0) + 1
+          const { data: parcela } = await db.from('invoice_installments')
+            .select('attempts').eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
+          await db.from('invoice_installments').update({
+            status: 'failed', attempts: Number(parcela?.attempts || 0) + 1,
+            last_error: motivo.slice(0, 300), stripe_invoice: invoice.id,
+          }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
+          await db.from('invoice_audit').insert({
+            invoice_id: plan.invoice_id, action: 'charge_failed',
+            next: { parcela: seq, valor: Number(amount), motivo, stripeInvoice: invoice.id },
+          }).then(() => null, () => null)
+        }
+      } else {
+        const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
+        if (inv) await db.from('invoice_audit').insert({
+          invoice_id: inv.id, action: 'charge_failed',
+          next: { valor: Number(amount), motivo, stripeInvoice: invoice.id },
+        }).then(() => null, () => null)
+      }
 
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
@@ -223,10 +287,33 @@ export async function POST(req: NextRequest) {
     }
 
     // ============ ASSINATURA ENCERRADA NO STRIPE ============
+    // ============ ASSINATURA PAUSADA PELO STRIPE ============
+    // O Stripe pausa sozinho quando as tentativas de cobrança se esgotam
+    // (Manage failed payments). Sem tratar, o plano continuava 'active' aqui
+    // enquanto o débito tinha parado lá — ninguém percebia até o cliente
+    // reclamar. A volta é automática: o próximo invoice.paid põe em 'active'.
+    if (event.type === 'customer.subscription.paused') {
+      const sub = event.data.object as Stripe.Subscription
+      const { data: plan } = await db.from('payment_plans')
+        .select('id, status, kind, description, client_id, clients(name)')
+        .eq('stripe_subscription_id', sub.id).maybeSingle()
+      if (plan && !['completed', 'cancelled', 'paused'].includes(plan.status)) {
+        await db.from('payment_plans').update({
+          status: 'paused', updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+        const nome = (plan.clients as any)?.name || plan.client_id
+        await db.from('plan_alerts').insert({
+          plan_id: plan.id, client_id: plan.client_id, type: 'paused_by_stripe',
+          message: `⏸️ O Stripe pausou a cobrança de ${nome} (${plan.description || plan.kind}) — as tentativas de débito se esgotaram. Nada será cobrado até resolver: fale com o cliente e cobre pela fatura em aberto.`,
+        }).then(() => null, () => null)
+      }
+      return NextResponse.json({ received: true })
+    }
+
     if (event.type === 'customer.subscription.deleted') {
       const sub = event.data.object as Stripe.Subscription
       const { data: plan } = await db.from('payment_plans')
-        .select('id, status, kind, installments, paid_installments, client_id')
+        .select('id, status, kind, description, installments, paid_installments, client_id, clients(name)')
         .eq('stripe_subscription_id', sub.id).maybeSingle()
       if (plan && !['completed','cancelled'].includes(plan.status)) {
         const done = plan.kind === 'installment' && plan.paid_installments >= plan.installments
@@ -234,6 +321,16 @@ export async function POST(req: NextRequest) {
           status: done ? 'completed' : 'cancelled',
           updated_at: new Date().toISOString(),
         }).eq('id', plan.id)
+        // Cancelamento vindo do Stripe (fim das tentativas, ação manual no
+        // painel) não passou pela equipe: sem aviso, um contrato de cliente
+        // sumia em silêncio.
+        if (!done) {
+          const nome = (plan.clients as any)?.name || plan.client_id
+          await db.from('plan_alerts').insert({
+            plan_id: plan.id, client_id: plan.client_id, type: 'cancelled_by_stripe',
+            message: `⚠️ A assinatura de ${nome} (${plan.description || plan.kind}) foi ENCERRADA no Stripe e o contrato ficou cancelado aqui. Se não foi combinado, refaça o contrato com o cliente.`,
+          }).then(() => null, () => null)
+        }
       }
       return NextResponse.json({ received: true })
     }
@@ -278,7 +375,7 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
   if (!invoiceId) return
 
   const { data: inv } = await db.from('invoices')
-    .select('id, client_id, number, total, paid_total').eq('id', invoiceId).maybeSingle()
+    .select('id, client_id, number, total, paid_total, stripe_invoice').eq('id', invoiceId).maybeSingle()
   if (!inv) return
 
   // ACH: o 'completed' chega com o débito ainda em processamento. O dinheiro
@@ -323,8 +420,21 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
     next: { valor: Number(session.amount_total || 0) / 100, session: session.id, forma, klarna: viaKlarna },
   }).then(() => null, () => null)
 
+  // Fatura de mensalidade paga pelo portal: a invoice da assinatura no Stripe
+  // ainda está em aberto e voltaria a cobrar — sai da linha de cobrança.
+  if ((inv as any).stripe_invoice) await tirarDaLinhaDeCobranca(stripe, (inv as any).stripe_invoice)
+
   await notifyClient(db, inv.client_id,
     `✅ Pagamento da fatura ${inv.number} confirmado. Obrigado! 🙏`)
+}
+
+/** Marca a invoice do Stripe como paga fora dele: para de tentar cobrar. */
+async function tirarDaLinhaDeCobranca(stripe: Stripe, stripeInvoice: string) {
+  try {
+    await stripe.invoices.pay(stripeInvoice, { paid_out_of_band: true })
+  } catch (e) {
+    console.error('paid_out_of_band:', (e as Error).message)
+  }
 }
 
 async function handleQuotePaid(db: ReturnType<typeof adminDb>, session: Stripe.Checkout.Session) {
@@ -536,61 +646,71 @@ async function sincronizarParcela(
   const metodo = await metodoDoPagamento(stripe, invoice)
 
   const intent = intentDaInvoice(invoice)
+  const { data: atual } = await db.from('invoice_installments')
+    .select('status').eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
+  if (atual?.status === 'paid') return   // baixa manual já feita (Zelle/dinheiro)
   await db.from('invoice_installments').update({
     status: 'paid',
     paid_at: new Date().toISOString(),
     stripe_intent: intent,
+    stripe_invoice: invoice.id,
   }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
 
   await lancarRecebimento(db, plan.invoice_id, plan.client_id, valor, metodo, intent, invoice.id as string)
 }
 
 /**
- * Mensalidade paga vira fatura quitada — sustentação contábil: todo dinheiro
- * que entra tem documento de origem e aparece no financeiro (aging, painel,
- * relatórios). Uma fatura por mês de competência, no valor combinado.
+ * Fatura do mês de uma mensalidade — PRIMEIRO EMITE, DEPOIS COBRA.
+ * Nasce em aberto ('sent') quando o Stripe finaliza a invoice, antes do
+ * débito; a baixa vem no invoice.paid. Se o finalized não tiver chegado
+ * (evento não assinado, endpoint antigo), o paid cria a fatura na hora.
  *
  * A numeração usa a MESMA função do banco que a tela usa (next_invoice_number),
  * que é atômica. Reimplementar aqui criaria corrida entre a tela e o webhook.
- *
- * O índice único (plan_id, competencia) impede fatura repetida quando o
- * Stripe reenvia o evento.
+ * O índice único (plan_id, competencia) e o de stripe_invoice impedem fatura
+ * repetida quando o Stripe reenvia o evento.
  */
-async function gerarFaturaDaMensalidade(
-  db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, invoice: Stripe.Invoice,
-) {
+async function garantirFaturaDaMensalidade(
+  db: ReturnType<typeof adminDb>, plan: any, invoice: Stripe.Invoice,
+): Promise<{ id: string; number: string; total: number; paid_total: number; mesRef: string; recemCriada: boolean } | null> {
   const d = dataDaCompetencia(invoice)
   const competencia = `${d.toISOString().slice(0, 7)}-01`
+  const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
 
-  const { data: ja } = await db.from('invoices')
-    .select('id').eq('plan_id', plan.id).eq('competencia', competencia).maybeSingle()
-  if (ja) return
+  const { data: porStripe } = await db.from('invoices')
+    .select('id, number, total, paid_total').eq('stripe_invoice', invoice.id).maybeSingle()
+  if (porStripe) return { ...porStripe, mesRef, recemCriada: false }
 
-  const valor = round2((invoice.amount_paid ?? 0) / 100)
-  if (valor <= 0) return
+  const { data: porMes } = await db.from('invoices')
+    .select('id, number, total, paid_total, stripe_invoice').eq('plan_id', plan.id).eq('competencia', competencia).maybeSingle()
+  if (porMes) {
+    if (!porMes.stripe_invoice) await db.from('invoices').update({ stripe_invoice: invoice.id }).eq('id', porMes.id)
+    return { ...porMes, mesRef, recemCriada: false }
+  }
+
+  const valor = round2(((invoice.amount_due || invoice.amount_paid) ?? 0) / 100)
+  if (valor <= 0) return null
 
   const { data: num, error: numErr } = await db.rpc('next_invoice_number', { p_kind: 'invoice' })
-  if (numErr || !num) { console.error('Numeração da cobrança recorrente:', numErr); return }
+  if (numErr || !num) { console.error('Numeração da mensalidade:', numErr); return null }
 
-  const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
   const descricao = `${plan.description || 'Serviço mensal'} — ${mesRef}`
-
   const { data: inv, error: invErr } = await db.from('invoices').insert({
     client_id: plan.client_id,
     doc_type: 'invoice',
     number: num,
     status: 'sent',
-    due_date: competencia,
+    due_date: vencimentoDaInvoice(invoice),
     subtotal: valor, discount: 0, total: valor,
     payment_plan: 'full',
     expected_method: null,
-    notes: `Gerada automaticamente pelo contrato recorrente.`,
+    notes: 'Gerada automaticamente pelo contrato recorrente.',
     plan_id: plan.id,
     competencia,
+    stripe_invoice: invoice.id,
     created_by: plan.created_by,
-  }).select('id, number').single()
-
-  if (invErr || !inv) { console.error('Fatura da mensalidade:', invErr); return }
+  }).select('id, number, total, paid_total').single()
+  if (invErr || !inv) { console.error('Fatura da mensalidade:', invErr); return null }
 
   const { error: itErr } = await db.from('invoice_items').insert({
     invoice_id: inv.id, service_id: null, description: descricao,
@@ -599,18 +719,7 @@ async function gerarFaturaDaMensalidade(
   if (itErr) {
     await db.from('invoices').delete().eq('id', inv.id)
     console.error('Item da mensalidade:', itErr)
-    return
-  }
-
-  const metodo = await metodoDoPagamento(stripe, invoice)
-  await lancarRecebimento(db, inv.id, plan.client_id, valor, metodo, intentDaInvoice(invoice), invoice.id as string)
-
-  // O gatilho do banco deve fechar paid_total e a situação. Se não houver
-  // gatilho, a fatura ficaria 'sent' com saldo — conferimos e corrigimos.
-  const { data: conf } = await db.from('invoices')
-    .select('paid_total, status').eq('id', inv.id).maybeSingle()
-  if (conf && (Number(conf.paid_total) < valor || conf.status !== 'paid')) {
-    await db.from('invoices').update({ paid_total: valor, status: 'paid' }).eq('id', inv.id)
+    return null
   }
 
   await db.from('invoice_audit').insert({
@@ -618,8 +727,31 @@ async function gerarFaturaDaMensalidade(
     next: { planId: plan.id, competencia, valor, stripeInvoice: invoice.id },
   }).then(() => null, () => null)
 
+  return { ...inv, mesRef, recemCriada: true }
+}
+
+/** Débito da mensalidade confirmado: baixa na fatura do mês. */
+async function baixarMensalidade(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, invoice: Stripe.Invoice,
+) {
+  const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
+  if (!inv) return
+  const valor = round2((invoice.amount_paid ?? 0) / 100)
+  if (Number(inv.paid_total || 0) >= Number(inv.total)) return   // já quitada (baixa manual)
+
+  const metodo = await metodoDoPagamento(stripe, invoice)
+  await lancarRecebimento(db, inv.id, plan.client_id, valor, metodo, intentDaInvoice(invoice), invoice.id as string)
+
+  // O gatilho do banco fecha paid_total e a situação. Se não houver gatilho,
+  // a fatura ficaria 'sent' com saldo — conferimos e corrigimos.
+  const { data: conf } = await db.from('invoices')
+    .select('paid_total, status, total').eq('id', inv.id).maybeSingle()
+  if (conf && (Number(conf.paid_total) < Number(conf.total) || conf.status !== 'paid')) {
+    await db.from('invoices').update({ paid_total: conf.total, status: 'paid' }).eq('id', inv.id)
+  }
+
   await notifyClient(db, plan.client_id,
-    `✅ Recebemos o pagamento de ${mesRef}. A fatura ${inv.number} está disponível no portal. Obrigado! 🙏`)
+    `✅ Recebemos o pagamento de ${inv.mesRef}. A fatura ${inv.number} está quitada no portal. Obrigado! 🙏`)
 }
 
 let cachedProductId: string | null = null

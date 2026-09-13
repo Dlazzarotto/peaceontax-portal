@@ -36,3 +36,22 @@ export function dataDaCompetencia(invoice: any): Date {
   const ts = invoice?.period_start || linha || invoice?.created || Math.floor(Date.now() / 1000)
   return new Date(Number(ts) * 1000)
 }
+
+/** Vencimento da cobrança: due_date do Stripe, senão o início do período. */
+export function vencimentoDaInvoice(invoice: any): string {
+  const ts = invoice?.due_date || invoice?.next_payment_attempt || null
+  const d = ts ? new Date(Number(ts) * 1000) : dataDaCompetencia(invoice)
+  return d.toISOString().slice(0, 10)
+}
+
+/** Marcada como paga fora do Stripe (baixa manual nossa): não há dinheiro novo. */
+export function pagaForaDoStripe(invoice: any): boolean {
+  return invoice?.paid_out_of_band === true
+}
+
+/** Motivo legível da falha de cobrança, para a trilha e o alerta. */
+export function motivoDaFalha(invoice: any): string {
+  const erro = invoice?.last_finalization_error?.message
+    || invoice?.payments?.data?.[0]?.payment?.payment_intent?.last_payment_error?.message
+  return erro || 'débito recusado pelo banco'
+}

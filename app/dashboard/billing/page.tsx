@@ -108,6 +108,7 @@ export default function BillingPage() {
 
   // recebimento
   const [receber, setReceber] = useState<Inv | null>(null)
+  const [cobranca, setCobranca] = useState<{ automatica: boolean; falhas: { seq: number; valor: number; motivo: string | null; tentativas: number }[]; podeCobrarDeNovo: boolean } | null>(null)
   const [rValor, setRValor] = useState('')
   const [rForma, setRForma] = useState('zelle')
   const [rRef, setRRef] = useState('')
@@ -313,10 +314,11 @@ export default function BillingPage() {
   }
 
   const abrirRecebimento = async (inv: Inv) => {
-    setReceber(inv); setRValor(String(inv.saldo)); setPagamentos([])
+    setReceber(inv); setRValor(String(inv.saldo)); setPagamentos([]); setCobranca(null)
     setEstPass(''); setEstMotivo('')
     const d = await jsonSeguro(await fetch(`/api/billing/payments?invoiceId=${inv.id}`))
     if (d?.payments) setPagamentos(d.payments)
+    if (d?.cobranca) setCobranca(d.cobranca)
   }
 
   const estornar = async (pg: any) => {
@@ -343,6 +345,20 @@ export default function BillingPage() {
     setMsg(`✓ ${d.message} A baixa entra sozinha quando o cliente pagar.`)
     setReceber(null)
     window.open(d.url, '_blank')
+  }
+
+  const cobrarDeNovo = async () => {
+    if (!receber) return
+    if (!confirm(`Pedir ao Stripe uma nova cobrança de ${receber.number}? O cliente será debitado de novo.`)) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/recharge', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ invoiceId: receber.id }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setReceber(null); load()
   }
 
   const salvarRecebimento = async () => {
@@ -940,9 +956,24 @@ export default function BillingPage() {
               style={{ ...inp, width: '100%', marginBottom: 10, cursor: 'pointer' }}>
               {FORMAS.map(([k, r]) => <option key={k} value={k}>{r}</option>)}
             </select>
-            <p style={{ fontSize: 12, color: '#6A7A9A', margin: '0 0 10px' }}>
-              Pode receber em partes: o que faltar continua em aberto na fatura.
-            </p>
+            {cobranca?.automatica ? (
+              <div style={{ background: '#FFF7E6', border: '1px solid #E0A860', borderRadius: 10, padding: '10px 13px', marginBottom: 10, fontSize: 12.5, color: '#5A3A00', lineHeight: 1.5 }}>
+                <b>Cobrança automática pelo Stripe.</b>{' '}
+                {cobranca.falhas.length > 0
+                  ? <>Débito da parcela {cobranca.falhas[0].seq} falhou ({cobranca.falhas[0].motivo || 'recusado'}, {cobranca.falhas[0].tentativas} tentativa(s)). Receba por fora o valor exato da parcela ({money(cobranca.falhas[0].valor)}) ou o saldo inteiro — a fatura sai da linha de cobrança.</>
+                  : <>Recebimento manual só do saldo inteiro: assim a fatura sai da linha de cobrança e o débito não acontece.</>}
+                {cobranca.podeCobrarDeNovo && perms?.receber && (
+                  <button onClick={cobrarDeNovo} disabled={busy}
+                    style={{ display: 'block', marginTop: 8, background: '#fff', color: '#7A4A10', border: '1.5px solid #E0A860', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                    🔁 Cobrar novamente pelo Stripe
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: '#6A7A9A', margin: '0 0 10px' }}>
+                Pode receber em partes: o que faltar continua em aberto na fatura.
+              </p>
+            )}
 
             <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>Referência (Conf#, nº do cheque)</label>
             <input value={rRef} onChange={e => setRRef(e.target.value)}
