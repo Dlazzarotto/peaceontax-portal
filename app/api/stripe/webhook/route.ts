@@ -188,6 +188,17 @@ export async function POST(req: NextRequest) {
       // Ignora invoices de $0 (trial do bookkeeping)
       if ((invoice.amount_paid ?? 0) <= 0 && !pagaForaDoStripe(invoice)) return NextResponse.json({ received: true })
 
+      // Idempotência pelo ESTADO, não pelo evento: esta cobrança já entrou?
+      // O Stripe reenvia eventos, e a equipe reenvia à mão para recuperar
+      // cobrança perdida. Sem esta trava, cada reenvio somava +1 em
+      // paid_installments — no parcelamento isso dá baixa numa parcela que
+      // ninguém pagou e pode concluir o plano antes da hora.
+      // Vale também para a baixa manual (Zelle/dinheiro): a fatura já quitada
+      // barra o evento mesmo que o sinal paid_out_of_band não venha.
+      if (await cobrancaJaRegistrada(db, plan, invoice)) {
+        return NextResponse.json({ received: true, ignorado: 'cobrança já registrada' })
+      }
+
       // Baixa manual nossa (Zelle, dinheiro) marcada no Stripe como paga fora
       // dele: o dinheiro já está registrado; aqui só não pode entrar de novo.
       const foraDoStripe = pagaForaDoStripe(invoice)
@@ -657,6 +668,29 @@ async function sincronizarParcela(
   }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
 
   await lancarRecebimento(db, plan.invoice_id, plan.client_id, valor, metodo, intent, invoice.id as string)
+}
+
+/**
+ * Esta invoice do Stripe já virou dinheiro no nosso registro?
+ * A chave é a própria invoice, não o id do evento: o Stripe pode emitir
+ * eventos diferentes para a mesma cobrança, e o que não pode repetir é o
+ * lançamento. Consulta o ESTADO gravado, então funciona igual num reenvio
+ * feito hoje ou daqui a um mês.
+ */
+async function cobrancaJaRegistrada(
+  db: ReturnType<typeof adminDb>, plan: any, invoice: Stripe.Invoice,
+): Promise<boolean> {
+  if (!invoice.id) return false
+  if (plan.kind === 'installment') {
+    if (!plan.invoice_id) return false
+    const { data } = await db.from('invoice_installments')
+      .select('id').eq('invoice_id', plan.invoice_id)
+      .eq('stripe_invoice', invoice.id).eq('status', 'paid').maybeSingle()
+    return !!data
+  }
+  const { data } = await db.from('invoices')
+    .select('total, paid_total').eq('stripe_invoice', invoice.id).maybeSingle()
+  return !!data && Number(data.paid_total || 0) >= Number(data.total || 0)
 }
 
 /**
