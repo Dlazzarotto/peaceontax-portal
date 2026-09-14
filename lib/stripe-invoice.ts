@@ -70,6 +70,23 @@ export function dataDaCompetencia(invoice: any): Date {
   return new Date(Number(ts) * 1000)
 }
 
+/**
+ * Data de emissão: quando o Stripe FINALIZOU a cobrança, não quando o nosso
+ * webhook processou. Sem isso, uma fatura recuperada por reenvio de evento
+ * nasce com a data de hoje — a de 05/09 saiu "emitida em 14/09, vencida em
+ * 05/09" — e entra no relatório de faturamento no mês errado.
+ */
+export function emissaoDaInvoice(invoice: any): string {
+  const ts = invoice?.status_transitions?.finalized_at
+    || invoice?.effective_at
+    || invoice?.created
+    || Math.floor(Date.now() / 1000)
+  // Data civil de Nova York: o fuso não pode empurrar a emissão para o dia seguinte
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(Number(ts) * 1000))
+}
+
 /** Vencimento da cobrança: due_date do Stripe, senão o início do período. */
 export function vencimentoDaInvoice(invoice: any): string {
   const ts = invoice?.due_date || invoice?.next_payment_attempt || null
