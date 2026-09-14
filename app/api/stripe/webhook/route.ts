@@ -16,6 +16,9 @@
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
 //   payment_intent.payment_failed → registra recusa de cobrança de fatura
+//   customer.subscription.updated → mudou de situação no Stripe: 'unpaid' (as
+//                                tentativas acabaram e ele PAROU de cobrar),
+//                                'past_due' ou volta a 'active'
 //   customer.subscription.paused  → Stripe pausou a cobrança: plano pausado + alerta
 //   customer.subscription.deleted → encerra plano (+ alerta se não foi combinado)
 
@@ -295,6 +298,60 @@ export async function POST(req: NextRequest) {
     }
 
     // ============ ASSINATURA ENCERRADA NO STRIPE ============
+    // ============ SITUAÇÃO DA ASSINATURA MUDOU NO STRIPE ============
+    // Com "Manage failed payments → mark the subscription as unpaid", é por
+    // AQUI que o Stripe avisa que desistiu de cobrar — não por
+    // subscription.paused nem por invoice.payment_failed. Sem tratar, o plano
+    // ficava 'active' no nosso banco com a cobrança parada lá.
+    //
+    // O evento é emitido a cada alteração (metadata, item, preço), então só
+    // agimos quando o STATUS mudou — previous_attributes diz isso.
+    if (event.type === 'customer.subscription.updated') {
+      const sub = event.data.object as Stripe.Subscription
+      const antes = (event.data.previous_attributes as any)?.status
+      if (!antes || antes === sub.status) return NextResponse.json({ received: true, ignorado: 'status não mudou' })
+
+      const { data: plan } = await db.from('payment_plans')
+        .select('id, status, kind, description, client_id, clients(name)')
+        .eq('stripe_subscription_id', sub.id).maybeSingle()
+      if (!plan) return NextResponse.json({ received: true })
+      if (['completed', 'cancelled'].includes(plan.status)) return NextResponse.json({ received: true })
+
+      const nome = (plan.clients as any)?.name || plan.client_id
+      const servico = plan.description || plan.kind
+
+      // 'unpaid': as tentativas acabaram e o Stripe NÃO vai cobrar de novo.
+      // Diferente de 'past_due', em que ele ainda tenta.
+      if (sub.status === 'unpaid') {
+        await db.from('payment_plans').update({
+          status: 'paused', updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+        await db.from('plan_alerts').insert({
+          plan_id: plan.id, client_id: plan.client_id, type: 'unpaid_by_stripe',
+          message: `🛑 O Stripe esgotou as tentativas de cobrança de ${nome} (${servico}) e PAROU de cobrar. A fatura fica em aberto: cobre por fora (Zelle, cheque) ou peça ao cliente outro cartão/conta. Nada será debitado até resolver.`,
+        }).then(() => null, () => null)
+      } else if (sub.status === 'past_due') {
+        await db.from('payment_plans').update({
+          status: 'payment_failed', updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+      } else if (sub.status === 'active' && ['paused', 'payment_failed'].includes(plan.status)) {
+        // Voltou a ser cobrada: o cliente regularizou ou trocou o método
+        await db.from('payment_plans').update({
+          status: 'active', updated_at: new Date().toISOString(),
+        }).eq('id', plan.id)
+        await db.from('plan_alerts').insert({
+          plan_id: plan.id, client_id: plan.client_id, type: 'resumed_by_stripe',
+          message: `✅ A cobrança de ${nome} (${servico}) voltou a funcionar no Stripe.`,
+        }).then(() => null, () => null)
+      }
+
+      await db.from('plan_audit').insert({
+        plan_id: plan.id, action: 'stripe_status_changed',
+        snapshot: { de: antes, para: sub.status, plano_antes: plan.status },
+      }).then(() => null, () => null)
+      return NextResponse.json({ received: true })
+    }
+
     // ============ ASSINATURA PAUSADA PELO STRIPE ============
     // O Stripe pausa sozinho quando as tentativas de cobrança se esgotam
     // (Manage failed payments). Sem tratar, o plano continuava 'active' aqui

@@ -204,6 +204,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **Reenviar e cobrar são botões diferentes na fatura.** *Reenviar* repete o aviso da emissão ("aqui está sua fatura, com o link de pagamento") — serve a quem perdeu o e-mail e à fatura de mensalidade, que nasce enviada pelo Stripe e nunca passou por rascunho, então nunca teve botão. *Lembrete* (que vira **Cobrar** quando a fatura está vencida) manda texto de cobrança, e sabe dizer se venceu ou está por vencer; em fatura parcelada, fala do débito automático em vez de pedir pagamento. Nenhum dos dois mexe em valor ou situação. Ambos ficam na trilha (`invoice_audit.resent` / `reminded`) com o número do aviso, e a resposta diz à equipe quantas vezes aquele cliente já foi avisado daquela fatura. Permissão de gerente ou sócio, a mesma de enviar.
 
+- **A situação da assinatura no Stripe manda no plano.** A conta está configurada com *Manage failed payments → mark the subscription as unpaid*: quando as tentativas de cobrança se esgotam, o Stripe avisa por `customer.subscription.updated` com status `unpaid` — não por `payment_failed` nem por `paused`. Nesse caso ele **parou de cobrar**, o plano vai para `paused` e a equipe recebe alerta dizendo que a fatura ficou em aberto e nada será debitado até resolver. `past_due` (ele ainda tenta) leva a `payment_failed`; a volta a `active` restaura o plano e avisa. O evento é emitido a cada alteração da assinatura, então só se age quando `previous_attributes.status` mostra que a situação mudou de fato. O endpoint assina dez eventos.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
