@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
+import { getAuth } from '@/lib/api-auth'
 
 const PORTAL_URL  = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME   = 'Peace on Tax'
@@ -38,6 +39,11 @@ function buildEmailHTML(vars: { clientEmail: string; assignee: string; inviteUrl
 
 export async function POST(req: NextRequest) {
   try {
+    // Convite sai com a marca da firma: só a equipe dispara.
+    const auth = await getAuth()
+    if (!auth) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+    if (!auth.isStaff) return NextResponse.json({ error: 'Só a equipe envia convite' }, { status: 403 })
+
     const body = await req.json()
     const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy } = body
     if (!clientEmail) return NextResponse.json({ error: 'Email is required' }, { status: 400 })
@@ -95,7 +101,14 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// A lista traz o `token` de cada convite, e o token é o que cria a conta em
+// /api/invite/[token]. Sem esta trava, qualquer sessão — inclusive a de um
+// cliente do portal — lia os convites pendentes de todo mundo.
 export async function GET() {
+  const auth = await getAuth()
+  if (!auth) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+  if (!auth.isStaff) return NextResponse.json({ error: 'Só a equipe vê os convites' }, { status: 403 })
+
   const db = supabaseAdmin()
   const { data } = await db.from('client_invitations').select('*').order('created_at', { ascending: false })
   return NextResponse.json({ invitations: data || [] })

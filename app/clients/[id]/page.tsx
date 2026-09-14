@@ -45,9 +45,53 @@ export default function ClientDetailPage() {
   }, [])
 
   const updateField = async (field: string, value: string) => {
+    const anterior = client?.[field]
     setClient((p: any) => ({...p, [field]:value}))
-    await fetch(`/api/clients/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ [field]:value }) })
+    const res = await fetch(`/api/clients/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ [field]:value }) })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      setClient((p: any) => ({...p, [field]:anterior}))   // desfaz o que a tela ja tinha mostrado
+      alert(d.error || 'Não foi possível salvar')
+    }
   }
+
+  // Edicao do cadastro. `type` fica aqui, e nao num seletor solto no cabecalho,
+  // porque trocar pessoa fisica x empresa muda categorias, pastas e formulario
+  // de assinatura -- a rota exige motivo e recusa quem ja tem trabalho lancado.
+  const [editando, setEditando] = useState(false)
+  const [form, setForm] = useState<any>(null)
+  const [motivo, setMotivo] = useState('')
+  const [salvando, setSalvando] = useState(false)
+
+  const abrirEdicao = () => {
+    setForm({
+      name: client.name || '', email: client.email || '', phone: client.phone || '',
+      sms_phone: client.sms_phone || '', type: client.type,
+      business_name: client.business_name || '', ein: client.ein || '',
+    })
+    setMotivo(''); setEditando(true)
+  }
+
+  const salvarEdicao = async () => {
+    if (!form.name.trim()) { alert('O nome não pode ficar vazio'); return }
+    setSalvando(true)
+    const res = await fetch(`/api/clients/${id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ ...form, motivo }),
+    })
+    const d = await res.json().catch(() => ({}))
+    setSalvando(false)
+    if (!res.ok) {
+      const detalhe = d.historico?.porTabela
+        ? '\n\nJá lançado: ' + Object.entries(d.historico.porTabela).map(([k,v]) => `${v} ${k}`).join(', ')
+        : ''
+      alert((d.error || 'Não foi possível salvar') + detalhe)
+      return
+    }
+    setClient(d.client); setEditando(false)
+  }
+
+  const trocandoTipo = form && client && form.type !== client.type
 
   const uploadFile = async (file: File) => {
     if (!cat) { alert('Select a category first'); return }
@@ -108,6 +152,9 @@ export default function ClientDetailPage() {
           </div>
         </div>
         <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <button onClick={abrirEdicao} style={{ padding:'7px 14px', border:'1px solid #e2e8f4', borderRadius:9, fontSize:13, fontWeight:700, color:'#2D3278', background:'#f0f4fa', cursor:'pointer' }}>
+            ✎ Editar cadastro
+          </button>
           <select value={client.stage} onChange={e => updateField('stage', e.target.value)}
             style={{ padding:'7px 14px', border:`2px solid ${STAGE_COLOR[client.stage]||'#e2e8f4'}`, borderRadius:9, fontSize:13, fontWeight:700, color:STAGE_COLOR[client.stage]||'#6a7a9a', outline:'none', background:'#fff', cursor:'pointer' }}>
             {STAGES.map(s => <option key={s}>{s}</option>)}
@@ -282,6 +329,63 @@ export default function ClientDetailPage() {
       {/* PROFILE TAB — editável pela equipe */}
       {tab==='profile' && (
         <ProfileEditor client={client} onSaved={load} />
+      )}
+
+      {/* EDIÇÃO DO CADASTRO */}
+      {editando && form && (
+        <div onClick={() => !salvando && setEditando(false)} style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.45)', display:'flex', alignItems:'center', justifyContent:'center', padding:20, zIndex:50 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:'#fff', borderRadius:14, padding:24, width:'100%', maxWidth:460, maxHeight:'90vh', overflowY:'auto' }}>
+            <h2 style={{ fontFamily:'Georgia,serif', fontSize:18, color:'#0f2340', margin:'0 0 18px' }}>Editar cadastro</h2>
+
+            <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+              {[['individual','👤 Pessoa física'],['business','🏢 Empresa']].map(([v,l]) => (
+                <button key={v} onClick={() => setForm((f: any) => ({...f, type:v}))}
+                  style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', border:form.type===v?'2px solid #2D3278':'1.5px solid #e2e8f4', background:form.type===v?'#2D3278':'#fff', color:form.type===v?'#fff':'#6a7a9a', fontFamily:'Georgia,serif', fontSize:13, fontWeight:700 }}>{l}</button>
+              ))}
+            </div>
+
+            {trocandoTipo && (
+              <div style={{ background:'#fff8e8', border:'1px solid #f0d9b0', borderLeft:'4px solid #F47B20', borderRadius:'0 8px 8px 0', padding:'10px 14px', marginBottom:16, fontSize:12, color:'#5a4a1a', lineHeight:1.6 }}>
+                Trocar pessoa física × empresa muda as categorias de lançamento e de documento,
+                as pastas e o formulário de assinatura. Só é aceito em cadastro sem trabalho
+                lançado, e o motivo fica gravado.
+              </div>
+            )}
+
+            {([['name','Nome'],['email','E-mail'],['phone','Telefone'],['sms_phone','Celular para SMS']] as const).map(([k,l]) => (
+              <div key={k} style={{ marginBottom:12 }}>
+                <label style={{ display:'block', fontSize:12, color:'#6a7a9a', fontWeight:700, marginBottom:5 }}>{l}</label>
+                <input value={form[k]} onChange={e => setForm((f: any) => ({...f, [k]:e.target.value}))}
+                  style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+              </div>
+            ))}
+
+            {form.type==='business' && ([['business_name','Razão social'],['ein','EIN']] as const).map(([k,l]) => (
+              <div key={k} style={{ marginBottom:12 }}>
+                <label style={{ display:'block', fontSize:12, color:'#6a7a9a', fontWeight:700, marginBottom:5 }}>{l}</label>
+                <input value={form[k]} onChange={e => setForm((f: any) => ({...f, [k]:e.target.value}))}
+                  style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+              </div>
+            ))}
+
+            {trocandoTipo && (
+              <div style={{ marginBottom:12 }}>
+                <label style={{ display:'block', fontSize:12, color:'#6a7a9a', fontWeight:700, marginBottom:5 }}>Motivo da troca de tipo *</label>
+                <input value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Ex.: cadastrado como empresa por engano"
+                  style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13, outline:'none', boxSizing:'border-box' }} />
+              </div>
+            )}
+
+            <div style={{ display:'flex', gap:8, marginTop:18 }}>
+              <button onClick={() => setEditando(false)} disabled={salvando}
+                style={{ flex:1, padding:'11px', border:'1px solid #e2e8f4', borderRadius:10, background:'#fff', color:'#6a7a9a', fontSize:14, cursor:'pointer', fontWeight:700 }}>Cancelar</button>
+              <button onClick={salvarEdicao} disabled={salvando || (trocandoTipo && motivo.trim().length < 3)}
+                style={{ flex:1, padding:'11px', border:'none', borderRadius:10, background:(salvando || (trocandoTipo && motivo.trim().length < 3))?'#e2e8f4':'linear-gradient(135deg,#2D3278,#1a1f5e)', color:(salvando || (trocandoTipo && motivo.trim().length < 3))?'#9aaab0':'#fff', fontSize:14, cursor:salvando?'not-allowed':'pointer', fontFamily:'Georgia,serif', fontWeight:700 }}>
+                {salvando ? 'Salvando…' : 'Salvar'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

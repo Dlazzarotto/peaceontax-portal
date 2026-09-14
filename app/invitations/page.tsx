@@ -7,6 +7,7 @@ const STATUS_STYLE: Record<string, { bg: string; color: string }> = {
   opened:     { bg: '#fff4e8', color: '#c06010' },
   expired:    { bg: '#fdf0f0', color: '#b02020' },
   pending:    { bg: '#f0f4fa', color: '#6a7a9a' },
+  cancelled:  { bg: '#f4f4f6', color: '#8a8a9a' },
 }
 
 interface InviteRow { email: string; note?: string; valid: boolean; error?: string }
@@ -21,6 +22,8 @@ export default function InvitationsPage() {
   const [result,    setResult]    = useState<{ success: boolean; message: string; inviteUrl?: string } | null>(null)
   const [resending, setResending] = useState<string | null>(null)
   const [copied,    setCopied]    = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState<string | null>(null)
+  const [verCancelados, setVerCancelados] = useState(false)
   // Bulk
   const [csvRows,   setCsvRows]   = useState<InviteRow[]>([])
   const [bulkNote,  setBulkNote]  = useState('')
@@ -34,6 +37,9 @@ export default function InvitationsPage() {
     fetch('/api/send-invite').then(r => r.json()).then(d => { setInvites(d.invitations || []); setLoading(false) })
   }
   useEffect(() => { load() }, [])
+
+  const cancelados = invites.filter((i: any) => i.status === 'cancelled').length
+  const visiveis   = verCancelados ? invites : invites.filter((i: any) => i.status !== 'cancelled')
 
   const sendOne = async () => {
     if (!email) return
@@ -52,6 +58,20 @@ export default function InvitationsPage() {
     setResending(null)
     if (d.error) alert(d.error)
     else { alert(d.emailSent ? `Resent to ${inv.client_email}!` : 'Created. Copy the link.'); load() }
+  }
+
+  // Cancelar preserva a linha (secao 2 da especificacao): some da lista, mas
+  // o rastro de quem convidou quem fica gravado, com o motivo.
+  const cancel = async (inv: any) => {
+    const motivo = prompt(`Cancelar o convite de ${inv.client_email}?\n\nMotivo (fica gravado):`)
+    if (motivo === null) return
+    if (motivo.trim().length < 3) { alert('Diga o motivo — pelo menos 3 letras.'); return }
+    setCancelling(inv.id)
+    const res = await fetch(`/api/invitations/${inv.id}?motivo=${encodeURIComponent(motivo.trim())}`, { method:'DELETE' })
+    const d = await res.json()
+    setCancelling(null)
+    if (d.error) alert(d.error)
+    else load()
   }
 
   const copyLink = (url: string, id: string) => {
@@ -274,40 +294,54 @@ export default function InvitationsPage() {
         <div style={{ background:'#fff', borderRadius:14, padding:22, border:'1px solid #e2e8f4' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:16 }}>
             <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:0 }}>All Invitations</h2>
-            <span style={{ fontSize:12, color:'#6a7a9a' }}>{invites.length} total</span>
+            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              {cancelados > 0 && (
+                <button onClick={() => setVerCancelados(v => !v)} style={{ fontSize:11, padding:'3px 9px', borderRadius:7, border:'1px solid #e2e8f4', background:verCancelados?'#f0f4fa':'#fff', color:'#6a7a9a', cursor:'pointer', fontWeight:700 }}>
+                  {verCancelados ? 'Ocultar' : 'Ver'} {cancelados} cancelado{cancelados!==1?'s':''}
+                </button>
+              )}
+              <span style={{ fontSize:12, color:'#6a7a9a' }}>{visiveis.length} total</span>
+            </div>
           </div>
 
-          {loading ? <p style={{ color:'#6a7a9a', fontSize:13 }}>Loading…</p> : invites.length===0 ? (
+          {loading ? <p style={{ color:'#6a7a9a', fontSize:13 }}>Loading…</p> : visiveis.length===0 ? (
             <div style={{ textAlign:'center', padding:'32px 0', color:'#9aaab0' }}>
               <div style={{ fontSize:40, marginBottom:10 }}>✉️</div>
               <div style={{ fontSize:13 }}>No invitations yet</div>
             </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:8, maxHeight:'calc(100vh - 200px)', overflowY:'auto' }}>
-              {invites.map((inv: any) => {
+              {visiveis.map((inv: any) => {
                 const s = STATUS_STYLE[inv.status] || STATUS_STYLE.pending
+                const encerrado = inv.status==='registered' || inv.status==='cancelled'
                 const inviteUrl = `${typeof window!=='undefined'?window.location.origin:''}/invite/${inv.token}`
                 return (
                   <div key={inv.id} style={{ padding:'12px 14px', borderRadius:10, border:'1px solid #e2e8f4', background:'#fafbff' }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:inv.status!=='registered'?8:0 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:encerrado?0:8 }}>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontSize:13, fontWeight:700, color:'#1a2a3a', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>{inv.client_email}</div>
                         {inv.client_name && inv.client_name!==inv.client_email?.split('@')[0] && <div style={{ fontSize:11, color:'#6a7a9a' }}>{inv.client_name}</div>}
                       </div>
                       <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, fontWeight:700, background:s.bg, color:s.color, flexShrink:0 }}>
-                        {inv.status==='registered'?'✓ Registered':inv.status}
+                        {inv.status==='registered'?'✓ Registered':inv.status==='cancelled'?'✕ Cancelado':inv.status}
                       </span>
                       <span style={{ fontSize:10, color:'#9aaab0', flexShrink:0 }}>
                         {inv.sent_at ? new Date(inv.sent_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—'}
                       </span>
                     </div>
-                    {inv.status!=='registered' && (
+                    {inv.status==='cancelled' && inv.cancel_reason && (
+                      <div style={{ fontSize:11, color:'#8a8a9a', fontStyle:'italic', marginTop:4 }}>Motivo: {inv.cancel_reason}</div>
+                    )}
+                    {!encerrado && (
                       <div style={{ display:'flex', gap:6 }}>
                         <button onClick={() => copyLink(inviteUrl,inv.id)} style={{ fontSize:11, padding:'4px 10px', borderRadius:7, border:'1px solid #e2e8f4', background:copied===inv.id?'#e8f5ee':'#f0f4fa', color:copied===inv.id?'#1a6b4a':'#0f2340', cursor:'pointer', fontWeight:700 }}>
                           {copied===inv.id?'✓ Copied':'🔗 Copy Link'}
                         </button>
                         <button onClick={() => resend(inv)} disabled={resending===inv.id} style={{ fontSize:11, padding:'4px 10px', borderRadius:7, border:'1px solid #e2e8f4', background:'#f0f4fa', color:'#2D3278', cursor:resending===inv.id?'not-allowed':'pointer', fontWeight:700, opacity:resending===inv.id?0.6:1 }}>
                           {resending===inv.id?'…':'↻ Resend'}
+                        </button>
+                        <button onClick={() => cancel(inv)} disabled={cancelling===inv.id} style={{ fontSize:11, padding:'4px 10px', borderRadius:7, border:'1px solid #f3d4d4', background:'#fdf0f0', color:'#b02020', cursor:cancelling===inv.id?'not-allowed':'pointer', fontWeight:700, opacity:cancelling===inv.id?0.6:1, marginLeft:'auto' }}>
+                          {cancelling===inv.id?'…':'✕ Cancelar'}
                         </button>
                       </div>
                     )}
