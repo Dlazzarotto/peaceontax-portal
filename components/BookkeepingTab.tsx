@@ -115,13 +115,13 @@ interface Tx {
 }
 interface Doc { id: string; file_name: string; category: string; tax_year: number }
 
-interface Props { clientId: string; clientName: string }
+interface Props { clientId: string; clientName: string; clientType?: string }
 
 const STATUS_LABEL: Record<string,string> = {
   pending:'⏳ Em aberto', auto:'🤖 Auto', reviewed:'✅ Revisada', excluded:'🚫 Excluída',
 }
 
-export default function BookkeepingTab({ clientId }: Props) {
+export default function BookkeepingTab({ clientId, clientType }: Props) {
   const [txs, setTxs] = useState<Tx[]>([])
   const [summary, setSummary] = useState<any>(null)
   const [statements, setStatements] = useState<Doc[]>([])
@@ -230,6 +230,9 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [pnlMonth, setPnlMonth] = useState<string>('all')
   const [ovData, setOvData] = useState<any>(null)
   const [ovBusy, setOvBusy] = useState(false)
+  // Conciliações já fechadas, para o relatório da aba Relatórios
+  const [conciliacoes, setConciliacoes] = useState<any[]>([])
+  const [conciliacaoSel, setConciliacaoSel] = useState('')
 
   const csvPreviewFile = async (f: File) => {
     setCsvBusy(true); setMsg(''); setCsvPrev(null)
@@ -868,6 +871,15 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
   useEffect(() => { loadCounter() }, [clientId, pnlYear])
 
+  // Só empresa tem conciliação; pessoa física nem carrega a lista.
+  useEffect(() => {
+    if (clientType !== 'business') { setConciliacoes([]); return }
+    fetch(`/api/bookkeeping/reconciliation-report?clientId=${clientId}`)
+      .then(r => r.json())
+      .then(d => setConciliacoes(d.conciliacoes || []))
+      .catch(() => setConciliacoes([]))
+  }, [clientId, clientType])
+
   const chargeOverage = async () => {
     setOvBusy(true); setMsg('')
     const r = await fetch('/api/bookkeeping/overage', {
@@ -917,15 +929,19 @@ export default function BookkeepingTab({ clientId }: Props) {
   })
   const sel = { padding:'7px 11px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, color:'#0f2340', outline:'none', cursor:'pointer' }
 
-  const MENU: [typeof view, string][] = [
+  // Conciliação bancária é de cliente empresa: pessoa física não tem livro
+  // de banco a fechar contra extrato.
+  const ehEmpresa = clientType === 'business'
+
+  const MENU: [typeof view, string][] = ([
     ['banking', '🏦 Banking'],
     ['register', '📖 Registro'],
     ['statements', '📄 Extratos'],
     ['payees', '🏪 Payees'],
     ['rules', '⚙️ Regras'],
-    ['reconcile', '✅ Conciliação'],
+    ...(ehEmpresa ? [['reconcile', '✅ Conciliação']] : []),
     ['reports', '📑 Relatórios'],
-  ]
+  ] as [typeof view, string][])
 
   return (
     <div>
@@ -1309,6 +1325,42 @@ export default function BookkeepingTab({ clientId }: Props) {
               style={btn('#8a4a0a')}>📋 1099</button>
           </div>
         </div>
+
+        {/* Conciliação bancária — só empresa, e só a firma chega aqui */}
+        {ehEmpresa && (
+          <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>✅ Conciliação bancária</div>
+            {conciliacoes.length === 0 ? (
+              <span style={{ fontSize:12.5, color:'#9aaab0' }}>
+                Nenhuma conciliação fechada ainda — feche uma na aba ✅ Conciliação para que ela apareça aqui.
+              </span>
+            ) : (
+              <>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8 }}>
+                  <select value={conciliacaoSel} onChange={e => setConciliacaoSel(e.target.value)} style={{ ...sel, maxWidth:'100%' }}>
+                    <option value="">— Escolha a conciliação —</option>
+                    {conciliacoes.map((c: any) => (
+                      <option key={c.id} value={c.id}>
+                        {c.account_name} · extrato de {fmtDate(c.statement_date)} · {c.cleared_count} lanç.
+                        {Number(c.difference) !== 0 ? ' · diferença!' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                  <button
+                    onClick={() => conciliacaoSel && window.open(`/api/bookkeeping/reconciliation-report?clientId=${clientId}&id=${conciliacaoSel}`, '_blank')}
+                    disabled={!conciliacaoSel} style={btn('#1a6b4a', !conciliacaoSel)}>
+                    ✅ Relatório de conciliação
+                  </button>
+                </div>
+                <div style={{ fontSize:11.5, color:'#9aaab0', marginTop:8 }}>
+                  Documento interno da firma — o cliente não tem acesso a este relatório.
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>
             🧮 Total de transações do ano — {pnlYear} (todos os bancos)
@@ -1571,7 +1623,7 @@ export default function BookkeepingTab({ clientId }: Props) {
         </div>
       )}
 
-      {view === 'reconcile' && (
+      {view === 'reconcile' && ehEmpresa && (
         <ReconcileTab clientId={clientId} accounts={accounts} />
       )}
 

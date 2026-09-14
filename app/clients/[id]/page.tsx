@@ -318,7 +318,7 @@ export default function ClientDetailPage() {
 
       {/* BOOKKEEPING TAB */}
       {tab==='bookkeeping' && (
-        <BookkeepingTab clientId={id as string} clientName={client.name} />
+        <BookkeepingTab clientId={id as string} clientName={client.name} clientType={client.type} />
       )}
 
       {/* SIGNATURES TAB */}
