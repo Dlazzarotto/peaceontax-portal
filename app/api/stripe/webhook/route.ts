@@ -24,7 +24,7 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
-import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
+import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
 
@@ -639,7 +639,9 @@ async function metodoDoPagamento(stripe: Stripe, invoice: Stripe.Invoice): Promi
     // invoice só diz o que foi OFERECIDO (aqui vem sempre card + us_bank_account).
     for (const p of (cheia?.payments?.data || [])) {
       const pi = p?.payment?.payment_intent
-      const t = (pi && typeof pi === 'object' && pi.payment_method?.type) || null
+      // O intent expandido traz payment_method como id (string) na maioria
+      // dos casos; só serve aqui quando veio como objeto.
+      const t = (pi && typeof pi === 'object' && typeof pi.payment_method === 'object' && pi.payment_method?.type) || null
       if (t) return t === 'us_bank_account' ? 'ach' : 'card'
     }
     const piId = intentDaInvoice(cheia)
@@ -685,16 +687,21 @@ async function comPagamentos(stripe: Stripe, invoice: Stripe.Invoice): Promise<a
   const invId = invoice.id
   if (!invId) return invoice
   if (cacheInvoice.has(invId)) return cacheInvoice.get(invId)
-  try {
-    const cheia = await stripe.invoices.retrieve(invId, {
-      expand: ['payments.data.payment.payment_intent.payment_method'],
-    })
-    cacheInvoice.set(invId, cheia)
-    return cheia
-  } catch (e) {
-    console.error('expandir invoice:', (e as Error).message)
-    return invoice
+  // O Stripe aceita no MÁXIMO 4 níveis de expand. Pedir
+  // payments.data.payment.payment_intent.payment_method (cinco) derruba a
+  // chamada inteira: a invoice voltava crua, o PaymentIntent sumia e todo
+  // recebimento era gravado como 'card' sem referência. Quatro níveis trazem
+  // o intent; o método sai dele, numa segunda busca só quando necessário.
+  for (const expand of [['payments.data.payment.payment_intent'], ['payments']]) {
+    try {
+      const cheia = await stripe.invoices.retrieve(invId, { expand })
+      cacheInvoice.set(invId, cheia)
+      return cheia
+    } catch (e) {
+      console.error(`expandir invoice (${expand[0]}):`, (e as Error).message)
+    }
   }
+  return invoice
 }
 
 /**
@@ -787,6 +794,7 @@ async function garantirFaturaDaMensalidade(
     doc_type: 'invoice',
     number: num,
     status: 'sent',
+    issue_date: emissaoDaInvoice(invoice),
     due_date: vencimentoDaInvoice(invoice),
     subtotal: valor, discount: 0, total: valor,
     payment_plan: 'full',
