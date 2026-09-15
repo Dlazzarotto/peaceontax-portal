@@ -880,16 +880,6 @@ export default function BookkeepingTab({ clientId, clientType }: Props) {
       .catch(() => setConciliacoes([]))
   }, [clientId, clientType])
 
-  const chargeOverage = async () => {
-    setOvBusy(true); setMsg('')
-    const r = await fetch('/api/bookkeeping/overage', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, year: pnlYear }),
-    })
-    const d = await r.json()
-    setMsg(d.ok ? `✓ ${d.message}` : `Erro: ${d.error}`)
-    setOvBusy(false); loadCounter()
-  }
 
   const TAB_FILTER: Record<string, (t: Tx) => boolean> = {
     recognized:   t => t.status === 'auto',
@@ -1374,20 +1364,29 @@ export default function BookkeepingTab({ clientId, clientType }: Props) {
                 <>
                   <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
                     lançamentos no ano
-                    <span style={{ color:'#8a9ab0', fontWeight:400 }}> · contrato: {ovData.included}/ano
-                    {ovData.overage > 0 ? ` (${ovData.overage} acima → $${Number(ovData.charge).toFixed(2)})` : ' ✓'}</span>
+                    <span style={{ color:'#8a9ab0', fontWeight:400 }}>
+                      {ovData.semVigencia
+                        ? ` · contrato de bookkeeping não vigorava em ${pnlYear} — sem excedente a apurar`
+                        : <>
+                            {ovData.desde ? ` na vigência (de ${fmtDate(ovData.desde)}; ${ovData.totalDoAno} no ano todo)` : ''}
+                            {' '}· contrato: {ovData.incluidasPorMes}/mês × {ovData.meses} {ovData.meses === 1 ? 'mês' : 'meses'} = {ovData.included}
+                            {ovData.overage > 0 ? ` (${ovData.overage} acima → $${Number(ovData.charge).toFixed(2)})` : ' ✓ dentro do contrato'}
+                          </>}
+                    </span>
                   </span>
-                  {ovData.overage > 0 && (
-                    <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
-                      💳 Cobrar excedente do ano (fatura dia 5)
-                    </button>
-                  )}
                 </>
               ) : (
                 <span style={{ fontSize:12, color:'#9aaab0' }}>transações no ano (sem contrato de bookkeeping ativo — só contagem)</span>
               )}
             </div>
           )}
+          {ovData?.incluidasPorMes ? (
+            <div style={{ fontSize:11.5, color:'#9aaab0', marginTop:8, lineHeight:1.6 }}>
+              Somente contador — nada é cobrado por aqui. O excedente se apura no fechamento
+              do ano (mês de pouco movimento compensa mês de muito) e, se houver o que cobrar,
+              a cobrança é feita pelo faturamento.
+            </div>
+          ) : null}
         </div>
       </div>
 

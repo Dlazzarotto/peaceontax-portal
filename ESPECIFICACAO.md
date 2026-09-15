@@ -121,6 +121,10 @@ Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e val
 
 O **dia da cobrança é definido no acordo** (1 a 28), não mais fixo. Um cliente pode ter vários serviços mensais, mas o sistema impede dois planos ativos do mesmo serviço — evita cobrança duplicada.
 
+**Transações excedentes: franquia mensal, apuração anual, cobrança no fechamento.** O contrato de bookkeeping promete um número de **transações por mês** (é o que o formulário pede e o que o cliente assina). A apuração, porém, é do **ano inteiro**: a franquia do período é o número mensal multiplicado pelos meses de vigência do contrato dentro do ano fiscal, e só o total do ano diz se houve excesso — **mês de pouco movimento compensa mês de muito**. Contrato que não vigorava naquele ano não gera excedente algum, ainda que existam lançamentos importados do histórico.
+
+O bookkeeping **só conta, não cobra**. A tela mostra o número do ano contra a franquia e para por aí: não existe botão de cobrar excedente, nem rotina agendada, nem lançamento automático na fatura da assinatura. Se houver excedente a cobrar, isso é decidido no fechamento do ano e cobrado pelo **módulo de faturamento**, onde o valor passa pela conferência e pela alçada de quem emite e de quem dá baixa (seção 2). O endpoint de cobrança de excedente que existia no bookkeeping foi removido por essa decisão.
+
 **Contrato** gerado pelo sistema, em português ou inglês conforme o cliente, com timbre e dez cláusulas: objeto, preço, autorização de débito, obrigações, prazo, atraso, entrega, confidencialidade, **autorização ACH** e assinaturas. Assinado via **DocuSign**, com campos preenchíveis pelo cliente (banco, tipo de conta, routing, account) e rubrica.
 
 **Dados de cartão nunca são coletados no documento** — o cliente cadastra em ambiente seguro do Stripe, e o contrato autoriza a cobrança naquele método. Mantém a firma fora do escopo PCI pesado.
