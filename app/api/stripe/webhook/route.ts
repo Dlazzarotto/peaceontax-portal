@@ -33,6 +33,7 @@ import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
+import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
@@ -266,9 +267,17 @@ export async function POST(req: NextRequest) {
 
       if (plan.kind === 'installment') {
         if (plan.invoice_id) {
-          const seq = (plan.paid_installments || 0) + 1
-          await db.from('invoice_installments').update({ stripe_invoice: invoice.id })
-            .eq('invoice_id', plan.invoice_id).eq('seq', seq).in('status', ['scheduled', 'failed'])
+          // A primeira parcela em aberto que ainda não tem invoice do Stripe.
+          // Antes o número vinha de paid_installments + 1, que erra assim que
+          // uma parcela falha ou é quitada por fora.
+          const { data: alvo } = await db.from('invoice_installments')
+            .select('seq').eq('invoice_id', plan.invoice_id)
+            .in('status', ['scheduled', 'failed']).is('stripe_invoice', null)
+            .order('seq').limit(1)
+          if (alvo?.length) {
+            await db.from('invoice_installments').update({ stripe_invoice: invoice.id })
+              .eq('invoice_id', plan.invoice_id).eq('seq', alvo[0].seq)
+          }
         }
       } else {
         const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
@@ -307,7 +316,20 @@ export async function POST(req: NextRequest) {
       const foraDoStripe = pagaForaDoStripe(await comPagamentos(stripe, invoice))
 
       const isInstallment = plan.kind === 'installment'
-      const paid = foraDoStripe ? Number(plan.paid_installments || 0) : (plan.paid_installments || 0) + 1
+
+      // Parcelamento: dá baixa PRIMEIRO na parcela certa (identificada pela
+      // invoice do Stripe, não por contador) e só então reconta o total. Antes
+      // o número era incrementado antes de saber em qual parcela se mexia.
+      let paid = Number(plan.paid_installments || 0)
+      if (isInstallment && plan.invoice_id && !foraDoStripe) {
+        const parcela = await parcelaDaInvoice(db, plan, invoice)
+        if (parcela && parcela.status !== 'paid') {
+          await sincronizarParcela(db, stripe, plan, invoice, parcela.seq)
+        }
+        paid = await recontarParcelas(db, plan)
+      } else if (!foraDoStripe && !isInstallment) {
+        paid = paid + 1
+      }
       const finished = isInstallment && paid >= plan.installments
 
       if (!foraDoStripe) {
@@ -323,8 +345,7 @@ export async function POST(req: NextRequest) {
       // payroll, sales tax) é outra coisa: a fatura do mês já nasceu no
       // finalized (ou nasce agora) e aqui recebe a baixa.
       if (isInstallment) {
-        if (plan.invoice_id && !foraDoStripe) await sincronizarParcela(db, stripe, plan, invoice, paid)
-        else if (!plan.invoice_id) await db.from('plan_alerts').insert({
+        if (!plan.invoice_id) await db.from('plan_alerts').insert({
           plan_id: plan.id, client_id: plan.client_id, type: 'sem_fatura',
           message: `Parcela ${paid}/${plan.installments} recebida de um parcelamento antigo, sem fatura de origem — registre o recebimento à mão no financeiro.`,
         }).then(() => null, () => null)
@@ -366,21 +387,28 @@ export async function POST(req: NextRequest) {
         status: 'payment_failed', updated_at: new Date().toISOString(),
       }).eq('id', plan.id)
 
+      let parcelaQueFalhou: number | null = null
+
       // A fatura fica EM ABERTO, com o motivo na trilha: dá para cobrar de
       // novo (billing/recharge) ou receber por fora e tirar da linha do Stripe.
       if (plan.kind === 'installment') {
         if (plan.invoice_id) {
-          const seq = (plan.paid_installments || 0) + 1
-          const { data: parcela } = await db.from('invoice_installments')
-            .select('attempts').eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
-          await db.from('invoice_installments').update({
-            status: 'failed', attempts: Number(parcela?.attempts || 0) + 1,
-            last_error: motivo.slice(0, 300), stripe_invoice: invoice.id,
-          }).eq('invoice_id', plan.invoice_id).eq('seq', seq)
-          await db.from('invoice_audit').insert({
-            invoice_id: plan.invoice_id, action: 'charge_failed',
-            next: { parcela: seq, valor: Number(amount), motivo, stripeInvoice: invoice.id },
-          }).then(() => null, () => null)
+          // Qual parcela falhou vem da invoice do Stripe, não de um contador:
+          // se a 2ª falhou e a 3ª passou, o contador marcaria a errada.
+          const alvo = await parcelaDaInvoice(db, plan, invoice)
+          if (alvo) {
+            const { data: parcela } = await db.from('invoice_installments')
+              .select('attempts').eq('invoice_id', plan.invoice_id).eq('seq', alvo.seq).maybeSingle()
+            await db.from('invoice_installments').update({
+              status: 'failed', attempts: Number(parcela?.attempts || 0) + 1,
+              last_error: motivo.slice(0, 300), stripe_invoice: invoice.id,
+            }).eq('invoice_id', plan.invoice_id).eq('seq', alvo.seq)
+            await db.from('invoice_audit').insert({
+              invoice_id: plan.invoice_id, action: 'charge_failed',
+              next: { parcela: alvo.seq, valor: Number(amount), motivo, stripeInvoice: invoice.id },
+            }).then(() => null, () => null)
+            parcelaQueFalhou = alvo.seq
+          }
         }
       } else {
         const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
@@ -392,7 +420,7 @@ export async function POST(req: NextRequest) {
 
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
-        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${(plan.paid_installments||0)+1}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
+        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${parcelaQueFalhou ?? '?'}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
       })
 
       await notifyClient(db, plan.client_id, '⚠️ Não conseguimos processar seu pagamento. Uma nova tentativa será feita automaticamente. Se preferir, entre em contato: (833) 732-2327.')

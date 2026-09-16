@@ -26,6 +26,8 @@ npm install --legacy-peer-deps   # obrigatório o --legacy-peer-deps (mesmo flag
 npm run typecheck                # tsc --noEmit — tem de passar limpo
 npm run lint                     # ESLint (next/core-web-vitals) — sem erros; avisos são dívida conhecida
 npm run auditoria                # 30+ invariantes do sistema; sai com 1 se algum falhar
+npm run testes                   # testes de lógica pura (testes/*.mts), sem framework
+                                 # só o que decide dinheiro e não dá para conferir lendo
 npm run migrar -- sql/x.sql      # aplica migração no Supabase e anota em schema_migrations
                                  # precisa de SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN
                                  # (API, por HTTPS) SÓ no ambiente. --pendentes lista o que falta.
@@ -114,6 +116,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
   sempre de uma fatura, não se cancela em andamento — só quitação antecipada
   ou parcela que falhou recebida por fora (`billing/payments`).
+- **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
+  `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
+  no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
+  `paid_installments` é **recontado** do cronograma, não incrementado.
+  `paid_installments + 1` errava sempre que o Stripe entregava evento fora de
+  ordem, uma parcela falhava e a seguinte passava, ou houve baixa manual.
 - **Encerrar parcelamento é `lib/parcelamento.ts`, em todos os caminhos.**
   Quitação, fatura quitada pelo Stripe e cancelamento da fatura chamam a
   mesma rotina. Ela também FECHA as invoices de parcela já abertas no
@@ -215,8 +223,8 @@ middleware.ts        controle de acesso por rota
 
 - Leia `ESPECIFICACAO.md` antes de mudar regra de negócio. Se a mudança pedida
   contraria um princípio da seção 2, diga isso antes de implementar.
-- Ao concluir: `npm run typecheck && npm run lint && npm run auditoria`, e só
-  então commit. Mensagem de commit em português, no imperativo curto, como o
+- Ao concluir: `npm run typecheck && npm run lint && npm run auditoria &&
+  npm run testes`, e só então commit. Mensagem de commit em português, no imperativo curto, como o
   histórico já faz.
 - Migração de banco: arquivo SQL novo em `sql/`, idempotente, com bloco de
   conferência no fim (padrão de `sql/whatsapp-atendimento-v1.sql`). Ela **não**

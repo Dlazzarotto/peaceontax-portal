@@ -9,6 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "auditoria": "node auditoria.mjs",
+    "testes": "node testes/rodar.mjs",
     "migrar": "node scripts/migrar.mjs"
   },
   "dependencies": {
