@@ -179,6 +179,43 @@ export async function getRecipients(envelopeId: string): Promise<{
 }
 
 /**
+ * Promove um assinante REMOTO (que recebeu o convite por e-mail do DocuSign)
+ * a assinante EMBUTIDO, para que ele possa assinar dentro do portal.
+ *
+ * Por que existe: `createRecipientView` só funciona para quem foi criado com
+ * `clientUserId`. Os contratos do fluxo antigo não têm, e por isso não tinham
+ * botão no portal — o cliente ficava dependendo de achar o e-mail, e a fatura
+ * parcelada ficava travada até ele assinar.
+ *
+ * Efeito colateral que é preciso conhecer: ao virar embutido, o LINK DO E-MAIL
+ * que ele recebeu deixa de valer. Por isso só se promove quando o cliente pede
+ * (clicou em Assinar no portal) e nunca depois de ele ter assinado.
+ * `resend_envelope=false`: não dispara e-mail novo.
+ */
+export async function tornarAssinanteEmbutido(envelopeId: string, params: {
+  recipientId: string; email: string; name: string; clientUserId: string
+}): Promise<void> {
+  const token = await getAccessToken()
+  const res = await fetch(
+    `${BASE_PATH}/v2.1/accounts/${ACCOUNT_ID}/envelopes/${envelopeId}/recipients?resend_envelope=false`,
+    {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        signers: [{
+          // e-mail e nome têm de ser os MESMOS já cadastrados, senão o DocuSign
+          // trata como outro destinatário
+          recipientId: params.recipientId,
+          email: params.email,
+          name: params.name,
+          clientUserId: params.clientUserId,
+        }],
+      }),
+    })
+  if (!res.ok) throw new Error(`Tornar embutido falhou: ${await res.text()}`)
+}
+
+/**
  * URL da tela de assinatura embutida para um assinante com clientUserId.
  * Vale poucos minutos: gerar na hora do clique, nunca guardar.
  * returnUrl recebe ?event=signing_complete|cancel|decline… — o status real

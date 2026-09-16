@@ -94,7 +94,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   hora do clique (o link expira em 24h). Contrato assinado no portal libera o
   débito (`contract_signed_by_client` em `plan_audit`, conferido pela API do
   DocuSign). O webhook do Stripe lê a forma real no PaymentIntent e trata o
-  ACH assíncrono.
+  ACH assíncrono. Contrato do fluxo antigo (convite por e-mail, sem
+  `clientUserId`) também assina no portal: a rota promove o destinatário a
+  embutido no clique — o que invalida o link do e-mail dele, então só se faz
+  a pedido do cliente e nunca depois de assinado.
 - **Plano mensal ≠ parcelamento. Primeiro emite, depois cobra.** A fatura
   do mês nasce em aberto no `invoice.finalized` do Stripe e guarda
   `stripe_invoice`; o `invoice.paid` só dá baixa.

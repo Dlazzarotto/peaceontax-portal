@@ -126,6 +126,7 @@ checar('Fatura: o portal usa a lista unica de formas', 'app/api/portal/billing/c
 checar('Forma inativa na conta nao derruba a sessao', 'lib/stripe-formas.ts', 'sessaoComFormasDisponiveis', 'sem ACH ativo ninguem pagava nem cadastrava debito')
 checar('Plano: a sessao passa pela lista de formas disponiveis', 'lib/plan-checkout.ts', 'sessaoComFormasDisponiveis', 'cadastro de debito morreria inteiro por uma forma desativada')
 checar('Plaid: idioma do cliente nao bloqueia o banco', 'app/api/plaid/link-token/route.ts', 'idiomaDoPlaid', 'cliente que nao fala ingles nao conectava a conta')
+checar('Contrato do fluxo antigo tambem assina no portal', 'app/api/portal/contract-sign/route.ts', 'tornarAssinanteEmbutido', 'cliente ficava sem botao e a fatura parcelada travada')
 checar('Plano: so plano liberado pela equipe (awaiting_*)', 'app/api/portal/plan-checkout/route.ts', "['awaiting_entry', 'awaiting_setup']", 'rascunho apareceria para o cliente')
 checar('Sessao dos planos numa lib so', 'lib/plan-checkout.ts', 'criarSessaoDoPlano', 'tres rotas montando a sessao de tres jeitos')
 checar('Webhook: forma real vem do PaymentIntent', 'app/api/stripe/webhook/route.ts', 'formaDoPagamento', 'cartao entraria como Klarna quando as duas sao oferecidas')
