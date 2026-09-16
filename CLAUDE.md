@@ -111,6 +111,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
   sempre de uma fatura, não se cancela em andamento — só quitação antecipada
   ou parcela que falhou recebida por fora (`billing/payments`).
+- **Encerrar parcelamento é `lib/parcelamento.ts`, em todos os caminhos.**
+  Quitação, fatura quitada pelo Stripe e cancelamento da fatura chamam a
+  mesma rotina. Ela também FECHA as invoices de parcela já abertas no
+  Stripe: cancelar a assinatura não fecha invoice finalizada, e a parcela
+  em NSF voltava a cobrar depois da fatura quitada.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

@@ -339,13 +339,20 @@ export default function BillingPage() {
     setReceber(null); load()
   }
 
-  const cobrarCartao = async (inv: Inv, forma: 'card' | 'klarna' | 'us_bank_account' = 'card') => {
+  const cobrarCartao = async (inv: Inv, forma: 'card' | 'klarna' | 'us_bank_account' = 'card',
+                             confirmarQuitacao = false) => {
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/stripe-checkout', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ invoiceId: inv.id, forma }),
+      body: JSON.stringify({ invoiceId: inv.id, forma, confirmarQuitacao }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
+    // Fatura parcelada: cobrar aqui quita tudo de uma vez e encerra o
+    // parcelamento. O servidor pede confirmação antes de deixar seguir.
+    if (d?.precisaConfirmar) {
+      if (confirm(`${d.error}\n\nSeguir e encerrar o parcelamento?`)) return cobrarCartao(inv, forma, true)
+      return
+    }
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message} A baixa entra sozinha quando o cliente pagar.`)
     setReceber(null)

@@ -19,6 +19,8 @@ import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 import { fmtUS, money } from '@/lib/format'
+import Stripe from 'stripe'
+import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 
 export const dynamic = 'force-dynamic'
 
@@ -259,9 +261,35 @@ export async function PATCH(req: NextRequest) {
     if (Number(inv.paid_total) > 0) {
       return NextResponse.json({ error: 'Já há pagamento registrado. Estorne o pagamento antes de cancelar.' }, { status: 409 })
     }
-    await db.from('invoices').update({ status: 'void', updated_at: new Date().toISOString() }).eq('id', id)
-    await db.from('invoice_audit').insert({ invoice_id: id, action: 'canceled', performed_by: auth.userId, staff_level: perms.nivel, previous: { status: inv.status } }).then(() => null, () => null)
-    return NextResponse.json({ ok: true, message: `${inv.number} cancelado (permanece no histórico).` })
+
+    // A fatura pode ter parcelamento com débito automático vivo no Stripe.
+    // Cancelar só o documento deixava o débito correndo: o cliente seguia
+    // sendo cobrado mês a mês por uma fatura anulada, e não havia saída pela
+    // tela — receber é recusado em fatura cancelada, e parcelamento em
+    // andamento não se cancela. Aqui os dois terminam juntos.
+    const plano = await parcelamentoVivo(db, id)
+    let notaPlano = ''
+    if (plano) {
+      if (Number(plano.paid_installments || 0) > 0) {
+        return NextResponse.json({
+          error: `Este parcelamento já teve ${plano.paid_installments} parcela(s) paga(s). Fatura com dinheiro recebido não se cancela: quite o saldo restante (quitação antecipada) ou estorne os pagamentos antes.`,
+        }, { status: 409 })
+      }
+      const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion })
+      const r = await encerrarParcelamento(db, stripe, plano, id,
+        { motivo: 'fatura_cancelada', performedBy: auth.userId })
+      notaPlano = r.nota
+    }
+
+    await db.from('invoices').update({
+      status: 'void', payment_plan: 'full', updated_at: new Date().toISOString(),
+    }).eq('id', id)
+    await db.from('invoice_audit').insert({
+      invoice_id: id, action: 'canceled', performed_by: auth.userId, staff_level: perms.nivel,
+      previous: { status: inv.status },
+      next: plano ? { parcelamento_encerrado: plano.id } : null,
+    }).then(() => null, () => null)
+    return NextResponse.json({ ok: true, message: `${inv.number} cancelado (permanece no histórico)${notaPlano}.` })
   }
 
   if (action === 'edit') {

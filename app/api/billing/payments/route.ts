@@ -24,6 +24,7 @@ import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
+import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 
 export const dynamic = 'force-dynamic'
 
@@ -155,12 +156,10 @@ export async function POST(req: NextRequest) {
   const iguais = (a: number, c: number) => Math.abs(a - c) < 0.005
   const stripeMensal: string | null = (inv as any).stripe_invoice || null
 
-  // Parcelamento em andamento nesta fatura?
-  const { data: plano } = await db.from('payment_plans')
-    .select('id, status, installments, paid_installments, stripe_schedule_id, stripe_subscription_id')
-    .eq('invoice_id', inv.id).eq('kind', 'installment')
-    .in('status', ['active', 'paused', 'payment_failed', 'awaiting_entry', 'awaiting_setup'])
-    .maybeSingle()
+  // Parcelamento em andamento nesta fatura? (lib/parcelamento: a mesma
+  // pergunta em todos os caminhos, e sem maybeSingle() — dois planos na
+  // mesma fatura davam erro e a fatura passava como se não tivesse nenhum)
+  const plano = await parcelamentoVivo(db, inv.id)
 
   // Parcela cujo débito falhou (a mais antiga): pode ser recebida por fora
   let parcelaFalha: any = null
@@ -207,7 +206,11 @@ export async function POST(req: NextRequest) {
   }).then(() => null, () => null)
 
   let notaQuitacao = ''
-  if (plano && quitacao) notaQuitacao = await quitarParcelamento(db, plano, inv.id, auth.userId)
+  if (plano && quitacao) {
+    const r = await encerrarParcelamento(db, stripeCli(), plano, inv.id,
+      { motivo: 'quitacao', performedBy: auth.userId })
+    notaQuitacao = r.nota
+  }
   else if (plano && parcelaPorFora) notaQuitacao = await liquidarParcelaPorFora(db, plano, parcelaFalha, auth.userId)
   else if (!plano && stripeMensal) notaQuitacao = await tirarDaLinha(stripeMensal)
     ? ' · saiu da linha de cobrança do Stripe'
@@ -264,36 +267,4 @@ async function liquidarParcelaPorFora(db: any, plano: any, parcela: any, userId:
     + (concluiu ? ' · parcelamento concluído' : '')
 }
 
-/**
- * Quitação antecipada: encerra o débito no Stripe, liquida as parcelas que
- * ainda estavam no cronograma e conclui o plano. Tudo com trilha.
- */
-async function quitarParcelamento(db: any, plano: any, invoiceId: string, userId: string): Promise<string> {
-  let stripeOk = true
-  try {
-    const stripe = stripeCli()
-    if (plano.stripe_schedule_id) await stripe.subscriptionSchedules.cancel(plano.stripe_schedule_id)
-    else if (plano.stripe_subscription_id) await stripe.subscriptions.cancel(plano.stripe_subscription_id)
-  } catch (e) {
-    stripeOk = false
-    console.error('Quitação: cancelar débito no Stripe:', (e as Error).message)
-  }
 
-  const agora = new Date().toISOString()
-  await db.from('invoice_installments')
-    .update({ status: 'paid', paid_at: agora })
-    .eq('invoice_id', invoiceId).in('status', ['scheduled', 'failed'])
-
-  await db.from('payment_plans').update({
-    status: 'completed', paid_installments: plano.installments, updated_at: agora,
-  }).eq('id', plano.id)
-
-  await db.from('plan_audit').insert({
-    plan_id: plano.id, action: 'paid_off_early', performed_by: userId,
-    snapshot: { previous_status: plano.status, stripe_cancelado: stripeOk },
-  }).then(() => null, () => null)
-
-  return stripeOk
-    ? ' · parcelamento quitado antecipadamente; débito automático encerrado'
-    : ' · parcelamento quitado, MAS o débito no Stripe não pôde ser cancelado — cancele a assinatura no painel do Stripe para não cobrar de novo'
-}

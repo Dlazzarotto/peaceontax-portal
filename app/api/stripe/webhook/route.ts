@@ -27,6 +27,7 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
+import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
@@ -488,6 +489,24 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
   // Fatura de mensalidade paga pelo portal: a invoice da assinatura no Stripe
   // ainda está em aberto e voltaria a cobrar — sai da linha de cobrança.
   if ((inv as any).stripe_invoice) await tirarDaLinhaDeCobranca(stripe, (inv as any).stripe_invoice)
+
+  // Fatura PARCELADA quitada de uma vez (cartão, Klarna ou ACH): é quitação
+  // antecipada. Sem encerrar o parcelamento, a fatura fechava e o débito
+  // continuava correndo no Stripe — cobrança em dobro, e sem saída pela tela,
+  // porque quitar de novo seria recusado por "valor acima do saldo".
+  const { data: depois } = await db.from('invoices')
+    .select('total, paid_total').eq('id', inv.id).maybeSingle()
+  const quitou = depois && Number(depois.paid_total || 0) >= Number(depois.total || 0)
+  if (quitou) {
+    const plano = await parcelamentoVivo(db, inv.id)
+    if (plano) {
+      const r = await encerrarParcelamento(db, stripe, plano, inv.id, { motivo: 'quitacao' })
+      await db.from('invoice_audit').insert({
+        invoice_id: inv.id, action: 'installment_closed_by_payment',
+        next: { planId: plano.id, stripe_ok: r.stripeOk, parcelas_fechadas: r.parcelasFechadas },
+      }).then(() => null, () => null)
+    }
+  }
 
   await notifyClient(db, inv.client_id,
     `✅ Pagamento da fatura ${inv.number} confirmado. Obrigado! 🙏`)

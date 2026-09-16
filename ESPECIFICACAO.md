@@ -206,6 +206,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **A situação da assinatura no Stripe manda no plano.** A conta está configurada com *Manage failed payments → mark the subscription as unpaid*: quando as tentativas de cobrança se esgotam, o Stripe avisa por `customer.subscription.updated` com status `unpaid` — não por `payment_failed` nem por `paused`. Nesse caso ele **parou de cobrar**, o plano vai para `paused` e a equipe recebe alerta dizendo que a fatura ficou em aberto e nada será debitado até resolver. `past_due` (ele ainda tenta) leva a `payment_failed`; a volta a `active` restaura o plano e avisa. O evento é emitido a cada alteração da assinatura, então só se age quando `previous_attributes.status` mostra que a situação mudou de fato. O endpoint assina dez eventos.
 
+- **Fatura e parcelamento terminam juntos.** Encerrar um parcelamento é sempre a mesma rotina (`lib/parcelamento.ts`), venha de onde vier: quitação antecipada pela tela, fatura quitada de uma vez pelo Stripe, ou cancelamento da fatura antes de qualquer cobrança. Ela para o débito, **fecha as invoices de parcela que ficaram abertas no Stripe** (cancelar a assinatura não fecha invoice já finalizada — uma parcela em NSF continuava lá cobrando), acerta o cronograma e conclui o plano, com trilha. Cancelar a fatura com parcelamento vivo e nenhuma parcela paga cancela os dois; com parcela paga, é recusado. Cobrar a fatura parcelada pelo link da equipe passa a pedir confirmação e é tratado como quitação antecipada — antes fechava a fatura e deixava o débito correndo.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
