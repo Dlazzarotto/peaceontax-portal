@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 
 export const dynamic = 'force-dynamic'
 
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
     </table>` : ''
 
   const barra = barraDoRelatorio({ voltarPara: '/dashboard/billing', rotuloImprimir: 'Imprimir / Salvar PDF' })
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
 <title>${inv.number} — ${FIRM.name}</title><style>
   body { font-family: Georgia, "Times New Roman", serif; font-size: 12.5px; color:#000;
          margin: 34px 44px; line-height: 1.6; }

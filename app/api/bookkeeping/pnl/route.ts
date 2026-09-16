@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio, escaparHtml } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -150,8 +150,11 @@ export async function GET(req: NextRequest) {
   const row = (label: string, val: number, indent = true, linkCat?: string) =>
     `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`
 
-  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const barra = barraDoRelatorio({
+    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    painelPara: isClient ? '/portal' : '/dashboard',
+  })
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
 <title>P&L ${period} — ${displayName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }

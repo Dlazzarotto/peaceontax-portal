@@ -8,7 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 
 export const dynamic = 'force-dynamic'
 
@@ -75,8 +75,11 @@ export async function GET(req: NextRequest) {
   const totalLiab = totalCards
   const net = totalAssets - totalLiab
 
-  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Balance Sheet ${year} — ${name}</title>
+  const barra = barraDoRelatorio({
+    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    painelPara: isClient ? '/portal' : '/dashboard',
+  })
+  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${year} — ${name}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 700px; margin: 40px auto; color: #000; padding: 0 20px; }
     .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;

@@ -143,6 +143,17 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   URL ou do banco vai em atributo escapado (`escaparHtml` de
   `lib/relatorio-barra.ts`) e o script é fixo. `JSON.stringify` dentro de
   script **não** protege: ele não escapa `</script>`.
+- **Menu da firma é `components/FirmNav.tsx`, um só.** Os quatro layouts
+  (`app/dashboard`, `app/clients`, `app/invitations`, `app/settings`) o
+  usam — item novo entra lá, uma vez. É client component de propósito: com
+  `<details>` nativo a sanfona do celular ficava ABERTA depois de escolher,
+  porque a navegação do App Router não recarrega a página.
+- **Todo impresso leva `META_RELATORIO` e `barraDoRelatorio`** (de
+  `lib/relatorio-barra.ts`). Sem o viewport o celular desenha a página a
+  ~980px e a barra sai do alcance. A barra tem Voltar (contextual), um
+  destino FIXO (Dashboard, ou Meu portal no relatório do cliente) e
+  Imprimir — o Voltar sozinho depende do histórico e de o navegador deixar
+  fechar a aba.
 - **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
   aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
 - **Número que a tela mostra tem definição num módulo puro**, não na página:
@@ -157,8 +168,8 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   editados no Windows. A
   auditoria falha se encontrar isso. Se um editor no Windows for usado, salve
   como "UTF-8" (não "UTF-8 with BOM").
-- Não versionar `.bak`. Os dois que existem (`middleware.ts.bak`,
-  `app/dashboard/layout.tsx.bak`) são lixo histórico; a auditoria os lista.
+- Não versionar `.bak` (o `.gitignore` já barra). Os dois que existiam eram
+  lixo histórico e foram removidos.
 - Rotas de API: `app/api/<módulo>/<recurso>/route.ts`, com comentário de
   cabeçalho listando os verbos e quem pode chamar.
 - Chaves e segredos só em variáveis de ambiente (ver `.env.example`); nunca no
@@ -191,8 +202,6 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Menu da firma duplicado em quatro layouts (`app/dashboard`, `app/clients`,
-  `app/invitations`, `app/settings`). Mudança de menu precisa ir nos quatro.
 - Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro;
   `staff_roles` × `team_members`. Duplicações conhecidas, resolução pendente
   de decisão do sócio.

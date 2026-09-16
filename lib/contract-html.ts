@@ -3,6 +3,7 @@
 // para que o que você confere seja exatamente o que o cliente assina.
 
 import { FREQ_LABEL, type Frequency } from '@/lib/plans'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 
 export const FIRM = {
   name: 'Peace on Tax Corp',
@@ -93,7 +94,14 @@ export function montarContratoHtml(params: {
         : 'PREVIEW — this document has NOT been sent to the client yet.'}</div>`
     : ''
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${t.title}</title><style>
+  // Na PRÉVIA vale a barra dos impressos (Voltar, Dashboard, Imprimir). No
+  // documento que vai ao DocuSign não entra botão nenhum: é o que o cliente
+  // assina.
+  const barra = previa
+    ? barraDoRelatorio({ voltarPara: '/dashboard/billing', painelPara: '/dashboard', rotuloImprimir: 'Imprimir' })
+    : null
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}<title>${t.title}</title><style>
     body { font-family: Georgia, "Times New Roman", serif; font-size: 13px; color:#000; margin: 40px 50px; line-height: 1.7; }
     h1 { font-size: 18px; text-align:center; font-weight:700; }
     h2 { font-size: 14px; margin-top: 24px; border-bottom:1px solid #000; padding-bottom:3px; }
@@ -102,12 +110,11 @@ export function montarContratoHtml(params: {
     .siglabel { font-size: 11px; color:#444; }
     .previa { background:#FFF3E6; border:2px solid #C06010; color:#8A4A08; font-weight:700;
               padding:12px 16px; margin-bottom:22px; text-align:center; font-size:13px; }
-    .imprimir { position:fixed; top:16px; right:16px; background:#2D3278; color:#fff; border:none;
-                padding:12px 18px; border-radius:8px; font-size:14px; font-weight:700; cursor:pointer; }
-    @media print { .previa, .imprimir { display:none; } body { margin: 0; } }
+    ${barra?.css || ''}
+    @media print { .previa { display:none; } body { margin: 0; } }
   </style></head><body>
     ${avisoPrevia}
-    ${previa ? '<button class="imprimir" onclick="window.print()">Imprimir</button>' : ''}
+    ${barra?.html || ''}
     <h1>${t.title}</h1>
     <div class="parties">
       <b>${FIRM.name}</b> (${t.contractor}) — ${FIRM.address} — ${FIRM.phone} — ${FIRM.email}<br>
