@@ -144,6 +144,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   idioma que atendem (`idiomaDoPlaid` em `app/api/plaid/link-token`,
   `localeStripe` em `lib/avisos.ts`); recusado, cai para inglês em vez de
   bloquear o cliente.
+- **Um plano, uma assinatura.** `checkout.session.completed` cancela a
+  assinatura duplicada quando o plano já tem outra registrada — dois
+  cadastros concluídos criavam duas assinaturas e a primeira cobrava para
+  sempre, invisível. Cobrar de novo (`billing/recharge`) leva
+  `idempotencyKey`: `invoices.pay` não é idempotente sozinho.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

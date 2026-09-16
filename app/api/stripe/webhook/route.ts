@@ -15,6 +15,9 @@
 //                                parcela marcada 'failed'; alerta à equipe
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
+//   invoice.voided             → cobrança anulada no painel: cancela a fatura
+//                                aqui (ou alerta, se já houver recebimento) e
+//                                devolve a parcela ao cronograma
 //   payment_intent.payment_failed → recusa de cobrança; desfaz o recebimento
 //                                se o dinheiro já tinha sido dado como recebido
 //   charge.refunded / charge.failed / charge.dispute.created / .closed
@@ -96,8 +99,21 @@ export async function POST(req: NextRequest) {
 
       // ---- Fase 4a: bookkeeping assinado ----
       if (meta.planKind === 'bookkeeping' && meta.planId) {
+        const nova = session.subscription as string
+        const { data: plano } = await db.from('payment_plans')
+          .select('id, client_id, description, stripe_subscription_id').eq('id', meta.planId).maybeSingle()
+
+        // UM PLANO, UMA ASSINATURA. O cliente que abria o cadastro duas vezes
+        // (dois cliques, ou voltou e clicou de novo) e concluía as duas criava
+        // DUAS assinaturas no Stripe. O plano guardava só a última e a
+        // primeira seguia cobrando todo mês, para sempre, sem registro aqui.
+        if (plano?.stripe_subscription_id && nova && plano.stripe_subscription_id !== nova) {
+          await cancelarAssinaturaDuplicada(db, stripe, plano, nova)
+          return NextResponse.json({ received: true, ignorado: 'assinatura duplicada cancelada' })
+        }
+
         await db.from('payment_plans').update({
-          stripe_subscription_id: session.subscription as string,
+          stripe_subscription_id: nova,
           status: 'active',
           updated_at: new Date().toISOString(),
         }).eq('id', meta.planId)
@@ -284,6 +300,56 @@ export async function POST(req: NextRequest) {
         if (inv?.recemCriada) {
           await notifyClient(db, plan.client_id,
             `🧾 A fatura ${inv.number} (${inv.mesRef}) está disponível no portal. O débito automático acontece em ${vencimentoDaInvoice(invoice).slice(5, 7)}/${vencimentoDaInvoice(invoice).slice(8, 10)}.`)
+        }
+      }
+      return NextResponse.json({ received: true })
+    }
+
+    // ============ FATURA CANCELADA NO PAINEL DO STRIPE ============
+    // Anular a invoice lá não mexia em nada aqui: a fatura continuava em
+    // aberto no financeiro, entrava no contas a receber e o cliente recebia
+    // lembrete de uma cobrança que não existe mais.
+    if (event.type === 'invoice.voided') {
+      const invoice = event.data.object as Stripe.Invoice
+      const { data: nossa } = await db.from('invoices')
+        .select('id, number, status, total, paid_total, plan_id')
+        .eq('stripe_invoice', invoice.id as string).maybeSingle()
+
+      // Parcela: solta a amarra para que a cobrança possa ser refeita
+      const { data: parcelas } = await db.from('invoice_installments')
+        .select('invoice_id, seq, status').eq('stripe_invoice', invoice.id as string)
+      for (const p of parcelas || []) {
+        if (p.status === 'paid') continue          // já recebida: não se mexe
+        await db.from('invoice_installments').update({
+          status: 'scheduled', stripe_invoice: null,
+          last_error: 'cobrança anulada no painel do Stripe',
+        }).eq('invoice_id', p.invoice_id).eq('seq', p.seq)
+        await db.from('invoice_audit').insert({
+          invoice_id: p.invoice_id, action: 'stripe_invoice_voided',
+          reason: `Parcela ${p.seq}: cobrança anulada no Stripe, voltou para o cronograma.`,
+          next: { parcela: p.seq, stripeInvoice: invoice.id },
+        }).then(() => null, () => null)
+      }
+
+      if (nossa) {
+        if (Number(nossa.paid_total || 0) > 0) {
+          // Dinheiro registrado e cobrança anulada: ninguém decide isso sozinho.
+          await db.from('invoice_audit').insert({
+            invoice_id: nossa.id, action: 'stripe_invoice_voided',
+            reason: `Cobrança anulada no Stripe, mas há $${Number(nossa.paid_total).toFixed(2)} recebido nesta fatura — conferir à mão.`,
+            next: { stripeInvoice: invoice.id, recebido: Number(nossa.paid_total) },
+          }).then(() => null, () => null)
+          await avisarEquipe(db, nossa.id, 'voided_com_pagamento', Number(nossa.paid_total), 'cobrança anulada no Stripe')
+        } else if (nossa.status !== 'void') {
+          await db.from('invoices').update({
+            status: 'void', updated_at: new Date().toISOString(),
+          }).eq('id', nossa.id)
+          await db.from('invoice_audit').insert({
+            invoice_id: nossa.id, action: 'stripe_invoice_voided',
+            reason: 'Cobrança anulada no painel do Stripe: a fatura foi cancelada aqui também.',
+            previous: { status: nossa.status }, next: { stripeInvoice: invoice.id },
+          }).then(() => null, () => null)
+          await avisarEquipe(db, nossa.id, 'voided', Number(nossa.total || 0), 'anulada no painel do Stripe')
         }
       }
       return NextResponse.json({ received: true })
@@ -860,6 +926,35 @@ async function metodoDoPagamento(stripe: Stripe, invoice: Stripe.Invoice): Promi
 }
 
 /** Parcela paga: baixa a linha do cronograma e lança o recebimento na fatura. */
+/**
+ * Duas assinaturas para o mesmo plano: cancela a que acabou de nascer e mantém
+ * a que já estava registrada. Não é escolha de estilo — as duas cobram, e
+ * deixar a antiga sem registro significa cobrança mensal invisível no caixa do
+ * cliente. Se o cancelamento falhar, o alerta diz para fazer à mão: nunca
+ * ficamos em silêncio sobre assinatura duplicada.
+ */
+async function cancelarAssinaturaDuplicada(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, plano: any, duplicada: string,
+) {
+  let cancelou = false
+  try {
+    await stripe.subscriptions.cancel(duplicada)
+    cancelou = true
+  } catch (e) {
+    console.error('cancelar assinatura duplicada:', duplicada, (e as Error).message)
+  }
+  await db.from('plan_audit').insert({
+    plan_id: plano.id, action: 'duplicate_subscription',
+    snapshot: { mantida: plano.stripe_subscription_id, duplicada, cancelada: cancelou },
+  }).then(() => null, () => null)
+  await db.from('plan_alerts').insert({
+    plan_id: plano.id, client_id: plano.client_id, type: 'assinatura_duplicada',
+    message: cancelou
+      ? `O cliente concluiu o cadastro do débito duas vezes em ${plano.description || 'um serviço mensal'}: a segunda assinatura (${duplicada}) foi CANCELADA no Stripe e vale a primeira (${plano.stripe_subscription_id}). Confira se não houve cobrança em dobro.`
+      : `🛑 Duas assinaturas ativas para ${plano.description || 'um serviço mensal'}: ${plano.stripe_subscription_id} e ${duplicada}. NÃO consegui cancelar a segunda — cancele no painel do Stripe, senão o cliente é cobrado em dobro.`,
+  }).then(() => null, () => null)
+}
+
 async function sincronizarParcela(
   db: ReturnType<typeof adminDb>, stripe: Stripe,
   plan: any, invoice: Stripe.Invoice, seq: number,
@@ -1071,12 +1166,17 @@ async function getOrCreateProduct(stripe: Stripe): Promise<string> {
  */
 async function avisarEquipe(
   db: ReturnType<typeof adminDb>, invoiceId: string,
-  origem: 'refund' | 'dispute' | 'dispute_opened' | 'ach_returned', valor: number, motivo: string,
+  origem: 'refund' | 'dispute' | 'dispute_opened' | 'ach_returned' | 'voided' | 'voided_com_pagamento',
+  valor: number, motivo: string,
 ) {
   const { data: inv } = await db.from('invoices')
     .select('number, client_id, plan_id').eq('id', invoiceId).maybeSingle()
   if (!inv) return
-  const texto = origem === 'dispute_opened'
+  const texto = origem === 'voided'
+    ? `🚫 A cobrança da fatura ${inv.number} ($${valor.toFixed(2)}) foi anulada no painel do Stripe. A fatura foi cancelada aqui também e saiu do contas a receber.`
+    : origem === 'voided_com_pagamento'
+    ? `🛑 A cobrança da fatura ${inv.number} foi anulada no painel do Stripe, mas há $${valor.toFixed(2)} RECEBIDO nela. Não mexemos em nada — confira à mão.`
+    : origem === 'dispute_opened'
     ? `⚠️ Contestação ABERTA na fatura ${inv.number}: $${valor.toFixed(2)} retidos pelo Stripe. Motivo: ${motivo}. Há prazo para enviar comprovação — responda pelo painel do Stripe.`
     : avisoDeEstorno(origem as any, inv.number, valor, motivo)
   const { error } = await db.from('plan_alerts').insert({
