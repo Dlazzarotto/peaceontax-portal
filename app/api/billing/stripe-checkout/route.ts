@@ -9,6 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
+import { parcelamentoVivo } from '@/lib/parcelamento'
+import { nomeDaForma } from '@/lib/stripe-formas'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -57,6 +59,21 @@ export async function POST(req: NextRequest) {
   const saldo = Math.round((Number(inv.total) - Number(inv.paid_total)) * 100) / 100
   if (saldo <= 0) return NextResponse.json({ error: 'Esta fatura já está quitada.' }, { status: 409 })
 
+  // Fatura com parcelamento em andamento: esta rota cobra o SALDO INTEIRO,
+  // então é uma quitação antecipada — legítima, e o webhook encerra o
+  // parcelamento quando o pagamento entra. O que não pode é cobrar sem que
+  // ninguém saiba: o Klarna paga a firma à vista e some com o parcelamento,
+  // e uma parcela em NSF ficaria aberta no Stripe cobrando de novo.
+  const plano = await parcelamentoVivo(db, inv.id)
+  if (plano && !['awaiting_entry', 'awaiting_setup', 'awaiting_signature', 'draft'].includes(plano.status)) {
+    if (body.confirmarQuitacao !== true) {
+      return NextResponse.json({
+        error: `Esta fatura está parcelada e o débito automático está em andamento (${plano.paid_installments || 0}/${plano.installments} pagas). Cobrar aqui quita o saldo de $${saldo.toFixed(2)} de uma vez e ENCERRA o parcelamento. Confirme para seguir.`,
+        precisaConfirmar: true, saldo, parcelasPagas: plano.paid_installments || 0, parcelas: plano.installments,
+      }, { status: 409 })
+    }
+  }
+
   const cli: any = (inv as any).clients || {}
   const origem = req.nextUrl.origin
 
@@ -96,10 +113,14 @@ export async function POST(req: NextRequest) {
   }
   if (!resp.ok) {
     const msg = sessao?.error?.message || 'não foi possível criar o pagamento'
-    if (/payment_method_type|not activated|invalid.*klarna/i.test(msg)) {
+    if (/payment_method_type|not activated|invalid/i.test(msg)) {
+      // A mensagem do Stripe diz QUAL forma recusou — usar ela é melhor que
+      // repetir o que foi pedido ('todas' virava "todas não está habilitado").
+      const citada = ['klarna', 'us_bank_account', 'card'].find(f => msg.includes(f))
       return NextResponse.json({
-        error: `${forma === 'klarna' ? 'Klarna' : forma} não está habilitado na sua conta Stripe. `
-          + 'Ative em Settings → Payment methods e tente de novo.',
+        error: `${citada ? nomeDaForma(citada) : forma} não está habilitado na sua conta Stripe. `
+          + 'Ative em Settings → Payment methods e tente de novo'
+          + (forma === 'todas' ? ' — ou gere o link de uma forma específica enquanto isso.' : '.'),
       }, { status: 400 })
     }
     return NextResponse.json({ error: `Stripe: ${msg}` }, { status: 400 })

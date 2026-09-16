@@ -17,6 +17,7 @@
 import Stripe from 'stripe'
 import { ancoraDeCobranca, normalizarDiaCobranca } from '@/lib/plans'
 import { APP_URL, localeStripe } from '@/lib/avisos'
+import { sessaoComFormasDisponiveis } from '@/lib/stripe-formas'
 
 export const STRIPE_API_VERSION = '2026-06-24.dahlia' as Stripe.LatestApiVersion
 
@@ -50,7 +51,7 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
   origem: 'equipe' | 'cliente'
   performedBy?: string | null
   baseUrl?: string
-}): Promise<{ url: string; sessionId: string }> {
+}): Promise<{ url: string; sessionId: string; recusadas: string[] }> {
   if (!STATUS_QUE_GERAM_LINK.includes(plan.status)) {
     throw new Error(`Plano em status '${plan.status}' não gera novo link`)
   }
@@ -62,6 +63,10 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
   const planId = plan.id
 
   let session: Stripe.Checkout.Session
+  // Formas que a conta do Stripe recusou por não estarem ativadas: a sessão
+  // sai sem elas, mas a equipe precisa saber (senão o cliente fica sem ACH e
+  // ninguém descobre).
+  let recusadas: string[] = []
   const update: Record<string, unknown> = { stripe_customer_id: customerId, updated_at: new Date().toISOString() }
 
   if (plan.kind === 'installment') {
@@ -72,10 +77,10 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
       ...(plan.invoice_id ? { invoiceOrigem: plan.invoice_id } : {}),
     }
     if (entrada > 0) {
-      session = await stripe.checkout.sessions.create({
+      const r = await sessaoComFormasDisponiveis(stripe, ['card', 'us_bank_account'], (formas) => ({
         mode: 'payment',
         customer: customerId,
-        payment_method_types: ['card', 'us_bank_account'],
+        payment_method_types: formas,
         line_items: [{
           price_data: {
             currency: 'usd',
@@ -93,19 +98,23 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
         success_url: `${base}/portal/payments?plan=entry_success`,
         cancel_url: `${base}/portal/payments?plan=cancelled`,
         locale,
-      })
+      }))
+      session = r.session
+      recusadas = r.recusadas
       update.status = 'awaiting_entry'
     } else {
-      session = await stripe.checkout.sessions.create({
+      const r = await sessaoComFormasDisponiveis(stripe, ['us_bank_account', 'card'], (formas) => ({
         mode: 'setup',
         customer: customerId,
-        payment_method_types: ['us_bank_account', 'card'],
+        payment_method_types: formas,
         setup_intent_data: { metadata },
         metadata,
         success_url: `${base}/portal/payments?plan=setup_success`,
         cancel_url: `${base}/portal/payments?plan=cancelled`,
         locale,
-      })
+      }))
+      session = r.session
+      recusadas = r.recusadas
       update.status = 'awaiting_setup'
     }
   } else {
@@ -114,10 +123,10 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
     // véspera cairia em erro e o cliente não conseguiria cadastrar o débito).
     const anchor = ancoraDeCobranca(normalizarDiaCobranca(plan.due_day))
     const metadata = { planId, planKind: 'bookkeeping', clientId: plan.client_id }
-    session = await stripe.checkout.sessions.create({
+    const r = await sessaoComFormasDisponiveis(stripe, ['card', 'us_bank_account'], (formas) => ({
       mode: 'subscription',
       customer: customerId,
-      payment_method_types: ['card', 'us_bank_account'],
+      payment_method_types: formas,
       line_items: [{
         price_data: {
           currency: 'usd',
@@ -136,7 +145,9 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
       success_url: `${base}/portal/payments?plan=subscription_success`,
       cancel_url: `${base}/portal/payments?plan=cancelled`,
       locale,
-    })
+    }))
+    session = r.session
+    recusadas = r.recusadas
     update.status = 'awaiting_setup'
     update.next_charge_date = anchor.toISOString().slice(0, 10)
   }
@@ -145,10 +156,11 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
   await db.from('payment_plans').update(update).eq('id', planId)
   await db.from('plan_audit').insert({
     plan_id: planId, action: 'checkout_link_created', performed_by: opts.performedBy || null,
-    snapshot: { sessionId: session.id, kind: plan.kind, dueDay: plan.due_day ?? null, origem: opts.origem },
+    snapshot: { sessionId: session.id, kind: plan.kind, dueDay: plan.due_day ?? null, origem: opts.origem,
+      ...(recusadas.length ? { formasRecusadas: recusadas } : {}) },
   }).then(() => null, () => null)
 
-  return { url: session.url!, sessionId: session.id }
+  return { url: session.url!, sessionId: session.id, recusadas }
 }
 
 /**

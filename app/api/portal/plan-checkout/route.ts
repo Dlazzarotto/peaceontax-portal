@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { criarSessaoDoPlano, stripeClient, contratoPendenteDoPlano } from '@/lib/plan-checkout'
+import { nomeDaForma } from '@/lib/stripe-formas'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -42,10 +43,41 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { url } = await criarSessaoDoPlano(db, stripeClient(), plan, { origem: 'cliente', performedBy: auth.userId })
+    const { url, recusadas } = await criarSessaoDoPlano(db, stripeClient(), plan, { origem: 'cliente', performedBy: auth.userId })
+    // A conta do Stripe recusou alguma forma: o cliente segue com o que sobrou,
+    // mas a equipe precisa saber — senão ninguém descobre que o ACH caiu.
+    if (recusadas.length) await alertarFormas(db, plan, recusadas)
     return NextResponse.json({ ok: true, url })
   } catch (e) {
-    console.error('portal plan-checkout:', e)
-    return NextResponse.json({ error: 'Não foi possível abrir o cadastro. Tente de novo ou fale conosco: (833) 732-2327.' }, { status: 502 })
+    // O motivo real não pode morrer no log: sem ele a equipe só ouve do
+    // cliente que "não deu", e foi assim que um parcelamento ficou parado.
+    console.error('portal plan-checkout:', plan.id, e)
+    await alertarFalha(db, plan, e)
+    return NextResponse.json({
+      error: 'Não foi possível abrir o cadastro do débito automático. Já avisamos nossa equipe — se preferir, fale conosco: (833) 732-2327.',
+    }, { status: 502 })
   }
+}
+
+/** Alerta a equipe quando a conta do Stripe recusou uma forma de pagamento. */
+async function alertarFormas(db: any, plan: any, recusadas: string[]) {
+  await db.from('plan_alerts').insert({
+    plan_id: plan.id, client_id: plan.client_id, type: 'stripe_forma_inativa',
+    message: `⚠️ ${plan.clients?.name || 'Cliente'} abriu o cadastro do débito e a conta do Stripe recusou ${recusadas.map(nomeDaForma).join(' e ')}`
+      + ' — não está ativado em Settings → Payment methods. O link foi criado sem essa forma.',
+  }).then(() => null, () => null)
+}
+
+/** Alerta a equipe quando a sessão nem chegou a nascer: o cliente ficou sem saída. */
+async function alertarFalha(db: any, plan: any, e: any) {
+  const motivo = String(e?.raw?.message || e?.message || e).slice(0, 400)
+  await db.from('plan_alerts').insert({
+    plan_id: plan.id, client_id: plan.client_id, type: 'checkout_falhou',
+    message: `🛑 ${plan.clients?.name || 'O cliente'} tentou cadastrar o débito automático e o Stripe recusou a sessão: ${motivo}`
+      + ' — ele NÃO conseguiu pagar nem autorizar as parcelas. Resolver e avisar o cliente.',
+  }).then(() => null, () => null)
+  await db.from('plan_audit').insert({
+    plan_id: plan.id, action: 'checkout_failed', performed_by: null,
+    snapshot: { motivo, origem: 'cliente' },
+  }).then(() => null, () => null)
 }

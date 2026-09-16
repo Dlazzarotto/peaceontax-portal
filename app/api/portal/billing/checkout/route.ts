@@ -15,11 +15,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { stripeClient } from '@/lib/plan-checkout'
 import { APP_URL, localeStripe } from '@/lib/avisos'
+import { FORMAS_DO_CLIENTE, sessaoComFormasDisponiveis } from '@/lib/stripe-formas'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
-
-const FORMAS_DO_CLIENTE = ['card', 'us_bank_account', 'klarna'] as const
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
@@ -68,22 +67,26 @@ export async function POST(req: NextRequest) {
   })
 
   try {
-    let session
-    try {
-      session = await stripe.checkout.sessions.create(montar([...FORMAS_DO_CLIENTE]))
-    } catch (e: any) {
-      // Klarna não habilitada na conta Stripe: oferece as outras duas em vez de travar o cliente
-      if (/klarna/i.test(String(e?.message))) session = await stripe.checkout.sessions.create(montar(['card', 'us_bank_account']))
-      else throw e
-    }
+    // Qualquer forma que a conta do Stripe não tenha ativada sai da lista e a
+    // sessão nasce com o que sobrou. Antes só a Klarna tinha essa saída: sem
+    // ACH ativo, a sessão inteira morria e o cliente não pagava de jeito nenhum.
+    const { session, recusadas } = await sessaoComFormasDisponiveis(
+      stripe, [...FORMAS_DO_CLIENTE], (formas) => montar(formas))
+    if (recusadas.length) console.error('portal checkout: conta do Stripe sem', recusadas.join(', '))
     await db.from('invoices').update({ stripe_link: session.url, updated_at: new Date().toISOString() }).eq('id', inv.id)
     await db.from('invoice_audit').insert({
       invoice_id: inv.id, action: 'stripe_link', performed_by: auth.userId,
       next: { session: session.id, valor: saldo, origem: 'portal' },
     }).then(() => null, () => null)
     return NextResponse.json({ ok: true, url: session.url })
-  } catch (e) {
-    console.error('portal checkout:', e)
-    return NextResponse.json({ error: 'Não foi possível iniciar o pagamento. Tente de novo ou fale conosco: (833) 732-2327.' }, { status: 502 })
+  } catch (e: any) {
+    // O motivo real fica na trilha: sem ele a equipe só sabe que "não deu".
+    const motivo = String(e?.raw?.message || e?.message || e).slice(0, 400)
+    console.error('portal checkout:', inv.number, motivo)
+    await db.from('invoice_audit').insert({
+      invoice_id: inv.id, action: 'checkout_failed', performed_by: auth.userId,
+      reason: motivo, next: { origem: 'portal' },
+    }).then(() => null, () => null)
+    return NextResponse.json({ error: 'Não foi possível iniciar o pagamento. Já avisamos nossa equipe — se preferir, fale conosco: (833) 732-2327.' }, { status: 502 })
   }
 }

@@ -111,6 +111,28 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
   sempre de uma fatura, não se cancela em andamento — só quitação antecipada
   ou parcela que falhou recebida por fora (`billing/payments`).
+- **Encerrar parcelamento é `lib/parcelamento.ts`, em todos os caminhos.**
+  Quitação, fatura quitada pelo Stripe e cancelamento da fatura chamam a
+  mesma rotina. Ela também FECHA as invoices de parcela já abertas no
+  Stripe: cancelar a assinatura não fecha invoice finalizada, e a parcela
+  em NSF voltava a cobrar depois da fatura quitada.
+- **Dinheiro que volta é `lib/estorno-stripe.ts`.** Reembolso integral no
+  painel do Stripe, contestação PERDIDA e ACH devolvido depois de confirmado
+  desfazem o recebimento: `payment_reversals` antes, recebimento depois,
+  fatura reaberta, trilha e alerta. Se o rastro falhar, **não apaga** o
+  recebimento. Reembolso parcial e contestação ainda ABERTA só alertam —
+  no primeiro o valor não bate, no segundo o dinheiro ainda pode voltar.
+- **Forma de pagamento é a conta do Stripe que decide.** Pedir uma forma não
+  ativada (Settings → Payment methods) faz o Stripe recusar a SESSÃO INTEIRA,
+  não só a opção. Toda sessão de Checkout passa por
+  `sessaoComFormasDisponiveis` de `lib/stripe-formas.ts`, que tira a forma
+  recusada e refaz com o que sobrou; cartão é o piso. O que caiu vira alerta
+  à equipe, e sessão que não nasce grava o motivo real (`plan_alerts`,
+  `invoice_audit.checkout_failed`) — nunca só um "tente de novo".
+- **Idioma do cliente é conforto, não requisito.** Plaid e Stripe recebem só
+  idioma que atendem (`idiomaDoPlaid` em `app/api/plaid/link-token`,
+  `localeStripe` em `lib/avisos.ts`); recusado, cai para inglês em vez de
+  bloquear o cliente.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

@@ -31,6 +31,12 @@ const T: Record<string, any> = {
     planWait: 'Sign the agreement above to set up the automatic debit.',
     signByEmail: 'Sign using the DocuSign e-mail you received.',
     msgSigned: 'Agreement signed. Thank you!', msgSignPending: 'The agreement is not signed yet. You can sign it below.',
+    methodsNote: 'Reference only — these are not buttons. Use the payment button next to your invoice above.',
+    mCard: 'Credit / Debit Card', mCardD: 'Visa, Mastercard, Amex',
+    mAch: 'Bank debit (ACH)', mAchD: 'Directly from your bank account',
+    mKlarna: 'Klarna', mKlarnaD: 'Pay in installments with Klarna (approval on the payment screen)',
+    mManual: 'Check, Zelle, Venmo', mManualD: 'Payable to Peace on Tax — we record it for you',
+    signByEmailHelp: 'Look for an e-mail from DocuSign with the subject “Peace on Tax”. Cannot find it? Message us and we will send it again.',
   },
   pt: {
     title: 'Pagamentos', balance: 'Saldo em aberto', noBalance: 'Nada a pagar no momento',
@@ -51,6 +57,12 @@ const T: Record<string, any> = {
     planWait: 'Assine o contrato acima para cadastrar o débito automático.',
     signByEmail: 'Assine pelo e-mail do DocuSign que você recebeu.',
     msgSigned: 'Contrato assinado. Obrigado!', msgSignPending: 'O contrato ainda não foi assinado. Você pode assinar abaixo.',
+    methodsNote: 'Apenas informativo — não são botões. Use o botão de pagamento na sua fatura, acima.',
+    mCard: 'Cartão de crédito / débito', mCardD: 'Visa, Mastercard, Amex',
+    mAch: 'Débito em conta (ACH)', mAchD: 'Direto da sua conta bancária',
+    mKlarna: 'Klarna', mKlarnaD: 'Parcele com a Klarna (a aprovação acontece na tela de pagamento)',
+    mManual: 'Cheque, Zelle, Venmo', mManualD: 'Em nome de Peace on Tax — nós registramos para você',
+    signByEmailHelp: 'Procure um e-mail do DocuSign com o assunto “Peace on Tax”. Não encontrou? Fale conosco que reenviamos.',
   },
   es: {
     title: 'Pagos', balance: 'Saldo pendiente', noBalance: 'Nada que pagar por ahora',
@@ -71,6 +83,12 @@ const T: Record<string, any> = {
     planWait: 'Firme el contrato de arriba para registrar el débito automático.',
     signByEmail: 'Firme con el correo de DocuSign que recibió.',
     msgSigned: 'Contrato firmado. ¡Gracias!', msgSignPending: 'El contrato aún no está firmado. Puede firmarlo abajo.',
+    methodsNote: 'Solo informativo — no son botones. Use el botón de pago en su factura, arriba.',
+    mCard: 'Tarjeta de crédito / débito', mCardD: 'Visa, Mastercard, Amex',
+    mAch: 'Débito en cuenta (ACH)', mAchD: 'Directo de su cuenta bancaria',
+    mKlarna: 'Klarna', mKlarnaD: 'Pague en cuotas con Klarna (la aprobación ocurre en la pantalla de pago)',
+    mManual: 'Cheque, Zelle, Venmo', mManualD: 'A nombre de Peace on Tax — nosotros lo registramos',
+    signByEmailHelp: 'Busque un correo de DocuSign con el asunto “Peace on Tax”. ¿No lo encuentra? Escríbanos y lo reenviamos.',
   },
 }
 
@@ -152,7 +170,15 @@ export default function PaymentsPage() {
                   {busy === `c${c.id}` ? t.opening : t.sign}
                 </button>
               ) : (
-                <span style={{ fontSize: 12.5, color: '#5A1A8A', fontWeight: 700 }}>{t.signByEmail}</span>
+                // Contrato mandado pelo fluxo antigo (e-mail do DocuSign): não há
+                // botão aqui. Sem uma instrução, o cliente fica sem saída — a
+                // fatura também não oferece ação enquanto ele não assina.
+                <span style={{ fontSize: 12.5, color: '#5A1A8A', fontWeight: 700, maxWidth: 300, textAlign: 'right' }}>
+                  {t.signByEmail}
+                  <div style={{ fontSize: 11.5, fontWeight: 400, color: '#6a7a9a', marginTop: 4, lineHeight: 1.5 }}>
+                    {t.signByEmailHelp}
+                  </div>
+                </span>
               )}
             </div>
           ))}
@@ -226,12 +252,15 @@ export default function PaymentsPage() {
       {/* 4. Formas de pagamento */}
       <div style={card}>
         <h2 style={h2}>{t.methods}</h2>
+        {/* Lista informativa: já foi confundida com botões por quem não achou
+            ação na fatura. O aviso diz o que ela é. */}
+        <p style={{ fontSize: 12, color: '#9aaab0', margin: '-6px 0 10px', lineHeight: 1.5 }}>{t.methodsNote}</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {[
-            { icon: '💳', label: 'Credit / Debit Card', desc: 'Visa, Mastercard, Amex' },
-            { icon: '🏦', label: 'Bank debit (ACH)', desc: 'Directly from your bank account' },
-            { icon: '🧾', label: 'Klarna', desc: 'Pay in installments with Klarna (approval on the payment screen)' },
-            { icon: '📱', label: 'Check, Zelle, Venmo', desc: 'Payable to Peace on Tax — we record it for you' },
+            { icon: '💳', label: t.mCard, desc: t.mCardD },
+            { icon: '🏦', label: t.mAch, desc: t.mAchD },
+            { icon: '🧾', label: t.mKlarna, desc: t.mKlarnaD },
+            { icon: '📱', label: t.mManual, desc: t.mManualD },
           ].map(m => (
             <div key={m.label} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 10, background: '#f8faff', border: '1px solid #e2e8f4' }}>
               <span style={{ fontSize: 22 }}>{m.icon}</span>

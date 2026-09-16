@@ -1,7 +1,8 @@
 // GET /api/bookkeeping/pnl?clientId=...&year=2020[&month=9]
 // Gera o P&L (cash-basis) em HTML pronto para imprimir/salvar PDF.
 // Cada conta é um link para o detalhe (category-detail), na mesma aba.
-// Baseado nas transações categorizadas (status auto/reviewed).
+// Baseado no registro já aprovado (status approved/reviewed): o que ainda
+// está na fila de classificação (pending/auto) não entra.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
