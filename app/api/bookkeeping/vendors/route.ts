@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || ''
   const money = (n: number) => `$${n.toFixed(2)}`
 
-  const barra = barraDoRelatorio({ voltarPara: '/dashboard/bookkeeping' })
+  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Vendors ${year} — ${displayName}</title>
 <style>

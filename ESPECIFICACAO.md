@@ -212,6 +212,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **Dinheiro que volta ao cliente passou a ser tratado.** O endpoint assina mais quatro eventos: `charge.refunded`, `charge.failed`, `charge.dispute.created` e `charge.dispute.closed` (catorze no total). Reembolso integral no painel, contestação perdida e ACH devolvido depois de dado como recebido desfazem o recebimento com rastro em `payment_reversals` e reabrem a fatura; `payment_intent.payment_failed` passou a conferir se já havia recebimento daquele intent. Reembolso parcial e contestação ainda aberta só alertam. Sem migração.
 
+- **A aba Contabilidade do portal existia no menu, mas a página nunca foi criada.** O item "Contabilidade/Accounting" aparecia no menu e na home do cliente empresarial desde que foi anunciado, e levava a `/portal/reports` — uma rota que não existia: o cliente recebia 404 e nunca conseguiu abrir P&L, Balanço, Fornecedores nem 1099. As rotas da API já aceitavam o próprio cliente `business` e o componente da tela já estava pronto e órfão; faltava a página que os une. Criada, e o texto passou a seguir o idioma do cadastro (en, pt, es, zh, fr) como o resto do portal. O botão Voltar do relatório de Fornecedores/1099 mandava o cliente para `/dashboard/bookkeeping` (área da firma, que o middleware devolve) — agora volta para o portal, como o P&L e o Balanço já faziam. Sem migração.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
