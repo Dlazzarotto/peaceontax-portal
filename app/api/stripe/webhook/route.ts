@@ -15,7 +15,11 @@
 //                                parcela marcada 'failed'; alerta à equipe
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
-//   payment_intent.payment_failed → registra recusa de cobrança de fatura
+//   payment_intent.payment_failed → recusa de cobrança; desfaz o recebimento
+//                                se o dinheiro já tinha sido dado como recebido
+//   charge.refunded / charge.failed / charge.dispute.created / .closed
+//                              → DINHEIRO QUE VOLTA: desfaz o recebimento com
+//                                rastro em payment_reversals e alerta a equipe
 //   customer.subscription.updated → mudou de situação no Stripe: 'unpaid' (as
 //                                tentativas acabaram e ele PAROU de cobrar),
 //                                'past_due' ou volta a 'active'
@@ -28,6 +32,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
+import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
@@ -136,6 +141,92 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true })
     }
 
+    // ============ DINHEIRO QUE VOLTA AO CLIENTE ============
+    // Reembolso no painel, contestação perdida e ACH devolvido tiram o
+    // dinheiro do caixa da firma sem passar pela equipe. Antes, a receita
+    // continuava registrada aqui: fatura 'paga' de dinheiro que não existe.
+    if (event.type === 'charge.refunded') {
+      const charge = event.data.object as Stripe.Charge
+      const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id
+      const pago = await recebimentoDoObjeto(db, pi, charge.id)
+      if (pago) {
+        const total = (charge.amount_refunded ?? 0) / 100
+        // Reembolso parcial não desfaz o lançamento: o valor não bate e
+        // desfazer tudo criaria erro maior. Fica para a equipe decidir.
+        if (Math.abs(total - Number(pago.amount)) < 0.005) {
+          await desfazerRecebimento(db, pago, {
+            motivo: 'reembolso feito no painel do Stripe', origem: 'refund',
+            detalhe: { charge: charge.id },
+          })
+          await avisarEquipe(db, pago.invoice_id, 'refund', total, 'reembolso no painel')
+        } else {
+          await db.from('invoice_audit').insert({
+            invoice_id: pago.invoice_id, action: 'stripe_refund_parcial',
+            reason: `Reembolso parcial de $${total.toFixed(2)} sobre recebimento de $${Number(pago.amount).toFixed(2)} — ajuste à mão.`,
+            next: { charge: charge.id, reembolsado: total, recebido: Number(pago.amount) },
+          }).then(() => null, () => null)
+          await avisarEquipe(db, pago.invoice_id, 'refund', total, 'reembolso PARCIAL — ajuste à mão')
+        }
+      }
+      return NextResponse.json({ received: true })
+    }
+
+    if (event.type === 'charge.dispute.created') {
+      const d = event.data.object as Stripe.Dispute
+      const pi = typeof d.payment_intent === 'string' ? d.payment_intent : d.payment_intent?.id
+      const pago = await recebimentoDoObjeto(db, pi, typeof d.charge === 'string' ? d.charge : d.charge?.id)
+      // Contestação ABERTA não mexe no dinheiro: ele fica retido e pode voltar.
+      // O que não pode é a firma não ficar sabendo — há prazo para responder.
+      if (pago) {
+        await db.from('invoice_audit').insert({
+          invoice_id: pago.invoice_id, action: 'stripe_dispute_opened',
+          reason: `Contestação aberta: ${d.reason || 'sem motivo informado'}`,
+          next: { dispute: d.id, valor: (d.amount ?? 0) / 100, prazo: (d.evidence_details as any)?.due_by || null },
+        }).then(() => null, () => null)
+        await avisarEquipe(db, pago.invoice_id, 'dispute_opened', (d.amount ?? 0) / 100, String(d.reason || ''))
+      }
+      return NextResponse.json({ received: true })
+    }
+
+    if (event.type === 'charge.dispute.closed') {
+      const d = event.data.object as Stripe.Dispute
+      const pi = typeof d.payment_intent === 'string' ? d.payment_intent : d.payment_intent?.id
+      const pago = await recebimentoDoObjeto(db, pi, typeof d.charge === 'string' ? d.charge : d.charge?.id)
+      if (pago) {
+        if (d.status === 'lost') {
+          // Perdida: o dinheiro saiu de vez. Não é decisão da equipe — é fato
+          // consumado, então o registro tem de acompanhar.
+          await desfazerRecebimento(db, pago, {
+            motivo: `contestação perdida (${d.reason || 'sem motivo'})`, origem: 'dispute',
+            detalhe: { dispute: d.id },
+          })
+          await avisarEquipe(db, pago.invoice_id, 'dispute', (d.amount ?? 0) / 100, String(d.reason || ''))
+        } else {
+          await db.from('invoice_audit').insert({
+            invoice_id: pago.invoice_id, action: 'stripe_dispute_closed',
+            reason: `Contestação encerrada: ${d.status}`, next: { dispute: d.id, status: d.status },
+          }).then(() => null, () => null)
+        }
+      }
+      return NextResponse.json({ received: true })
+    }
+
+    if (event.type === 'charge.failed') {
+      // ACH devolvido DEPOIS de confirmado (NSF descoberto na compensação,
+      // conta encerrada). O dinheiro já tinha sido dado como recebido.
+      const charge = event.data.object as Stripe.Charge
+      const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id
+      const pago = await recebimentoDoObjeto(db, pi, charge.id)
+      if (pago) {
+        const motivo = charge.failure_message || charge.failure_code || 'devolvido pelo banco'
+        await desfazerRecebimento(db, pago, {
+          motivo: `débito devolvido: ${motivo}`, origem: 'ach_returned', detalhe: { charge: charge.id },
+        })
+        await avisarEquipe(db, pago.invoice_id, 'ach_returned', Number(pago.amount), String(motivo))
+      }
+      return NextResponse.json({ received: true })
+    }
+
     // ============ COBRANÇA DE FATURA RECUSADA ============
     if (event.type === 'payment_intent.payment_failed') {
       const pi = event.data.object as Stripe.PaymentIntent
@@ -149,6 +240,16 @@ export async function POST(req: NextRequest) {
           reason: String(motivo).slice(0, 400),
           next: { intent: pi.id, valor: Number(pi.amount || 0) / 100 },
         }).then(() => null, () => null)
+
+        // Se JÁ havia recebimento deste intent, o dinheiro está voltando
+        // (ACH devolvido depois de confirmado): desfaz o lançamento.
+        const pago = await recebimentoDoObjeto(db, pi.id)
+        if (pago) {
+          await desfazerRecebimento(db, pago, {
+            motivo: `cobrança desfeita: ${motivo}`, origem: 'ach_returned', detalhe: { intent: pi.id },
+          })
+          await avisarEquipe(db, pago.invoice_id, 'ach_returned', Number(pago.amount), String(motivo))
+        }
       }
       return NextResponse.json({ received: true })
     }
@@ -934,6 +1035,37 @@ async function getOrCreateProduct(stripe: Stripe): Promise<string> {
   const p = await stripe.products.create({ name: 'Parcelamento Peace on Tax' })
   cachedProductId = p.id
   return p.id
+}
+
+/**
+ * Alerta à equipe sobre dinheiro que voltou. Vai para plan_alerts quando a
+ * fatura tem plano (é onde a equipe já olha) e sempre para a trilha.
+ */
+async function avisarEquipe(
+  db: ReturnType<typeof adminDb>, invoiceId: string,
+  origem: 'refund' | 'dispute' | 'dispute_opened' | 'ach_returned', valor: number, motivo: string,
+) {
+  const { data: inv } = await db.from('invoices')
+    .select('number, client_id, plan_id').eq('id', invoiceId).maybeSingle()
+  if (!inv) return
+  const texto = origem === 'dispute_opened'
+    ? `⚠️ Contestação ABERTA na fatura ${inv.number}: $${valor.toFixed(2)} retidos pelo Stripe. Motivo: ${motivo}. Há prazo para enviar comprovação — responda pelo painel do Stripe.`
+    : avisoDeEstorno(origem as any, inv.number, valor, motivo)
+  const { error } = await db.from('plan_alerts').insert({
+    plan_id: inv.plan_id || null, client_id: inv.client_id,
+    type: `stripe_${origem}`, message: texto,
+  })
+  // O alerta é o que a equipe vê na tela; se não entrar, tem de aparecer no log
+  // (a trilha em invoice_audit já foi gravada por quem chamou).
+  if (error) console.error('avisarEquipe:', origem, inv.number, error.message)
+
+  // Débito devolvido: o cliente precisa saber que a fatura reabriu, senão
+  // descobre pela cobrança seguinte. Reembolso ele vê na conta; contestação
+  // foi ele quem abriu.
+  if (origem === 'ach_returned') {
+    await notifyClient(db, inv.client_id,
+      `⚠️ O pagamento da fatura ${inv.number} ($${valor.toFixed(2)}) foi devolvido pelo banco e a fatura voltou a ficar em aberto. Você pode pagar de novo pelo portal ou falar conosco: (833) 732-2327.`)
+  }
 }
 
 async function notifyClient(db: ReturnType<typeof adminDb>, clientId: string | undefined, content: string) {

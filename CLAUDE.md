@@ -116,6 +116,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   mesma rotina. Ela também FECHA as invoices de parcela já abertas no
   Stripe: cancelar a assinatura não fecha invoice finalizada, e a parcela
   em NSF voltava a cobrar depois da fatura quitada.
+- **Dinheiro que volta é `lib/estorno-stripe.ts`.** Reembolso integral no
+  painel do Stripe, contestação PERDIDA e ACH devolvido depois de confirmado
+  desfazem o recebimento: `payment_reversals` antes, recebimento depois,
+  fatura reaberta, trilha e alerta. Se o rastro falhar, **não apaga** o
+  recebimento. Reembolso parcial e contestação ainda ABERTA só alertam —
+  no primeiro o valor não bate, no segundo o dinheiro ainda pode voltar.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
