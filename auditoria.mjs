@@ -290,6 +290,34 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
     : ok('Nenhuma rota de API sem conferencia')
 }
 
+titulo('AUTORIZACOES POR PESSOA (nivel + concessoes)')
+checar('lib/permissoes.ts existe', 'lib/permissoes.ts', /export function permissoesDe/,
+       'o modulo que monta o conjunto sumiu')
+checar('O financeiro monta pelo modulo puro', 'lib/billing-perms.ts',
+       /from ['"]@\/lib\/permissoes['"]/,
+       'billing-perms voltou a calcular a matriz sozinho — duas definicoes divergem em silencio')
+checar('Concessao e lida do banco', 'lib/staff-perms.ts', /staff_grants_atual/,
+       'sem ler a view, a autorizacao dada na tela nao vale nada')
+checar('So o socio autoriza', 'app/api/account/grants/route.ts', /!== 'owner'/,
+       'a rota de autorizacoes precisa exigir socio')
+checar('Motivo e obrigatorio na autorizacao', 'app/api/account/grants/route.ts',
+       /razao\.length < 3/, 'acao sensivel pede motivo — principio 3')
+{
+  // A lista de chaves vive em dois lugares: o modulo e o CHECK do SQL.
+  // Divergir em silencio significa autorizacao que a tela oferece e o banco
+  // recusa — ou pior, chave gravada que o codigo nunca le.
+  const mod = readFileSync(join(raiz, 'lib/permissoes.ts'), 'utf8')
+  const sql = existsSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'))
+    ? readFileSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'), 'utf8') : ''
+  const noModulo = Array.from(mod.matchAll(/chave:\s*'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
+  const bloco = (sql.match(/chave in \(([^)]*)\)/s) || [])[1] || ''
+  const noSql = Array.from(bloco.matchAll(/'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
+  JSON.stringify(noModulo) === JSON.stringify(noSql) && noModulo.length
+    ? ok('Chaves do modulo e do CHECK do SQL batem')
+    : falta('Chaves do modulo e do CHECK do SQL batem',
+            `modulo: ${noModulo.join(',')} | sql: ${noSql.join(',')}`)
+}
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

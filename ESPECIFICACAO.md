@@ -62,7 +62,46 @@ corrigido para descrever o que o sistema faz. Restringir assistente aos
 clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
 temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
 
-### 3.1 Duas perguntas diferentes: a porta e o poder
+### 3.1 Autorizações por pessoa, em cima do nível
+
+O nível é um degrau inteiro. Para autorizar a assistente a **receber no
+balcão** era preciso promovê-la a gerente — e gerente traz junto cancelar,
+apagar e estornar. Agora o sócio autoriza a **chave exata**, e retira quando
+quiser, sem mexer no nível.
+
+O conjunto final é montado por `permissoesDe` (`lib/permissoes.ts`, lógica
+pura e testada):
+
+1. o **nível** dá a base;
+2. cada **autorização** é um sim ou um não explícito, que vence o nível;
+3. o **sócio é imune** — concessão negativa não o alcança. Tirar poder de
+   sócio se faz mudando o nível, à vista, não por uma chave solta.
+
+As dez chaves: `criar · receber · editar · duplicar · cancelar ·
+darDesconto · estornar · apagar · verRelatorios · verTotais`. A mesma lista
+está no `CHECK` da migração, e a auditoria falha se as duas divergirem.
+
+**A trilha é a tabela.** `staff_grants` é *append-only*: cada decisão grava
+uma linha com quem autorizou, quando, o motivo (obrigatório) e o conflito
+de separação de funções, se houve. O estado atual é a última linha de cada
+chave, pela view `staff_grants_atual`. Estado e histórico não podem
+discordar porque são a mesma coisa — princípio 2.
+
+**Separação de funções, princípio 1.** Todos emitem fatura. Autorizar
+`receber` a quem emite quebra "quem emite não dá baixa" — é o vetor de
+fraude clássico (emitir por $500, receber em dinheiro, registrar $300).
+Não é proibido: é decisão do sócio, e existem casos legítimos. Mas
+`conflitoDeSeparacao` devolve em uma frase o que está sendo quebrado, a
+tela mostra **antes** de salvar, e o motivo fica gravado. Autorização assim
+é decisão registrada, não clique. O mesmo vale para `estornar` concedido a
+quem recebe — aí a pessoa desfaria o próprio recebimento.
+
+Quem autoriza é **só o sócio**, e ninguém mexe nas próprias permissões.
+Editar fatura continua pedindo senha e motivo para todo mundo que não seja
+sócio, inclusive quem recebeu a autorização: ela diz que a pessoa **pode**,
+não que pode sem deixar rastro.
+
+### 3.2 Duas perguntas diferentes: a porta e o poder
 
 São decisões separadas e não podem ser confundidas:
 
@@ -84,7 +123,7 @@ de API. Só quem era convidado como Owner funcionava. A auditoria agora
 recusa qualquer arquivo que volte a comparar `user_metadata.role` com
 `'firm'` por conta própria.
 
-### 3.2 Toda rota de API confere quem está chamando
+### 3.3 Toda rota de API confere quem está chamando
 
 O `middleware.ts` exige **sessão**, não identidade — a sessão de um cliente
 serve para bater em qualquer rota. A conferência de *quem* é obrigatória

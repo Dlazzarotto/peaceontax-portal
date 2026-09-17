@@ -109,6 +109,18 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
   `manager`, `junior`. Quem não está na tabela é `junior`. São duas
   perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
+- **Em cima do nível há autorização por pessoa** (`lib/permissoes.ts`,
+  tabela `staff_grants`). O nível é a base; cada concessão é um sim ou não
+  explícito que o vence; o sócio é imune a concessão negativa. Quem monta o
+  conjunto é `permissoesDe` — `lib/billing-perms.ts` só busca o que está
+  gravado, e as 12 rotas de `billing/` herdam pelo mesmo funil. A tabela é
+  APPEND-ONLY: o estado atual é a view `staff_grants_atual`, então estado e
+  histórico não podem discordar. Motivo é obrigatório, só o sócio autoriza,
+  ninguém mexe no próprio. Autorizar `receber` a quem emite quebra o
+  princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
+  salvar e o motivo fica gravado. A lista de chaves está no módulo E no
+  `CHECK` do SQL; a auditoria falha se divergirem.
+  Migração: `sql/permissoes-por-pessoa-v1.sql`.
 - **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
   `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
   controle de acesso. A tela de equipe prometia "Staff: assigned clients

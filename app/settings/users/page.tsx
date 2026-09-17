@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import GrantsModal from '@/components/GrantsModal'
 
 // O texto de cada nível descreve O QUE O SISTEMA FAZ, conferido contra a
 // matriz da seção 3 da ESPECIFICACAO e contra lib/api-auth.ts.
@@ -32,6 +33,8 @@ export default function UsersPage() {
   const [editing,     setEditing]     = useState<any|null>(null)
   const [showInactive, setShowInactive] = useState(false)
   const [resending,   setResending]   = useState<string|null>(null)
+  // Autorizações individuais: o nível é a base, isto soma ou tira em cima.
+  const [grants,      setGrants]      = useState<any|null>(null)
 
   const load = () => {
     setLoading(true)
@@ -69,6 +72,7 @@ export default function UsersPage() {
     <div>
       {showNew && <UserModal onSave={() => { setShowNew(false); load() }} onClose={() => setShowNew(false)} />}
       {editing && <UserModal user={editing} onSave={() => { setEditing(null); load() }} onClose={() => setEditing(null)} />}
+      {grants && <GrantsModal user={grants} onClose={() => { setGrants(null); load() }} />}
 
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
         <div>
@@ -146,6 +150,7 @@ export default function UsersPage() {
                         {u.active ? (
                           <>
                             <button onClick={() => setEditing(u)} style={{ fontSize:11, padding:'5px 10px', borderRadius:7, border:'1px solid #e2e8f4', background:'#f0f4ff', color:'#2D3278', cursor:'pointer', fontWeight:700 }}>✏️ Edit</button>
+                            <button onClick={() => setGrants(u)} style={{ fontSize:11, padding:'5px 10px', borderRadius:7, border:'1px solid #e2e8f4', background:'#fff8e8', color:'#7a5a10', cursor:'pointer', fontWeight:700 }}>🔑 Autorizações</button>
                             <button onClick={() => resendInvite(u)} disabled={resending===u.id} style={{ fontSize:11, padding:'5px 10px', borderRadius:7, border:'1px solid #e2e8f4', background:'#f0f4fa', color:'#1a6b4a', cursor:'pointer', fontWeight:700, opacity:resending===u.id?0.6:1 }}>
                               {resending===u.id?'…':'↻ Resend'}
                             </button>
