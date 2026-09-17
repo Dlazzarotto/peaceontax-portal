@@ -112,10 +112,15 @@ export async function POST(req: NextRequest) {
   }
   const recusados = linhas.length - gravados
 
-  await db.from('client_audit').insert({
-    client_id: null, action: 'import_quickbooks', performed_by: auth.userId,
-    next: { ...resumo, gravados, recusados, falhas: falhas.slice(0, 20) },
-  }).then(() => null, () => null)
+  // O resultado vai para o log SEMPRE. A trilha por cliente (client_audit) é
+  // por natureza de um cliente só e recusa client_id nulo — engolir esse erro
+  // fazia a importação não deixar registro nenhum de ter acontecido.
+  const registro = { ...resumo, gravados, recusados, falhas: falhas.slice(0, 20), por: auth.userId }
+  console.log('[import/clientes]', JSON.stringify(registro))
+  const { error: errTrilha } = await db.from('client_audit').insert({
+    client_id: null, action: 'import_quickbooks', performed_by: auth.userId, next: registro,
+  })
+  if (errTrilha) console.error('[import/clientes] trilha nao gravada:', errTrilha.message)
 
   return NextResponse.json({
     ok: true, resumo, gravados, recusados, falhas,
