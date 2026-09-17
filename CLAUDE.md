@@ -189,6 +189,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   diz de quem é o convite; o aceite atualiza aquele cliente e só insere quando
   não há nenhum. Antes inseria sempre — convidar quem veio da importação
   criava a mesma pessoa duas vezes, uma com login e outra sem.
+- **E-mail é contato; identidade é o `user_id`.** `clients.email` aceita nulo
+  (46 clientes reais não têm) e aceita repetir (dono e empresa dele dividem
+  um). O que é único é `user_id` — dois cadastros no mesmo login quebram o
+  portal. Acesso ao portal é só por e-mail e senha: SMS como único fator não
+  é multifator, e o FTC Safeguards Rule exige multifator aqui.
 - **Cliente repetido é NOME igual, não e-mail igual.** Na carteira real, 56
   e-mails servem a mais de um cadastro e só um é duplicata: o resto é o dono e
   a empresa dele no mesmo endereço. Recusar por e-mail barrava 55 cadastros

@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Importar a carteira é de gerente ou sócio.' }, { status: 403 })
   }
 
-  const { csv, aplicar } = await req.json().catch(() => ({}))
+  const { csv, aplicar, incluirSemEmail } = await req.json().catch(() => ({}))
   if (!csv || typeof csv !== 'string') {
     return NextResponse.json({ error: 'Envie o arquivo CSV.' }, { status: 400 })
   }
@@ -56,36 +56,41 @@ export async function POST(req: NextRequest) {
   if (errLista) return NextResponse.json({ error: errLista.message }, { status: 500 })
 
   const plano = planejarImportacao(registros, jaCadastrados || [])
+  // Cliente sem e-mail entra só a pedido: ele existe e é atendido no balcão,
+  // mas nunca vai receber acesso ao portal, e a equipe decide se quer o
+  // cadastro agora ou depois.
+  const entram = incluirSemEmail ? [...plano.novos, ...plano.semEmail] : plano.novos
 
   const resumo = {
     lidos: registros.length,
-    novos: plano.novos.length,
+    novos: entram.length,
+    semEmailDeFora: incluirSemEmail ? 0 : plano.semEmail.length,
     jaExistem: plano.jaExistem.length,
     repetidosNoArquivo: plano.repetidosNoArquivo.length,
     semNome: plano.semNome,
     telefonesDescartados: plano.telefonesDescartados,
-    empresas: plano.novos.filter(n => n.type === 'business').length,
-    pessoasFisicas: plano.novos.filter(n => n.type === 'individual').length,
-    semEmail: plano.novos.filter(n => !n.email).length,
+    empresas: entram.filter(n => n.type === 'business').length,
+    pessoasFisicas: entram.filter(n => n.type === 'individual').length,
+    semEmail: plano.semEmail.length,
     emailCompartilhado: plano.emailCompartilhado.length,
   }
 
   if (!aplicar) {
     return NextResponse.json({
       ok: true, previa: true, resumo,
-      amostra: plano.novos.slice(0, 15),
+      amostra: entram.slice(0, 15),
       jaExistem: plano.jaExistem.slice(0, 30).map(x => x.name),
       repetidos: plano.repetidosNoArquivo.map(x => x.name),
       emailCompartilhado: plano.emailCompartilhado.slice(0, 20),
     })
   }
 
-  if (!plano.novos.length) {
+  if (!entram.length) {
     return NextResponse.json({ ok: true, resumo, message: 'Nada a importar: todos já estão cadastrados.' })
   }
 
   const agora = new Date().toISOString()
-  const linhas = plano.novos.map(n => ({
+  const linhas = entram.map(n => ({
     name: n.name, email: n.email, phone: n.phone, type: n.type,
     stage: 'Onboarding', language: 'en', active: true,
     notes: `Importado do QuickBooks em ${agora.slice(0, 10)}.`,

@@ -498,6 +498,9 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
   const [feito, setFeito]   = useState('')
   const [falhas, setFalhas] = useState<string[]>([])
   const [gravados, setGravados] = useState(0)
+  // Cliente sem e-mail nunca vai receber o portal. Por padrão fica de fora —
+  // a equipe marca quando quiser o cadastro dele para atender no balcão.
+  const [comSemEmail, setComSemEmail] = useState(false)
 
   const escolher = async (f: File | null) => {
     if (!f) return
@@ -506,11 +509,12 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
     setCsv(await f.text())
   }
 
-  const chamar = async (aplicar: boolean) => {
+  const chamar = async (aplicar: boolean, forcado?: boolean) => {
+    void forcado
     setBusy(true); setErro('')
     const d = await fetch('/api/clients/import', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csv, aplicar }),
+      body: JSON.stringify({ csv, aplicar, incluirSemEmail: comSemEmail }),
     }).then(r => r.json()).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setErro(d?.error || 'Não foi possível ler o arquivo.'); return }
@@ -586,9 +590,26 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
                     {previa.resumo.repetidosNoArquivo > 0 && linha('Repetidos dentro do arquivo', previa.resumo.repetidosNoArquivo, '#c06010')}
                     {linha('— empresas', previa.resumo.empresas)}
                     {linha('— pessoas físicas', previa.resumo.pessoasFisicas)}
-                    {previa.resumo.semEmail > 0 && linha('Sem e-mail (não terão portal)', previa.resumo.semEmail, '#6a7a9a')}
+                    {previa.resumo.semEmailDeFora > 0 && linha('Sem e-mail (ficam de fora)', previa.resumo.semEmailDeFora, '#6a7a9a')}
                     {previa.resumo.telefonesDescartados > 0 && linha('Telefones inválidos descartados', previa.resumo.telefonesDescartados, '#6a7a9a')}
                   </div>
+
+                  {previa.resumo.semEmail > 0 && (
+                    <label style={{ display:'flex', alignItems:'flex-start', gap:9, background:'#f8faff',
+                      border:'1px solid #e2e8f4', borderRadius:10, padding:'11px 14px', marginBottom:12,
+                      fontSize:13, color:'#4a5a70', cursor:'pointer', lineHeight:1.55 }}>
+                      <input type="checkbox" checked={comSemEmail} style={{ marginTop:3 }}
+                        onChange={e => { setComSemEmail(e.target.checked); setPrevia(null) }} />
+                      <span>
+                        <b>Incluir os {previa.resumo.semEmail} sem e-mail</b>
+                        <div style={{ fontSize:11.5, color:'#9aaab0', marginTop:2 }}>
+                          Eles existem e são atendidos no balcão, mas nunca vão receber acesso ao
+                          portal — o convite precisa de e-mail. Desmarcado, ficam de fora desta
+                          importação e podem ser trazidos depois.
+                        </div>
+                      </span>
+                    </label>
+                  )}
 
                   {previa.resumo.emailCompartilhado > 0 && (
                     <div style={{ background:'#fff8e8', border:'1px solid #f0d8a8', borderRadius:10, padding:'11px 14px', fontSize:12.5, color:'#5a4a1a', lineHeight:1.6, marginBottom:12 }}>

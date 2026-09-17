@@ -48,11 +48,17 @@ eq('espaco dobrado nao muda', chaveDoNome('Ana   Maria'), 'ana maria')
 
 // --- o plano, com banco vazio ---
 let p = planejarImportacao(regs, [])
-eq('todos entram', p.novos.length, 6)
+eq('entram os que tem e-mail', p.novos.length, 5)
 eq('nenhum ja existe', p.jaExistem.length, 0)
 eq('telefone ruim descartado, cadastro entra', p.telefonesDescartados, 1)
 eq('...e o cliente dele fica sem telefone', p.novos.find(n => n.name === 'Sem Telefone Bom')?.phone, null)
-eq('cliente sem e-mail entra', p.novos.find(n => n.name === 'Sem Email')?.email, null)
+
+// SEM E-MAIL fica separado, nao descartado: existe e e atendido no balcao,
+// mas nunca vai receber o portal. Quem importa decide se entra.
+eq('sem e-mail sai de novos', p.novos.some(n => n.name === 'Sem Email'), false)
+eq('...e vai para semEmail', p.semEmail.map(n => n.name), ['Sem Email'])
+eq('...com o telefone preservado', p.semEmail[0].phone, '+16175550101')
+eq('nada se perde: novos + semEmail = o arquivo util', p.novos.length + p.semEmail.length, 6)
 
 // O CASO QUE A CARTEIRA REAL ENSINOU: dono e empresa no mesmo e-mail sao
 // clientes DIFERENTES e os dois precisam entrar.
@@ -65,7 +71,7 @@ eq('...com quem compartilha', p.emailCompartilhado[0].nomes.sort(), ['Abilio de 
 // --- ja cadastrado fica de fora, mesmo escrito diferente ---
 p = planejarImportacao(regs, [{ name: '2D QUALITY LOGISTIC LLC' }])
 eq('caixa alta reconhece', p.jaExistem.map(x => x.name), ['2D Quality Logistic LLC'])
-eq('e nao entra de novo', p.novos.length, 5)
+eq('e nao entra de novo', p.novos.length, 4)
 
 p = planejarImportacao(regs, [{ name: 'qualquer', business_name: 'United Builders Solutions INC' }])
 eq('reconhece pela razao social, sem a virgula', p.jaExistem.map(x => x.name), ['United Builders Solutions, INC'])
