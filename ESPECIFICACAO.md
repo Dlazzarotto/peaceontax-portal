@@ -62,6 +62,23 @@ corrigido para descrever o que o sistema faz. Restringir assistente aos
 clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
 temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
 
+### 3.0 Status da fatura: vencimento vence a entrada
+
+`sent` · `partial` · `overdue` · `paid` · `void` saem de **uma** função no
+banco (`recalcular_status_da_fatura`), chamada pelo gatilho de
+`invoice_payments` e pelo estorno. A ordem importa: cancelada continua
+cancelada, quitada é quitada, **depois** vem o atraso, e só então "parcial".
+
+Uma fatura vencida com entrada paga é **vencida**. A ordem anterior punha
+`partial` antes de `overdue`: quem pagou $10 de $1.000 e estava três meses
+atrasado aparecia como "parcial" e saía da lista de vencidas — exatamente o
+cliente que deu entrada e parou de pagar. Quanto entrou continua legível em
+`paid_total`.
+
+O dia é o do **escritório** (`America/New_York`), não o do servidor: com
+`current_date` em UTC a fatura passava a vencida às 20h de Malden, no meio do
+expediente.
+
 ### 3.1 Autorizações por pessoa, em cima do nível
 
 O nível é um degrau inteiro. Para autorizar a assistente a **receber no

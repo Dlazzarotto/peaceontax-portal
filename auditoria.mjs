@@ -457,6 +457,29 @@ recusar('A tela nao pede os ids do Stripe na lista', 'app/dashboard/billing/page
         /pl\?\.stripe_subscription_id/,
         'pedir essas colunas no select principal foi o que fez a lista desaparecer')
 
+
+titulo('STATUS DA FATURA E TIPO DO CLIENTE')
+checar('O status tem UMA definicao no banco', 'sql/status-da-fatura-v2.sql',
+       /create or replace function public\.recalcular_status_da_fatura/,
+       'sem a funcao, gatilho e estorno voltam a calcular status separados')
+checar('Vencimento vence a entrada', 'sql/status-da-fatura-v2.sql',
+       /due_date < public\.data_da_firma\(\) then 'overdue'[\s\S]{0,120}soma > 0 then 'partial'/,
+       'se partial vier antes, vencida com entrada sai da lista de vencidas')
+checar('O vencimento usa o fuso da firma', 'sql/status-da-fatura-v2.sql',
+       /America\/New_York/, 'current_date e UTC: a fatura vencia as 20h de Malden')
+recusar('O estorno nao escreve status na mao', 'lib/estorno-stripe.ts',
+        /status: Number\(inv\.paid_total \|\| 0\) > 0 \? 'partial' : 'sent'/,
+        'era a segunda definicao de status, e com o mesmo defeito do gatilho')
+checar('O estorno chama a funcao unica', 'lib/estorno-stripe.ts',
+       /rpc\('recalcular_status_da_fatura'/, 'sem isto a fatura reaberta fica com status velho')
+checar('Tipo do cliente e editavel', 'app/api/clients/profile/route.ts',
+       /'type',/, 'a equipe erra o tipo no cadastro e nao havia como consertar')
+checar('Trocar o tipo sincroniza o login', 'app/api/clients/profile/route.ts',
+       /trocaDeTipo && current\.user_id/,
+       'user_metadata.client_type ficaria divergente do cadastro')
+checar('Trocar o tipo tem acao propria na trilha', 'app/api/clients/profile/route.ts',
+       /'type_changed'/, 'trocar tipo nao e uma edicao de perfil qualquer')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

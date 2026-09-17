@@ -16,7 +16,12 @@ interface Props {
 }
 
 export default function ProfileEditor({ client, onSaved }: Props) {
-  const isBusiness = client.type === 'business'
+  // O tipo agora se edita aqui: a equipe erra no cadastro e não havia como
+  // consertar. `isBusiness` segue o FORMULÁRIO, não o cadastro salvo, senão
+  // trocar para Empresa não revelaria os campos da empresa até salvar.
+  const [tipo, setTipo] = useState<'individual' | 'business'>(
+    client.type === 'business' ? 'business' : 'individual')
+  const isBusiness = tipo === 'business'
   const [f, setF] = useState({
     name: client.name || '', email: client.email || '', phone: client.phone || '',
     language: client.language || 'pt',
@@ -59,7 +64,7 @@ export default function ProfileEditor({ client, onSaved }: Props) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         clientId: client.id,
-        fields: { ...f, sms_phone: smsPhone },
+        fields: { ...f, sms_phone: smsPhone, type: tipo },
         reason: motivoEdicao,
         password: senhaEdicao,
         // Só manda o consentimento quando mudou — evita reescrever a trilha à toa
@@ -252,6 +257,31 @@ export default function ProfileEditor({ client, onSaved }: Props) {
           {field('Cidade', 'city')}
           {field('Estado', 'state')}
           {field('ZIP', 'zip')}
+          {/* Empresa x pessoa física. Muda o portal do cliente, o que o
+              contrato exige e quem na firma vê a ficha — por isso fica à
+              vista, com o aviso, e não escondido num campo de texto. */}
+          <div>
+            <label style={label}>Tipo de cliente</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {([['individual', '👤 Pessoa física'], ['business', '🏢 Empresa']] as const).map(([v, l]) => (
+                <button key={v} type="button" onClick={() => setTipo(v)}
+                  style={{ flex: 1, padding: '9px 10px', borderRadius: 9, cursor: 'pointer',
+                    fontSize: 13, fontWeight: 700, fontFamily: 'Georgia,serif',
+                    border: tipo === v ? '2px solid #2D3278' : '1.5px solid #e2e8f4',
+                    background: tipo === v ? '#2D3278' : '#fff',
+                    color: tipo === v ? '#fff' : '#6a7a9a' }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            {tipo !== (client.type === 'business' ? 'business' : 'individual') && (
+              <p style={{ fontSize: 11.5, color: '#7A5A10', margin: '6px 0 0', lineHeight: 1.5 }}>
+                ⚠️ Mudar o tipo altera o portal que este cliente vê e quem na
+                firma tem acesso à ficha. Fica registrado como troca de tipo.
+              </p>
+            )}
+          </div>
+
           {isBusiness ? (
             <>
               {field('Nome da empresa', 'business_name')}

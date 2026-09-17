@@ -309,9 +309,26 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   só como `create or replace` do que já está lá. A regra de "à vista" que
   EXISTE é outra: parcelamento exige cartão ou ACH como forma esperada,
   porque o Stripe não debita dinheiro automaticamente.
-  Duas decisões pendentes no gatilho, anotadas no arquivo: fatura vencida com
-  pagamento parcial aparece como `partial` e nunca como `overdue`; e
-  `current_date` é UTC, então o vencimento vira `overdue` às 20h de Malden.
+- **O status da fatura tem UMA definição, no banco**
+  (`recalcular_status_da_fatura`, em `sql/status-da-fatura-v2.sql`). O gatilho
+  chama; `lib/estorno-stripe.ts` chama por RPC. Antes o estorno escrevia
+  `'partial'`/`'sent'` na mão, sem olhar o vencimento — segunda definição, com
+  o mesmo defeito. Duas corrigidas ali: **vencimento vence a entrada** (a
+  ordem punha `partial` antes de `overdue`, e quem pagou $10 de $1.000 três
+  meses atrasado saía da lista de vencidas — justamente o parcelamento que
+  desanda), e o dia é o do **escritório** (`data_da_firma()`), não
+  `current_date` em UTC, que fazia a fatura vencer às 20h de Malden. Quem lê
+  status sempre lê `sent`/`partial`/`overdue` juntos como "em aberto", então
+  nenhuma tela mudou; o aging já calculava pelo `due_date`. A migração acerta
+  o histórico.
+- **Empresa × pessoa física se edita na ficha** (`type` em `EDITABLE` de
+  `/api/clients/profile`). Não é campo comum: valida a lista, faz empresa sem
+  razão social herdar o nome, **sincroniza a cópia em
+  `user_metadata.client_type`** do login (gravada no convite e na senha
+  provisória — divergir é questão de tempo) e grava a trilha como
+  `type_changed`. O tipo muda o portal que o cliente vê, o que o contrato
+  exige e — com o assistente restrito a pessoa física — quem na firma vê a
+  ficha.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

@@ -70,14 +70,20 @@ export async function desfazerRecebimento(
   }).then(() => null, () => null)
 
   // A fatura pode ter ficado quitada; sem saldo o gatilho não reabre sozinho
-  // em todo banco. Confere e corrige.
-  const { data: inv } = await db.from('invoices')
-    .select('id, number, total, paid_total, status').eq('id', pagamento.invoice_id).maybeSingle()
-  if (inv && Number(inv.paid_total || 0) < Number(inv.total) && inv.status === 'paid') {
-    await db.from('invoices').update({
-      status: Number(inv.paid_total || 0) > 0 ? 'partial' : 'sent',
-      updated_at: new Date().toISOString(),
-    }).eq('id', inv.id)
+  // em todo banco. Quem decide o status é UMA função no banco, a mesma que o
+  // gatilho chama (sql/status-da-fatura-v2.sql).
+  //
+  // Aqui se escrevia 'partial'/'sent' na mão, sem olhar o vencimento — ou
+  // seja, com o mesmo defeito que o gatilho tinha: uma fatura vencida
+  // reaberta por estorno voltava como "parcial" e saía da lista de vencidas.
+  // Duas definições de status divergem, e divergiram.
+  const { error: errRecalc } = await db.rpc('recalcular_status_da_fatura', {
+    fid: pagamento.invoice_id,
+  })
+  if (errRecalc) {
+    // Não derruba o estorno (o dinheiro já voltou e a trilha já está gravada),
+    // mas não finge que ficou certo: o status pode estar desatualizado.
+    console.error('[estorno] recalcular_status_da_fatura:', errRecalc.message)
   }
   return true
 }

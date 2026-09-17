@@ -25,6 +25,12 @@ import { registrarConsentimento, normalizarTelefone } from '@/lib/sms'
 const EDITABLE = new Set([
   'name','email','phone','sms_phone','language','address_line1','city','state','zip',
   'filing_status','business_name','ein','business_type','industry','business_kind','active',
+  // Empresa x pessoa física. Entrou aqui porque a equipe erra o tipo no
+  // cadastro e não havia como consertar — e com o assistente restrito a
+  // pessoa física, o tipo passou a decidir QUEM VÊ o cliente. Por isso não é
+  // campo comum: tem validação própria, sincroniza o login e o registro na
+  // trilha sai com ação `type_changed`, não `profile_edited`.
+  'type',
 ])
 
 export async function POST(req: NextRequest) {
@@ -140,6 +146,22 @@ export async function POST(req: NextRequest) {
     delete patch.sms_phone
   }
 
+  // ── Empresa x pessoa física ──
+  // O tipo muda o que o cliente vê no portal, o que o contrato exige (título
+  // do signatário) e, com o assistente restrito, quem na firma vê a ficha.
+  const trocaDeTipo = 'type' in patch && patch.type !== current.type
+  if ('type' in patch) {
+    if (!['individual', 'business'].includes(String(patch.type))) {
+      return NextResponse.json({ error: 'Tipo inválido: use Empresa ou Pessoa física.' }, { status: 400 })
+    }
+    // Empresa sem razão social sai com o nome em branco no impresso — a
+    // mesma regra de lib/novo-cliente.ts, aplicada aqui também.
+    if (patch.type === 'business') {
+      const razao = (patch.business_name ?? current.business_name) as string | null
+      if (!razao?.trim()) patch.business_name = current.name
+    }
+  }
+
   if (Object.keys(patch).length > 0) {
     patch.updated_at = new Date().toISOString()
     const { error } = await db.from('clients').update(patch).eq('id', clientId)
@@ -158,9 +180,23 @@ export async function POST(req: NextRequest) {
     next.sms_consent = !!smsConsent
   }
 
-  const action = isActiveChange
-    ? (patch.active ? 'activated' : 'deactivated')
-    : (prev.email !== undefined && prev.email !== next.email ? 'email_changed' : 'profile_edited')
+  // O login do cliente carrega uma CÓPIA do tipo em user_metadata
+  // (gravada no convite e na senha provisória). Se ela não acompanhar, as
+  // duas versões divergem e um dia alguém lê a errada.
+  if (trocaDeTipo && current.user_id) {
+    const { data: u } = await db.auth.admin.getUserById(current.user_id)
+    if (u?.user) {
+      await db.auth.admin.updateUserById(current.user_id, {
+        user_metadata: { ...(u.user.user_metadata || {}), client_type: patch.type },
+      })
+    }
+  }
+
+  const action = trocaDeTipo
+    ? 'type_changed'
+    : isActiveChange
+      ? (patch.active ? 'activated' : 'deactivated')
+      : (prev.email !== undefined && prev.email !== next.email ? 'email_changed' : 'profile_edited')
 
   await db.from('client_audit').insert({
     client_id: clientId, action, reason: reason ?? null,
