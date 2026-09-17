@@ -336,4 +336,8 @@ middleware.ts        controle de acesso por rota
   roda no deploy: aplica-se com `npm run migrar -- sql/<arquivo>.sql` (que
   anota em `public.schema_migrations`) ou à mão no SQL Editor — e nesse caso
   `npm run migrar -- --registrar sql/<arquivo>.sql` anota que foi feito.
+  **A chave do livro é o CAMINHO, não o nome**: `sql/painel-v1.sql`, nunca
+  `painel-v1.sql` (`migrar.mjs` monta `sql/${f}` para consultar). Registro
+  feito com o nome curto vira uma linha que ninguém encontra, e `--pendentes`
+  segue dizendo PENDENTE — alguém roda a migração de novo.
   A entrega sempre diz qual migração precisa rodar.

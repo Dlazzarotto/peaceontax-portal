@@ -333,6 +333,16 @@ recusar('A trava nao vive so na tela', 'app/dashboard/billing/page.tsx',
         /approverPassword['"]?\s*:\s*apSenha\s*\}\s*\)\s*\}\s*$/m,
         'a conferencia tem de estar na rota, nao so no componente')
 
+titulo('LIVRO DE MIGRACOES: A CHAVE E O CAMINHO')
+// migrar.mjs consulta por `sql/<arquivo>.sql`. Registro anotado a mao com o
+// nome curto vira linha orfa e --pendentes segue mandando rodar de novo.
+checar('migrar.mjs monta a chave com o caminho', 'scripts/migrar.mjs',
+       /const nome = `sql\/\$\{f\}`/,
+       'mudou a forma da chave — o CLAUDE.md e os registros manuais precisam acompanhar')
+checar('O CLAUDE.md avisa sobre a chave', 'CLAUDE.md',
+       /A chave do livro é o CAMINHO/,
+       'sem esse aviso, o registro manual sai com o nome curto')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
