@@ -381,6 +381,43 @@ checar('A ficha so move o fluxo', 'app/api/clients/[id]/route.ts',
        /CAMPOS_DE_FLUXO = \['stage', 'assignee', 'notes'\]/,
        'a lista de campos do fluxo mudou — confira se nao entrou dado de cadastro')
 
+titulo('PARCELAMENTO: ENTRADA EM DOLAR E CANCELAMENTO')
+checar('A conta da entrada vive num modulo so', 'lib/entrada-parcelamento.ts',
+       /export function entradaDoPedido/, 'a conta da entrada sumiu')
+checar('A rota usa o modulo', 'app/api/billing/installment-plan/route.ts',
+       /entradaDoPedido\(\{ saldo/, 'a rota voltou a calcular a entrada sozinha')
+checar('A previa da tela usa o MESMO modulo', 'app/dashboard/billing/page.tsx',
+       /entradaDoPedido\(\{ saldo: f\.saldo/,
+       'tela e servidor calculando a entrada separados mostram numeros diferentes')
+recusar('O campo nao pede mais porcentagem', 'app/dashboard/billing/page.tsx',
+        /ENTRADA %/, 'para uma entrada de $250 era preciso digitar 25')
+checar('Cancelar parcelamento tem caminho proprio', 'lib/parcelamento.ts',
+       /'plano_cancelado'/, 'o cancelamento do plano precisa do proprio motivo')
+checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
+       /plano_cancelado'\)\s*\{[\s\S]{0,120}payment_plan: 'full'/,
+       'cancelar o plano sem reabrir a fatura esconde o saldo devido')
+{
+  // Contar caracteres entre dois trechos e frageil: o que importa e que as
+  // pecas estejam DENTRO do PATCH, nao a distancia entre elas.
+  const arq = 'app/api/billing/installment-plan/route.ts'
+  const todo = existsSync(join(raiz, arq)) ? readFileSync(join(raiz, arq), 'utf8') : ''
+  const i = todo.indexOf('export async function PATCH')
+  const patch = i >= 0 ? todo.slice(i) : ''
+  const exige = (nome, re, porque) =>
+    re.test(patch) ? ok(nome) : falta(nome, patch ? porque : 'PATCH nao encontrado na rota')
+  exige('Cancelar exige senha', /signInWithPassword/,
+        'parar uma regua de cobranca e acao sensivel — principio 3')
+  exige('Cancelar exige motivo', /motivo\.length < 5/, 'sem motivo a trilha nao explica nada')
+  exige('Cancelar exige permissao', /!perms\.cancelar/, 'qualquer um pararia a cobranca')
+  exige('Cancelar chama a rotina unica', /encerrarParcelamento\(/,
+        'cancelar por fora de lib/parcelamento deixa debito orfao no Stripe')
+  exige('O cliente e avisado', /avisarNoPortal\(/,
+        'o cliente tinha um acordo e um debito automatico: precisa saber que acabou')
+  exige('Fica na trilha da fatura', /installment_plan_cancelled/, 'sem rastro na fatura')
+  exige('Plano ja encerrado nao cancela de novo', /'cancelled', 'completed'/,
+        'rodaria de novo e tentaria cancelar no Stripe algo que nao existe')
+}
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

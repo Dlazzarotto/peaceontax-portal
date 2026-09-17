@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
+import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 
 interface Inv {
   id: string; number: string; doc_type: string; status: string; cliente: string
@@ -120,6 +121,12 @@ export default function BillingPage() {
   // Cartão e Zelle a equipe registra sozinha; o resto pede senha de gerente
   // ou sócio (lib/recebimento-aprovacao.ts). Não fica em memória depois de
   // salvar: senha de terceiro não sobra em tela aberta no balcão.
+  // Cancelar parcelamento: acordo que desandou. Para o debito no Stripe e
+  // deixa a fatura em aberto com o saldo. Pede motivo e senha, como toda
+  // acao que mexe em regua de cobranca.
+  const [pcCancelar, setPcCancelar] = useState<any | null>(null)
+  const [pcMotivo, setPcMotivo]     = useState('')
+  const [pcSenha, setPcSenha]       = useState('')
   const [apEmail, setApEmail] = useState('')
   const [apSenha, setApSenha] = useState('')
   const [pagamentos, setPagamentos] = useState<any[]>([])
@@ -147,6 +154,21 @@ export default function BillingPage() {
   useEffect(() => { load() }, [filtroDoc, filtroStatus])
   useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
 
+  const cancelarParcelamento = async () => {
+    if (!pcCancelar) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/installment-plan', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planId: pcCancelar.id, action: 'cancel', motivo: pcMotivo, password: pcSenha }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    setPcSenha('')
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setPcCancelar(null); setPcMotivo('')
+    loadParcelamentos(); load()
+  }
+
   const loadParcelamentos = async () => {
     const d = await jsonSeguro(await fetch('/api/billing/installment-plan'))
     if (d?.plans) setPcDados(d)
@@ -159,9 +181,12 @@ export default function BillingPage() {
     const f = (pcDados.invoices || []).find((x: any) => x.id === pcFatura)
     const n = Math.max(2, Math.min(36, Number(pcParcelas) || 0))
     if (!f || !pcPrimeira || n < 2) return null
-    const entrada = Math.round(f.saldo * ((Number(pcEntrada) || 0) / 100) * 100) / 100
-    const restante = Math.round((f.saldo - entrada) * 100) / 100
-    if (restante <= 0) return null
+    // A conta da entrada é a MESMA da rota (lib/entrada-parcelamento.ts):
+    // duas telas nunca devem calcular o mesmo número de jeitos diferentes.
+    const e = entradaDoPedido({ saldo: f.saldo, entryAmount: pcEntrada })
+    if ('erro' in e) return { erroEntrada: e.erro, saldo: f.saldo } as any
+    const entrada = e.entrada
+    const restante = e.restante
     const base = Math.floor((restante / n) * 100) / 100
     const inicio = new Date(`${pcPrimeira}T12:00:00Z`)
     const linhas = Array.from({ length: n }, (_, i) => {
@@ -178,7 +203,7 @@ export default function BillingPage() {
         valor: i === n - 1 ? Math.round((restante - base * (n - 1)) * 100) / 100 : base,
       }
     })
-    return { saldo: f.saldo, entrada, restante, linhas }
+    return { saldo: f.saldo, entrada, pct: e.pct, restante, linhas }
   })()
 
   const criarParcelamento = async () => {
@@ -187,7 +212,7 @@ export default function BillingPage() {
     const d = await fetch('/api/billing/installment-plan', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        invoiceId: pcFatura, entryPct: Number(pcEntrada) || 0,
+        invoiceId: pcFatura, entryAmount: Number(pcEntrada) || 0,
         installments: Number(pcParcelas) || 0, frequency: pcFreq, firstDueDate: pcPrimeira,
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
@@ -954,9 +979,14 @@ export default function BillingPage() {
                 </label>
 
                 <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>ENTRADA %</span>
-                  <input type="number" min={0} max={90} step="1" value={pcEntrada}
-                    onChange={e => setPcEntrada(e.target.value)} style={{ ...inp, width: 100 }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>ENTRADA $</span>
+                  <input type="number" min={0} step="0.01" value={pcEntrada}
+                    onChange={e => setPcEntrada(e.target.value)} style={{ ...inp, width: 120 }} />
+                  {/* O valor é em dólar porque é assim que o cliente paga.
+                      A porcentagem aparece na prévia, calculada. */}
+                  <span style={{ fontSize: 11, color: '#9AAAB0' }}>
+                    {pcPreview?.saldo ? `até ${money(tetoDaEntrada(pcPreview.saldo))}` : 'em dólar'}
+                  </span>
                 </label>
 
                 <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
@@ -980,12 +1010,21 @@ export default function BillingPage() {
                 </label>
               </div>
 
-              {pcPreview && (
+              {/* Entrada fora do limite: dizer aqui, antes de criar, com o
+                  valor que resolve — não depois, num erro do servidor. */}
+              {pcPreview?.erroEntrada && (
+                <div style={{ marginTop: 14, padding: '11px 14px', background: '#FDF0F0',
+                  border: '1px solid #F0C0C0', borderRadius: 10, fontSize: 13, color: '#B02020', lineHeight: 1.55 }}>
+                  ⚠️ {pcPreview.erroEntrada}
+                </div>
+              )}
+
+              {pcPreview && !pcPreview.erroEntrada && (
                 <div style={{ marginTop: 14, padding: '12px 14px', background: '#F7F9FC', borderRadius: 10, border: '1px solid #E2E8F4' }}>
                   <div style={{ fontSize: 13.5, color: '#0F2340', fontWeight: 700, marginBottom: 8 }}>
                     Saldo {money(pcPreview.saldo)}
                     {pcPreview.entrada > 0
-                      ? <> · entrada {money(pcPreview.entrada)} · a parcelar {money(pcPreview.restante)}</>
+                      ? <> · entrada {money(pcPreview.entrada)} ({pcPreview.pct}%) · a parcelar {money(pcPreview.restante)}</>
                       : <> · sem entrada</>}
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 8 }}>
@@ -1000,7 +1039,9 @@ export default function BillingPage() {
               )}
 
               <div style={{ marginTop: 14 }}>
-                <button onClick={criarParcelamento} disabled={busy || !pcPreview} style={btn('#1A6B4A', busy || !pcPreview)}>
+                <button onClick={criarParcelamento}
+                  disabled={busy || !pcPreview || !!pcPreview.erroEntrada}
+                  style={btn('#1A6B4A', busy || !pcPreview || !!pcPreview.erroEntrada)}>
                   Criar parcelamento e gerar link
                 </button>
               </div>
@@ -1039,7 +1080,14 @@ export default function BillingPage() {
                       </td>
                       <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
                         {['awaiting_entry', 'awaiting_setup'].includes(pl.status) && pl.stripe_session_id && (
-                          <span style={{ fontSize: 12.5, color: '#6A7A9A' }}>aguardando o cliente</span>
+                          <span style={{ fontSize: 12.5, color: '#6A7A9A', marginRight: 10 }}>aguardando o cliente</span>
+                        )}
+                        {!['cancelled', 'completed'].includes(pl.status) && pcDados.perms?.cancelar && (
+                          <button onClick={() => { setPcCancelar(pl); setPcMotivo(''); setPcSenha(''); setMsg('') }}
+                            style={{ background: 'none', border: 'none', color: '#B02020',
+                              fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
+                            Cancelar parcelamento
+                          </button>
                         )}
                       </td>
                     </tr>
@@ -1049,6 +1097,56 @@ export default function BillingPage() {
             )}
           </div>
         </>
+      )}
+
+      {/* Cancelar parcelamento: o acordo desandou e o cliente vai pagar de
+          outro jeito. O que já foi pago FICA pago — isto para a cobrança
+          futura, não desfaz recebimento (isso é estorno). */}
+      {pcCancelar && (
+        <div onClick={() => setPcCancelar(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, width: '100%', maxWidth: 460, padding: '20px 22px' }}>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+              Cancelar parcelamento de {pcCancelar.numero}
+            </h3>
+            <p style={{ fontSize: 13, color: '#4A5A70', margin: '0 0 14px', lineHeight: 1.6 }}>
+              O débito automático para de cobrar e as parcelas que faltam são
+              canceladas. <strong>A fatura continua em aberto com o saldo</strong> —
+              o que o cliente já pagou fica pago. Para devolver dinheiro ao
+              cliente, o caminho é o estorno, não este.
+            </p>
+            <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F4', borderRadius: 10,
+              padding: '10px 12px', marginBottom: 14, fontSize: 13, color: '#4A5A70' }}>
+              {pcCancelar.paid_installments}/{pcCancelar.installments} parcelas pagas ·
+              plano de {money(pcCancelar.total)}
+            </div>
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>
+              Motivo * (fica na trilha do plano)
+            </label>
+            <input value={pcMotivo} onChange={e => setPcMotivo(e.target.value)}
+              placeholder="ex.: cliente vai quitar o saldo por Zelle"
+              style={{ ...inp, width: '100%', marginBottom: 10, boxSizing: 'border-box' as const }} />
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>
+              Sua senha *
+            </label>
+            <input type="password" value={pcSenha} onChange={e => setPcSenha(e.target.value)}
+              autoComplete="new-password"
+              style={{ ...inp, width: '100%', marginBottom: 16, boxSizing: 'border-box' as const }} />
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setPcCancelar(null)} style={btn('#6A7A9A')}>Voltar</button>
+              <button onClick={cancelarParcelamento}
+                disabled={busy || pcMotivo.trim().length < 5 || !pcSenha}
+                style={btn('#B02020', busy || pcMotivo.trim().length < 5 || !pcSenha)}>
+                {busy ? 'Cancelando…' : 'Cancelar parcelamento'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Cadastro rápido, sem sair da emissão. Só o essencial: o resto do

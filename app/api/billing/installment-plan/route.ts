@@ -1,7 +1,8 @@
 // POST /api/billing/installment-plan — transforma uma fatura em aberto em parcelamento
 //
-// Body: { invoiceId, entryPct?, installments, frequency, firstDueDate }
-//   entryPct     0 a 90 (0 = sem entrada)
+// Body: { invoiceId, entryAmount?, entryPct?, installments, frequency, firstDueDate }
+//   entryAmount  ENTRADA EM DÓLAR, como a equipe digita (0 = sem entrada)
+//   entryPct     formato antigo, em porcentagem; entryAmount tem precedência
 //   frequency    weekly | biweekly | monthly
 //   firstDueDate data da 1ª parcela, escolhida no acordo
 //
@@ -13,6 +14,13 @@
 // vem de lib/plan-checkout.ts, e o cliente é avisado por e-mail e no portal
 // para cadastrar o débito pelo portal (o link do Checkout expira em 24h).
 //
+// PATCH { planId, action: 'cancel', motivo, password } — CANCELA o parcelamento
+//   O acordo desandou e o cliente vai pagar de outro jeito. Para o débito no
+//   Stripe, anula as invoices de parcela já abertas, cancela o cronograma e
+//   DEIXA A FATURA EM ABERTO com o saldo que falta. O que já foi pago fica
+//   pago: cancelar para a cobrança futura, nunca desfaz recebimento — isso é
+//   estorno e tem rotina própria.
+//
 // Só gerente ou sócio.
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -21,6 +29,9 @@ import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { avancarData, type Frequency } from '@/lib/plans'
 import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
+import { encerrarParcelamento } from '@/lib/parcelamento'
+import { entradaDoPedido } from '@/lib/entrada-parcelamento'
+import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
@@ -117,11 +128,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Informe a data da primeira parcela.' }, { status: 400 })
   }
 
-  const entryPct = round2(Number(b.entryPct) || 0)
-  if (entryPct < 0 || entryPct > 90) {
-    return NextResponse.json({ error: 'A entrada vai de 0% a 90%.' }, { status: 400 })
-  }
-
   const { data: inv } = await db.from('invoices')
     .select('id, client_id, number, doc_type, total, paid_total, status, clients(name, email, language)')
     .eq('id', b.invoiceId).maybeSingle()
@@ -149,11 +155,11 @@ export async function POST(req: NextRequest) {
     }, { status: 409 })
   }
 
-  const entrada = round2(saldo * (entryPct / 100))
-  const restante = round2(saldo - entrada)
-  if (restante <= 0) {
-    return NextResponse.json({ error: 'A entrada não pode cobrir o saldo inteiro.' }, { status: 400 })
-  }
+  // A entrada vem em DÓLAR (lib/entrada-parcelamento.ts faz a conta e a
+  // porcentagem). A validação só é possível aqui, depois de saber o saldo.
+  const res = entradaDoPedido({ saldo, entryAmount: b.entryAmount, entryPct: b.entryPct })
+  if ('erro' in res) return NextResponse.json({ error: res.erro }, { status: 400 })
+  const { entrada, pct: entryPct, restante } = res
 
   const cronograma = montarCronograma(restante, n, String(b.firstDueDate), freq)
   const valorParcela = cronograma[0].amount
@@ -242,4 +248,104 @@ export async function POST(req: NextRequest) {
     console.error('Installment plan error:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
+}
+
+// ── Cancelar o parcelamento, com a fatura seguindo em aberto ──
+export async function PATCH(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+  const perms = await permissoesFinanceiro(auth.userId)
+  if (!perms.cancelar) return NextResponse.json({ error: RECUSA.cancelar }, { status: 403 })
+
+  const b = await req.json().catch(() => ({} as any))
+  if (b.action !== 'cancel') return NextResponse.json({ error: 'Ação desconhecida.' }, { status: 400 })
+  if (!b.planId) return NextResponse.json({ error: 'planId obrigatório' }, { status: 400 })
+
+  const motivo = String(b.motivo || '').trim()
+  if (motivo.length < 5) {
+    return NextResponse.json({
+      error: 'Descreva por que o parcelamento está sendo cancelado (mínimo 5 caracteres). Fica na trilha do plano.',
+    }, { status: 400 })
+  }
+  if (!b.password) return NextResponse.json({ error: 'Confirme com a sua senha.' }, { status: 400 })
+
+  const db = serviceDb()
+
+  // Senha da própria pessoa: parar uma régua de cobrança é ação sensível
+  // (princípio 3) e não pode sair de uma tela destravada no balcão.
+  {
+    const { data: quem } = await db.auth.admin.getUserById(auth.userId)
+    const email = quem?.user?.email
+    if (!email) return NextResponse.json({ error: 'Não foi possível identificar seu login.' }, { status: 400 })
+    const sbAuth = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+    const { error: pwErr } = await sbAuth.auth.signInWithPassword({ email, password: String(b.password).trim() })
+    if (pwErr) {
+      const m = pwErr.message || ''
+      if (/rate|too many|429/i.test(m)) {
+        return NextResponse.json({ error: 'Muitas tentativas. Aguarde 1 minuto.' }, { status: 429 })
+      }
+      return NextResponse.json({ error: `Senha não confere para ${email}.` }, { status: 401 })
+    }
+  }
+
+  const { data: plano } = await db.from('payment_plans')
+    .select('id, invoice_id, client_id, status, kind, installments, paid_installments, stripe_schedule_id, stripe_subscription_id')
+    .eq('id', b.planId).eq('kind', 'installment').maybeSingle()
+  if (!plano) return NextResponse.json({ error: 'Parcelamento não encontrado.' }, { status: 404 })
+  if (!plano.invoice_id) {
+    return NextResponse.json({ error: 'Este plano não está ligado a uma fatura.' }, { status: 409 })
+  }
+  // Já encerrado: dizer isso é melhor que rodar de novo e tentar cancelar no
+  // Stripe uma assinatura que não existe mais.
+  if (['cancelled', 'completed'].includes(String(plano.status))) {
+    return NextResponse.json({
+      error: `Este parcelamento já está ${plano.status === 'completed' ? 'concluído' : 'cancelado'}.`,
+    }, { status: 409 })
+  }
+
+  const { data: inv } = await db.from('invoices')
+    .select('id, number, total, paid_total, clients(name, email, language)')
+    .eq('id', plano.invoice_id).maybeSingle()
+  if (!inv) return NextResponse.json({ error: 'Fatura do parcelamento não encontrada.' }, { status: 404 })
+
+  const r = await encerrarParcelamento(db, stripeClient(), plano, plano.invoice_id, {
+    motivo: 'plano_cancelado', performedBy: auth.userId, razao: motivo,
+  })
+
+  const saldo = round2(Number(inv.total) - Number(inv.paid_total))
+
+  await db.from('invoice_audit').insert({
+    invoice_id: inv.id, action: 'installment_plan_cancelled', performed_by: auth.userId,
+    staff_level: perms.nivel, reason: motivo,
+    next: { planId: plano.id, saldoEmAberto: saldo, stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas },
+  }).then(() => null, () => null)
+
+  // O cliente tinha um acordo e o débito automático dele. Se o acordo acabou,
+  // ele precisa saber ANTES de estranhar o débito que não veio.
+  const client = (inv as any).clients || {}
+  const lang = (client.language || 'en').toLowerCase()
+  const texto = lang === 'pt'
+    ? `📆 O parcelamento da fatura ${inv.number} foi encerrado e o débito automático não será mais cobrado. Saldo em aberto: $${saldo.toFixed(2)}. Fale com a nossa equipe para combinar o pagamento.`
+    : lang === 'es'
+    ? `📆 El plan de cuotas de la factura ${inv.number} fue cancelado y el débito automático ya no se cobrará. Saldo pendiente: $${saldo.toFixed(2)}. Hable con nuestro equipo para acordar el pago.`
+    : `📆 The installment plan for invoice ${inv.number} was ended and automatic debit will no longer be charged. Outstanding balance: $${saldo.toFixed(2)}. Please contact our team to arrange payment.`
+  await avisarNoPortal(db, plano.client_id, texto)
+  if (client.email) {
+    await enviarEmail(client.email,
+      lang === 'pt' ? `Parcelamento da fatura ${inv.number} encerrado`
+      : lang === 'es' ? `Plan de cuotas de la factura ${inv.number} cancelado`
+      : `Installment plan for invoice ${inv.number} ended`,
+      emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${texto.replace(/^📆 /, '')}</p>`,
+        botao: { texto: lang === 'pt' ? 'Ver em Pagamentos' : lang === 'es' ? 'Ver en Pagos' : 'View in Payments',
+          url: `${APP_URL}/portal/payments` } }))
+  }
+
+  return NextResponse.json({
+    ok: true,
+    saldo,
+    message: `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
+  })
 }
