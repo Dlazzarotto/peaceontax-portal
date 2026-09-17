@@ -187,8 +187,18 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `invoice.period_start`. Débito que falha deixa a fatura em aberto com o
   motivo; `billing/recharge` cobra de novo; baixa manual marca a invoice do
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
-  sempre de uma fatura, não se cancela em andamento — só quitação antecipada
-  ou parcela que falhou recebida por fora (`billing/payments`).
+  sempre de uma fatura; além da quitação antecipada e da parcela que falhou
+  recebida por fora (`billing/payments`), **agora se cancela em andamento**
+  (`PATCH /api/billing/installment-plan`, motivo `plano_cancelado`): para o
+  débito, anula as invoices de parcela abertas e DEIXA A FATURA EM ABERTO com
+  o saldo. O que já foi pago fica pago — cancelar nunca desfaz recebimento,
+  isso é estorno. Pede `cancelar` + senha + motivo, e o cliente é avisado:
+  ele tinha um acordo e um débito automático. **Proposta × cobrança são
+  casos diferentes**: plano em `awaiting_*` sem parcela paga e sem assinatura
+  no Stripe nunca saiu do lugar — nada a parar, nada cobrado. O aviso ao
+  cliente é outro (o link deixou de valer), senão ele procura uma cobrança
+  que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
+  abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
 - **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
   `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
   no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
@@ -269,6 +279,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 - **Importar a carteira (`/api/clients/import`) mostra o plano antes de
   gravar e NUNCA envia convite** — quase mil e-mails de uma vez. Gerente ou
   sócio.
+- **A entrada do parcelamento é em DÓLAR, não em porcentagem**
+  (`lib/entrada-parcelamento.ts`). O campo pedia `ENTRADA %` de 0 a 90: para
+  uma entrada de $250 em $1.000 era preciso digitar 25, e digitar 250 era
+  recusado com "a entrada vai de 0% a 90%" — ninguém liga uma coisa à outra.
+  Entrada quebrada é pior ($237 é 23,7%). A porcentagem passou a ser
+  DERIVADA, porque o banco guarda as duas colunas e o impresso a mostra. A
+  rota E a prévia da tela chamam `entradaDoPedido` — a mesma conta num lugar
+  só. A recusa diz o valor máximo em dólar, não a regra abstrata. 26 casos
+  em `testes/entrada-parcelamento.mts`.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
