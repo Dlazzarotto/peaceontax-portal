@@ -108,6 +108,13 @@ Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso —
 a mudança de papel ali também atualiza `staff_roles`, senão a tela diz
 "Manager" e o sistema continua tratando como assistente.
 
+**O nível só é reescrito quando o papel muda.** Papel e nível podem
+discordar de propósito: existe hoje quem tem papel `firm` e nível `manager`,
+afinado à mão em `/api/account/team`. Sincronizar em toda gravação faria uma
+edição de telefone promover essa pessoa a sócia — e ela passaria a ver o
+faturamento consolidado, sem ninguém pedir. Quem manda no que a pessoa PODE
+é sempre o `staff_roles`.
+
 ---
 
 ## 4. Módulos

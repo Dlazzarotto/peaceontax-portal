@@ -15,6 +15,9 @@
 //
 // Terceiro: mudar o papel aqui não tocava em staff_roles, que é a fonte de
 // permissão real — a tela dizia "Manager" e o sistema tratava como junior.
+// Sincroniza, sim, mas SÓ quando o papel muda: o nível pode ter sido afinado
+// à mão em /api/account/team, e uma edição de telefone não pode promover
+// ninguém.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
@@ -86,17 +89,31 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
     // staff_roles é a permissão real — sem isto a tela diz Manager e o
     // sistema continua tratando como assistente.
-    const nivel = nivelDoPapel(papel)
-    const { error: errNivel } = await db.from('staff_roles').upsert({
-      user_id:      params.id,
-      level:        nivel,
-      display_name: (updates.user_metadata.full_name as string) || null,
-      updated_at:   new Date().toISOString(),
-    }, { onConflict: 'user_id' })
-    if (errNivel) {
-      return NextResponse.json({
-        error: `Login atualizado, mas o nível de permissão não gravou: ${errNivel.message}`,
-      }, { status: 500 })
+    //
+    // Mas SÓ quando o papel realmente mudou, ou quando ainda não há registro.
+    // O nível pode ter sido afinado à mão em /api/account/team: existe hoje
+    // quem tem papel 'firm' e nível 'manager' de propósito. Sincronizar em
+    // toda gravação faria uma edição de telefone promover essa pessoa a sócia
+    // — e ela passaria a ver o faturamento consolidado, calada.
+    const { data: registro } = await db.from('staff_roles')
+      .select('level').eq('user_id', params.id).maybeSingle()
+
+    const papelMudou = papel !== String(metaAtual.role || '')
+    let nivel = (registro?.level as string) || nivelDoPapel(papel)
+
+    if (papelMudou || !registro) {
+      nivel = nivelDoPapel(papel)
+      const { error: errNivel } = await db.from('staff_roles').upsert({
+        user_id:      params.id,
+        level:        nivel,
+        display_name: (updates.user_metadata.full_name as string) || null,
+        updated_at:   new Date().toISOString(),
+      }, { onConflict: 'user_id' })
+      if (errNivel) {
+        return NextResponse.json({
+          error: `Login atualizado, mas o nível de permissão não gravou: ${errNivel.message}`,
+        }, { status: 500 })
+      }
     }
 
     return NextResponse.json({ user: data.user, nivel })
