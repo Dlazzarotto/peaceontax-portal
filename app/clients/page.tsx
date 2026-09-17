@@ -45,6 +45,11 @@ export default function ClientsPage() {
 
   const [resumo, setResumo] = useState<Record<string, ResumoTipo> | null>(null)
   const [enviando, setEnviando] = useState<string | null>(null)
+  // Contador de recarga. router.refresh() atualiza o componente de servidor,
+  // e os dados desta tela vêm de um fetch no cliente: sem mexer nas
+  // dependências do efeito, ele nunca refazia a busca. Depois de importar, os
+  // cartões ficavam em zero — como se nada tivesse entrado.
+  const [recarga, setRecarga] = useState(0)
   const [aviso, setAviso] = useState('')
 
   const load = (q = '') => {
@@ -63,7 +68,7 @@ export default function ClientsPage() {
     fetch('/api/clients?resumo=1').then(r => r.json())
       .then(d => { setResumo(d.resumo || null); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [search, filter, tipo])
+  }, [search, filter, tipo, recarga])
 
   const updateStage = async (clientId: string, newStage: string) => {
     await fetch(`/api/clients/${clientId}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ stage: newStage }) })
@@ -100,8 +105,8 @@ export default function ClientsPage() {
     const pf  = resumo?.individual || ZERADO
     return (
       <div>
-        {showImport && <ImportarModal onPronto={() => { setShowImport(false); setResumo(null); router.refresh() }} onClose={() => setShowImport(false)} />}
-        {showNew && <NewClientModal onSave={() => { setShowNew(false); setShowNew(false) }} onClose={() => setShowNew(false)} />}
+        {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
+        {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:12 }}>
           <div>
@@ -193,8 +198,8 @@ export default function ClientsPage() {
 
   return (
     <div>
-      {showNew && <NewClientModal onSave={() => { setShowNew(false); load(search) }} onClose={() => setShowNew(false)} />}
-      {showImport && <ImportarModal onPronto={() => { setShowImport(false); load(search) }} onClose={() => setShowImport(false)} />}
+      {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
+      {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
 
       {aviso && (
         <div style={{ marginBottom:14, padding:'11px 15px', borderRadius:10, fontSize:14, fontWeight:600,
@@ -491,6 +496,7 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
   const [busy, setBusy]     = useState(false)
   const [erro, setErro]     = useState('')
   const [feito, setFeito]   = useState('')
+  const [falhas, setFalhas] = useState<string[]>([])
 
   const escolher = async (f: File | null) => {
     if (!f) return
@@ -507,7 +513,7 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
     }).then(r => r.json()).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setErro(d?.error || 'Não foi possível ler o arquivo.'); return }
-    if (aplicar) { setFeito(d.message); setPrevia(null) } else setPrevia(d)
+    if (aplicar) { setFeito(d.message); setFalhas(d.falhas || []); setPrevia(null) } else setPrevia(d)
   }
 
   const cx: React.CSSProperties = { background:'#fff', borderRadius:20, width:'100%', maxWidth:620, maxHeight:'90vh', overflowY:'auto' }
@@ -528,6 +534,14 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
           {feito ? (
             <>
               <div style={{ background:'#e8f5ee', color:'#1a6b4a', padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>{feito}</div>
+              {falhas.length > 0 && (
+                <div style={{ marginTop:12, background:'#fdf0f0', border:'1px solid #f0c8c8', borderRadius:10, padding:'12px 15px' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'#b02020', marginBottom:6 }}>Não entraram:</div>
+                  <ul style={{ margin:0, paddingLeft:18, fontSize:12, color:'#8a3030', lineHeight:1.7 }}>
+                    {falhas.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                </div>
+              )}
               <div style={{ display:'flex', justifyContent:'flex-end', marginTop:16 }}>
                 <button onClick={onPronto} style={{ padding:'10px 24px', borderRadius:9, border:'none', background:'#2D3278', color:'#fff', cursor:'pointer', fontSize:14, fontWeight:700 }}>Ver a lista</button>
               </div>

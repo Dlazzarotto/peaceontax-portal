@@ -96,24 +96,32 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i < linhas.length; i += BLOCO) {
     const parte = linhas.slice(i, i + BLOCO)
     const { data, error } = await db.from('clients').insert(parte).select('id')
-    if (error) {
-      console.error('import clientes, bloco', i / BLOCO, error.message)
-      falhas.push(`bloco ${i + 1}–${i + parte.length}: ${error.message}`)
-      continue
+    if (!error) { gravados += data?.length || 0; continue }
+
+    // O insert do Postgres é tudo-ou-nada: UMA linha recusada derruba as 200 do
+    // bloco. Quando isso acontece, tenta uma a uma — assim só fica de fora quem
+    // realmente não entra, e a mensagem diz QUEM e POR QUÊ, em vez de um
+    // "bloco falhou" que não ajuda ninguém.
+    console.error('import clientes, bloco', i / BLOCO, error.message, '— tentando linha a linha')
+    for (const linha of parte) {
+      const { error: e1 } = await db.from('clients').insert(linha)
+      if (e1) {
+        if (falhas.length < 20) falhas.push(`${linha.name}: ${e1.message}`)
+      } else gravados++
     }
-    gravados += data?.length || 0
   }
+  const recusados = linhas.length - gravados
 
   await db.from('client_audit').insert({
     client_id: null, action: 'import_quickbooks', performed_by: auth.userId,
-    next: { ...resumo, gravados, falhas: falhas.length },
+    next: { ...resumo, gravados, recusados, falhas: falhas.slice(0, 20) },
   }).then(() => null, () => null)
 
   return NextResponse.json({
-    ok: true, resumo, gravados, falhas,
+    ok: true, resumo, gravados, recusados, falhas,
     message: `${gravados} cliente(s) importado(s).`
       + (plano.jaExistem.length ? ` ${plano.jaExistem.length} já estavam cadastrados e ficaram de fora.` : '')
-      + (falhas.length ? ` ⚠️ ${falhas.length} bloco(s) falharam — veja a trilha.` : '')
+      + (recusados > 0 ? ` ⚠️ ${recusados} NÃO entraram — o motivo de cada um está abaixo.` : '')
       + ' Nenhum convite foi enviado: o acesso ao portal sai um a um, quando você quiser.',
   })
 }
