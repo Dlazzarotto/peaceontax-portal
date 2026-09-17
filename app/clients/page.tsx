@@ -1,6 +1,8 @@
 'use client'
 import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { ROTULO_SITUACAO, type ResumoTipo, ZERADO } from '@/lib/clientes-grupos'
 
 const STAGES = ['Onboarding','Gathering Docs','In Preparation','Under Review','Filed','Complete']
 const STAGE_COLOR: Record<string,string> = {
@@ -23,6 +25,15 @@ const STAGE_BG: Record<string,string> = {
 type ViewMode = 'kanban' | 'list'
 
 export default function ClientsPage() {
+  // A entrada da tela são dois cartões — Empresas e Pessoa física. O quadro só
+  // abre depois de escolher um tipo, e já vem separado. Antes tudo caía num
+  // quadro de seis colunas: a fila da temporada escondia quem está parado há
+  // meses, e com quase mil cadastros nem dava para ler.
+  const router = useRouter()
+  const params = useSearchParams()
+  const tipo = params.get('tipo') === 'business' ? 'business'
+    : params.get('tipo') === 'individual' ? 'individual' : null
+
   const [clients,  setClients]  = useState<any[]>([])
   const [loading,  setLoading]  = useState(true)
   const [view,     setView]     = useState<ViewMode>('kanban')
@@ -32,44 +43,189 @@ export default function ClientsPage() {
   const [showImport, setShowImport] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
 
+  const [resumo, setResumo] = useState<Record<string, ResumoTipo> | null>(null)
+  const [enviando, setEnviando] = useState<string | null>(null)
+  const [aviso, setAviso] = useState('')
+
   const load = (q = '') => {
+    if (!tipo) return
     setLoading(true)
-    const params = new URLSearchParams()
-    if (q) params.set('search', q)
-    if (filter !== 'all') params.set('type', filter)
-    fetch(`/api/clients?${params}`).then(r => r.json()).then(d => { setClients(d.clients || []); setLoading(false) })
+    const busca = new URLSearchParams({ type: tipo })
+    if (q) busca.set('search', q)
+    if (filter !== 'all' && filter !== 'individual' && filter !== 'business') busca.set('stage', filter)
+    fetch(`/api/clients?${busca}`).then(r => r.json()).then(d => { setClients(d.clients || []); setLoading(false) })
   }
 
-  useEffect(() => { load(search) }, [search, filter])
+  useEffect(() => {
+    if (tipo) { load(search); return }
+    // Cartões de entrada: só as contagens, feitas no banco
+    setLoading(true)
+    fetch('/api/clients?resumo=1').then(r => r.json())
+      .then(d => { setResumo(d.resumo || null); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [search, filter, tipo])
 
   const updateStage = async (clientId: string, newStage: string) => {
     await fetch(`/api/clients/${clientId}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ stage: newStage }) })
     setClients(p => p.map(c => c.id===clientId ? {...c, stage:newStage} : c))
   }
 
-  const stats = {
-    total:      clients.length,
-    individual: clients.filter(c => c.type==='individual').length,
-    business:   clients.filter(c => c.type==='business').length,
+  const byStage = (stage: string) => clients.filter(c => c.stage===stage)
+
+  // Convite do portal, um a um. É o par da importação: ela traz a carteira sem
+  // convidar ninguém (seriam quase mil e-mails de uma vez), e daqui a equipe
+  // manda o acesso de quem quiser, quando quiser.
+  const convidar = async (c: any) => {
+    if (!c.email) { setAviso(`⚠️ ${c.name} não tem e-mail cadastrado.`); return }
+    const jaTinha = c.acesso === 'convidado'
+    if (jaTinha && !confirm(`${c.name} já foi convidado. Enviar de novo?`)) return
+    setEnviando(c.id); setAviso('')
+    const d = await fetch('/api/send-invite', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId: c.id, clientName: c.name, clientEmail: c.email,
+        clientType: c.type, language: c.language || 'en',
+        assignee: c.assignee || 'Peace on Tax', channels: ['email'],
+      }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    setEnviando(null)
+    if (d?.error) { setAviso(`⚠️ ${d.error}`); return }
+    setAviso(`✓ Convite ${jaTinha ? 'reenviado' : 'enviado'} para ${c.email}. Vale por 7 dias.`)
+    setClients(p => p.map(x => x.id === c.id ? { ...x, acesso: 'convidado', convidadoEm: new Date().toISOString() } : x))
   }
 
-  const byStage = (stage: string) => clients.filter(c => c.stage===stage)
+  // ───────────── ENTRADA: os dois cartões ─────────────
+  if (!tipo) {
+    const emp = resumo?.business || ZERADO
+    const pf  = resumo?.individual || ZERADO
+    return (
+      <div>
+        {showImport && <ImportarModal onPronto={() => { setShowImport(false); setResumo(null); router.refresh() }} onClose={() => setShowImport(false)} />}
+        {showNew && <NewClientModal onSave={() => { setShowNew(false); setShowNew(false) }} onClose={() => setShowNew(false)} />}
+
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:12 }}>
+          <div>
+            <h1 style={{ fontFamily:'Georgia,serif', fontSize:26, color:'#0f2340', margin:'0 0 4px', fontWeight:400 }}>Clientes</h1>
+            <p style={{ color:'#6a7a9a', fontSize:14, margin:0 }}>
+              {loading ? 'Carregando…' : `${emp.total + pf.total} cadastros`}
+            </p>
+          </div>
+          <div style={{ display:'flex', gap:10 }}>
+            <button onClick={() => setShowImport(true)}
+              style={{ background:'#fff', color:'#2D3278', border:'1.5px solid #2D3278', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
+              ⬆ Importar do QuickBooks
+            </button>
+            <button onClick={() => setShowNew(true)}
+              style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', border:'none', padding:'10px 20px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
+              + Novo cliente
+            </button>
+          </div>
+        </div>
+
+        <div className="cli-cartoes">
+          {/* EMPRESAS: atendidas o ano todo, então a situação do trabalho importa */}
+          <button onClick={() => router.push('/clients?tipo=business')} className="cli-cartao" style={{ borderTop:'4px solid #2D3278' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+              <span style={{ fontSize:30 }}>🏢</span>
+              <div style={{ textAlign:'left' }}>
+                <div style={{ fontFamily:'Georgia,serif', fontSize:19, color:'#0f2340' }}>Empresas</div>
+                <div style={{ fontSize:12.5, color:'#9aaab0' }}>atendidas o ano todo</div>
+              </div>
+            </div>
+            <div style={{ fontFamily:'monospace', fontSize:38, fontWeight:800, color:'#2D3278', lineHeight:1 }}>
+              {loading ? '—' : emp.total}
+            </div>
+            <div style={{ fontSize:12, color:'#6a7a9a', margin:'2px 0 16px' }}>cadastros</div>
+
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, width:'100%' }}>
+              {([['pendente','#C06010'],['trabalhando','#2D3278'],['concluido','#1A6B4A']] as const).map(([k,cor]) => (
+                <div key={k} style={{ background:'#f8faff', border:'1px solid #e2e8f4', borderRadius:9, padding:'9px 6px' }}>
+                  <div style={{ fontFamily:'monospace', fontSize:19, fontWeight:800, color:cor }}>
+                    {loading ? '—' : (emp as any)[k]}
+                  </div>
+                  <div style={{ fontSize:10.5, color:'#6a7a9a', lineHeight:1.3, marginTop:2 }}>{ROTULO_SITUACAO[k]}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:14, fontSize:13, fontWeight:700, color:'#2D3278' }}>Abrir o quadro →</div>
+          </button>
+
+          {/* PESSOA FÍSICA: aparece na temporada. Sem trabalho em aberto o ano
+              todo, os mesmos números não diriam nada — fica só o total. */}
+          <button onClick={() => router.push('/clients?tipo=individual')} className="cli-cartao" style={{ borderTop:'4px solid #5A1A8A' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
+              <span style={{ fontSize:30 }}>👤</span>
+              <div style={{ textAlign:'left' }}>
+                <div style={{ fontFamily:'Georgia,serif', fontSize:19, color:'#0f2340' }}>Pessoa física</div>
+                <div style={{ fontSize:12.5, color:'#9aaab0' }}>declaração de temporada</div>
+              </div>
+            </div>
+            <div style={{ fontFamily:'monospace', fontSize:38, fontWeight:800, color:'#5A1A8A', lineHeight:1 }}>
+              {loading ? '—' : pf.total}
+            </div>
+            <div style={{ fontSize:12, color:'#6a7a9a', margin:'2px 0 16px' }}>cadastros</div>
+            <div style={{ background:'#faf8ff', border:'1px solid #ece4f6', borderRadius:9, padding:'11px 12px',
+              fontSize:12, color:'#6a5a7a', lineHeight:1.55, width:'100%', boxSizing:'border-box' }}>
+              O quadro de etapas abre aqui dentro, na temporada. Fora dela não há
+              trabalho em aberto, então não há o que contar na entrada.
+            </div>
+            <div style={{ marginTop:14, fontSize:13, fontWeight:700, color:'#5A1A8A' }}>Abrir o quadro →</div>
+          </button>
+        </div>
+
+        <style>{`
+          .cli-cartoes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+          .cli-cartao {
+            display:flex; flex-direction:column; align-items:flex-start;
+            background:#fff; border:1px solid #e2e8f4; border-radius:16px;
+            padding:20px 22px; cursor:pointer; text-align:left; font-family:inherit;
+            transition:box-shadow .15s, transform .15s;
+          }
+          .cli-cartao:hover { box-shadow:0 10px 30px rgba(15,35,64,0.12); transform:translateY(-2px); }
+          @media (max-width:820px) { .cli-cartoes { grid-template-columns:1fr; } }
+        `}</style>
+      </div>
+    )
+  }
+
+  // ───────────── QUADRO DE UM TIPO ─────────────
+  const ehEmpresa = tipo === 'business'
 
   return (
     <div>
       {showNew && <NewClientModal onSave={() => { setShowNew(false); load(search) }} onClose={() => setShowNew(false)} />}
       {showImport && <ImportarModal onPronto={() => { setShowImport(false); load(search) }} onClose={() => setShowImport(false)} />}
 
-      {/* Header */}
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+      {aviso && (
+        <div style={{ marginBottom:14, padding:'11px 15px', borderRadius:10, fontSize:14, fontWeight:600,
+          background: aviso.startsWith('✓') ? '#e8f5ee' : '#fff4e8',
+          color: aviso.startsWith('✓') ? '#1a6b4a' : '#8a5a00' }}>
+          {aviso}
+          <button onClick={() => setAviso('')} style={{ float:'right', background:'none', border:'none', cursor:'pointer', fontSize:15, color:'inherit', fontWeight:800 }}>✕</button>
+        </div>
+      )}
+
+      {/* Cabeçalho do quadro de um tipo. O caminho de volta aos cartões fica
+          sempre visível: sem ele, quem entra no quadro não acha a outra lista. */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, flexWrap:'wrap', gap:12 }}>
         <div>
-          <h1 style={{ fontFamily:'Georgia,serif', fontSize:24, color:'#0f2340', margin:'0 0 4px' }}>Clients</h1>
-          <p style={{ color:'#6a7a9a', fontSize:13, margin:0 }}>{stats.total} total · {stats.individual} individual · {stats.business} business</p>
+          <button onClick={() => router.push('/clients')}
+            style={{ background:'none', border:'none', padding:0, cursor:'pointer', fontSize:13,
+              fontWeight:700, color:'#2D3278', marginBottom:4 }}>
+            ← Todos os clientes
+          </button>
+          <h1 style={{ fontFamily:'Georgia,serif', fontSize:24, color:'#0f2340', margin:'0 0 4px', fontWeight:400 }}>
+            {ehEmpresa ? '🏢 Empresas' : '👤 Pessoa física'}
+          </h1>
+          <p style={{ color:'#6a7a9a', fontSize:13, margin:0 }}>
+            {loading ? 'Carregando…' : `${clients.length} cadastro(s)`}
+            {search ? ` para "${search}"` : ''}
+          </p>
         </div>
         <div style={{ display:'flex', gap:10, alignItems:'center' }}>
           {/* View toggle */}
           <div style={{ display:'flex', background:'#e2e8f4', borderRadius:9, padding:2 }}>
-            {([['kanban','🗂 Kanban'],['list','☰ List']] as const).map(([v,l]) => (
+            {([['kanban','🗂 Quadro'],['list','☰ Lista']] as const).map(([v,l]) => (
               <button key={v} onClick={() => setView(v)} style={{ padding:'6px 14px', borderRadius:7, border:'none', cursor:'pointer', fontSize:12, fontWeight:700, background:view===v?'#fff':'transparent', color:view===v?'#2D3278':'#6a7a9a' }}>{l}</button>
             ))}
           </div>
@@ -78,7 +234,7 @@ export default function ClientsPage() {
             ⬆ Importar do QuickBooks
           </button>
           <button onClick={() => setShowNew(true)} style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', border:'none', padding:'10px 20px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
-            + New Client
+            + Novo cliente
           </button>
         </div>
       </div>
@@ -93,25 +249,28 @@ export default function ClientsPage() {
         ))}
       </div>
 
-      {/* Search & filter */}
+      {/* Busca. O filtro de individual/business saiu: a tela já é de um tipo. */}
       <div style={{ display:'flex', gap:10, marginBottom:16 }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search clients…"
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar pelo nome…"
           style={{ flex:1, padding:'9px 14px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13, outline:'none', fontFamily:'Georgia,serif' }} />
-        {['all','individual','business'].map(f => (
-          <button key={f} onClick={() => setFilter(f)} style={{ padding:'8px 14px', borderRadius:8, border:'none', cursor:'pointer', fontSize:12, fontWeight:700, background:filter===f?'#2D3278':'#e2e8f4', color:filter===f?'#fff':'#6a7a9a', textTransform:'capitalize' as const }}>{f}</button>
-        ))}
+        {filter !== 'all' && (
+          <button onClick={() => setFilter('all')}
+            style={{ padding:'8px 14px', borderRadius:8, border:'1px solid #e2e8f4', cursor:'pointer', fontSize:12, fontWeight:700, background:'#fff', color:'#6a7a9a' }}>
+            limpar filtro: {filter}
+          </button>
+        )}
       </div>
 
       {loading ? (
-        <div style={{ padding:40, textAlign:'center', color:'#6a7a9a' }}>Loading clients…</div>
+        <div style={{ padding:40, textAlign:'center', color:'#6a7a9a' }}>Carregando…</div>
       ) : clients.length === 0 ? (
         <div style={{ background:'#fff', borderRadius:14, padding:48, textAlign:'center', border:'1px solid #e2e8f4' }}>
           <div style={{ fontSize:48, marginBottom:12 }}>👥</div>
-          <div style={{ fontSize:16, fontWeight:700, color:'#0f2340', marginBottom:6 }}>No clients yet</div>
-          <div style={{ fontSize:13, color:'#6a7a9a', marginBottom:20 }}>Add your first client or send an invitation</div>
+          <div style={{ fontSize:16, fontWeight:700, color:'#0f2340', marginBottom:6 }}>Nenhum cliente aqui</div>
+          <div style={{ fontSize:13, color:'#6a7a9a', marginBottom:20 }}>Cadastre o primeiro, ou traga a carteira do QuickBooks</div>
           <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
-            <button onClick={() => setShowNew(true)} style={{ background:'#2D3278', color:'#fff', border:'none', padding:'10px 20px', borderRadius:9, cursor:'pointer', fontSize:13, fontWeight:700 }}>+ Add Client</button>
-            <Link href="/invitations" style={{ background:'#f0f4fa', color:'#2D3278', border:'1px solid #e2e8f4', padding:'10px 20px', borderRadius:9, cursor:'pointer', fontSize:13, fontWeight:700, textDecoration:'none' }}>Send Invitation</Link>
+            <button onClick={() => setShowNew(true)} style={{ background:'#2D3278', color:'#fff', border:'none', padding:'10px 20px', borderRadius:9, cursor:'pointer', fontSize:13, fontWeight:700 }}>+ Cadastrar</button>
+            <Link href="/invitations" style={{ background:'#f0f4fa', color:'#2D3278', border:'1px solid #e2e8f4', padding:'10px 20px', borderRadius:9, cursor:'pointer', fontSize:13, fontWeight:700, textDecoration:'none' }}>Enviar convite</Link>
           </div>
         </div>
       ) : view === 'kanban' ? (
@@ -158,7 +317,7 @@ export default function ClientsPage() {
           <table style={{ width:'100%', borderCollapse:'collapse' }}>
             <thead>
               <tr style={{ background:'#f8faff' }}>
-                {['Client','Type','Assignee','Stage','Email','Actions'].map(h => (
+                {['Cliente','Tipo','Responsável','Etapa','Acesso ao portal',''].map(h => (
                   <th key={h} style={{ padding:'10px 16px', textAlign:'left', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase' as const, letterSpacing:0.5, borderBottom:'1.5px solid #e2e8f4' }}>{h}</th>
                 ))}
               </tr>
@@ -182,10 +341,29 @@ export default function ClientsPage() {
                       {STAGES.map(s => <option key={s}>{s}</option>)}
                     </select>
                   </td>
-                  <td style={{ padding:'11px 16px', fontSize:12, color:'#6a7a9a' }}>{c.email}</td>
+                  <td style={{ padding:'11px 16px' }}>
+                    {c.acesso === 'com_acesso' ? (
+                      <span style={{ fontSize:11.5, fontWeight:700, color:'#1a6b4a' }}>✓ tem acesso</span>
+                    ) : c.acesso === 'sem_email' ? (
+                      <span style={{ fontSize:11.5, color:'#9aaab0' }}>sem e-mail</span>
+                    ) : (
+                      <button onClick={() => convidar(c)} disabled={enviando === c.id}
+                        title={c.acesso === 'convidado'
+                          ? `Convite enviado em ${c.convidadoEm ? new Date(c.convidadoEm).toLocaleDateString('en-US') : '—'} — ainda não aceito`
+                          : `Enviar o acesso ao portal para ${c.email}`}
+                        style={{ fontSize:11.5, fontWeight:700, padding:'5px 11px', borderRadius:7, cursor:enviando===c.id?'wait':'pointer',
+                          border: c.acesso === 'convidado' ? '1px solid #e2e8f4' : 'none',
+                          background: c.acesso === 'convidado' ? '#fff' : '#2D3278',
+                          color: c.acesso === 'convidado' ? '#c06010' : '#fff' }}>
+                        {enviando === c.id ? 'enviando…'
+                          : c.acesso === 'convidado' ? '↻ reenviar convite' : '✉ enviar convite'}
+                      </button>
+                    )}
+                    <div style={{ fontSize:10.5, color:'#9aaab0', marginTop:3 }}>{c.email}</div>
+                  </td>
                   <td style={{ padding:'11px 16px' }}>
                     <Link href={`/clients/${c.id}`} style={{ fontSize:12, fontWeight:700, color:'#2D3278', textDecoration:'none', background:'#f0f4ff', padding:'5px 12px', borderRadius:7, display:'inline-block' }}>
-                      Open →
+                      Abrir →
                     </Link>
                   </td>
                 </tr>

@@ -179,6 +179,16 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   portal ao ser criado**; dispensar é explícito. Cadastrar cabe dentro da
   emissão da fatura (botão no Financeiro), e e-mail repetido é recusado
   apontando o cadastro existente.
+- **Clientes entram por TIPO, não num quadro só.** `/clients` mostra dois
+  cartões (Empresas · Pessoa física) e o quadro abre em `?tipo=…`. As seis
+  etapas viram três situações em `lib/clientes-grupos.ts` (esperando o
+  cliente · com a equipe · concluído), e etapa desconhecida conta como
+  pendente. A contagem dos cartões é feita no banco (`?resumo=1`): com quase
+  mil cadastros, contar no navegador transfere a carteira inteira.
+- **Aceitar convite COMPLETA o cadastro existente.** `client_invitations.client_id`
+  diz de quem é o convite; o aceite atualiza aquele cliente e só insere quando
+  não há nenhum. Antes inseria sempre — convidar quem veio da importação
+  criava a mesma pessoa duas vezes, uma com login e outra sem.
 - **Cliente repetido é NOME igual, não e-mail igual.** Na carteira real, 56
   e-mails servem a mais de um cadastro e só um é duplicata: o resto é o dono e
   a empresa dele no mesmo endereço. Recusar por e-mail barrava 55 cadastros

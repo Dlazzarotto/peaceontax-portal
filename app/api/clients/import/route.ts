@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
   const agora = new Date().toISOString()
   const linhas = plano.novos.map(n => ({
     name: n.name, email: n.email, phone: n.phone, type: n.type,
-    stage: 'Onboarding', language: 'en',
+    stage: 'Onboarding', language: 'en', active: true,
     notes: `Importado do QuickBooks em ${agora.slice(0, 10)}.`,
   }))
 

@@ -140,6 +140,14 @@ checar('Importar mostra o plano antes de gravar', 'app/api/clients/import/route.
 checar('Duplicata e nome, nao e-mail', 'lib/import-clientes.ts', 'export function chaveDoNome', 'dono e empresa dividem o e-mail e sao clientes diferentes')
 checar('Importar e de gerente ou socio', 'app/api/clients/import/route.ts', "nivel !== 'owner'", 'qualquer assistente traria a carteira inteira')
 
+checar('Clientes entram por tipo, nao num quadro so', 'app/clients/page.tsx', "params.get('tipo')", 'empresa do ano todo e temporada misturadas no mesmo quadro')
+checar('Contagem dos cartoes e feita no banco', 'app/api/clients/route.ts', "resumo') === '1'", 'traria mil cadastros so para contar no navegador')
+checar('Situacao da etapa num modulo puro', 'lib/clientes-grupos.ts', 'export function situacaoDaEtapa', 'duas telas contariam o mesmo indicador de jeitos diferentes')
+checar('Busca de cliente escapa o curinga', 'lib/clientes-grupos.ts', 'export function buscaLiteral', 'buscar 100% casava com 1000')
+checar('Convite do portal na lista de clientes', 'app/clients/page.tsx', 'const convidar =', 'importado ficaria sem caminho para receber o acesso')
+checar('Aceitar convite completa o cadastro existente', 'app/api/invite/[token]/route.ts', 'invite.client_id || null', 'criava um SEGUNDO cadastro da mesma pessoa')
+checar('Convite guarda de quem e', 'app/api/send-invite/route.ts', 'client_id:    clientId || null', 'o aceite nao saberia qual cadastro completar')
+
 titulo('PAGAMENTO PELO PORTAL')
 checar('Fatura: so o dono do cadastro paga', 'app/api/portal/billing/checkout/route.ts', ".eq('client_id', c.id)", 'cliente pagaria fatura de outro')
 checar('Fatura: as tres formas num link so', 'lib/stripe-formas.ts', "FORMAS_DO_CLIENTE = ['card', 'us_bank_account', 'klarna']", 'cliente nao escolheria Klarna/ACH')

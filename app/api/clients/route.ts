@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
 import { getAuth } from '@/lib/api-auth'
 import { camposDoCliente, criticarCliente, deveConvidar } from '@/lib/novo-cliente'
+import { ETAPAS, resumirEtapas, buscaLiteral } from '@/lib/clientes-grupos'
 
 export async function GET(req: NextRequest) {
   try {
@@ -19,14 +20,72 @@ export async function GET(req: NextRequest) {
     const type   = searchParams.get('type')
     const stage  = searchParams.get('stage')
 
+    // ?resumo=1 devolve só as CONTAGENS, por tipo e etapa. É o que os cartões
+    // de entrada precisam. Com quase mil cadastros, trazer todas as linhas só
+    // para contar no navegador é transferir a carteira inteira a cada abertura
+    // da tela — e nenhuma delas aparece.
+    if (searchParams.get('resumo') === '1') {
+      const contar = async (t: string, etapa: string) => {
+        const { count } = await db.from('clients')
+          .select('id', { count: 'exact', head: true })
+          .eq('active', true).eq('type', t).eq('stage', etapa)
+        return count ?? 0
+      }
+      const porTipo: Record<string, { stage: string; quantidade: number }[]> = {}
+      for (const t of ['business', 'individual']) {
+        porTipo[t] = await Promise.all(
+          ETAPAS.map(async e => ({ stage: e, quantidade: await contar(t, e) })))
+      }
+      // Etapa fora da lista (cadastro antigo, importação) não pode sumir da conta
+      const totalDe = async (t: string) => {
+        const { count } = await db.from('clients')
+          .select('id', { count: 'exact', head: true }).eq('active', true).eq('type', t)
+        return count ?? 0
+      }
+      const resumo: Record<string, any> = {}
+      for (const t of ['business', 'individual']) {
+        const r = resumirEtapas(porTipo[t])
+        const total = await totalDe(t)
+        const fora = total - r.total
+        resumo[t] = { ...r, total, pendente: r.pendente + Math.max(fora, 0) }
+      }
+      return NextResponse.json({ resumo })
+    }
+
     let query = db.from('clients').select('*').eq('active', true).order('name')
-    if (search) query = query.ilike('name', `%${search}%`)
+    // Curinga do LIKE escapado: buscar "100%" casava com "1000" e "100X"
+    if (search) query = query.ilike('name', `%${buscaLiteral(search)}%`)
     if (type)   query = query.eq('type', type)
     if (stage)  query = query.eq('stage', stage)
 
-    const { data, error } = await query
+    const { data, error } = await query.limit(2000)
     if (error) throw error
-    return NextResponse.json({ clients: data || [] })
+
+    // Estado do acesso ao portal, para a tela saber a quem oferecer o convite.
+    // Uma consulta só para todos os convites pendentes, casada em memória —
+    // com quase mil clientes, uma consulta por linha derrubaria a tela.
+    const semAcesso = (data || []).filter(c => !c.user_id && c.email).map(c => String(c.email).toLowerCase())
+    const convidados = new Map<string, string>()
+    if (semAcesso.length) {
+      const { data: convites } = await db.from('client_invitations')
+        .select('client_email, created_at, status')
+        .in('client_email', semAcesso.slice(0, 1000))
+        .order('created_at', { ascending: false })
+      for (const c of convites || []) {
+        const e = String(c.client_email || '').toLowerCase()
+        if (!convidados.has(e) && c.status !== 'registered') convidados.set(e, c.created_at)
+      }
+    }
+
+    const clients = (data || []).map(c => ({
+      ...c,
+      acesso: c.user_id ? 'com_acesso'
+        : !c.email ? 'sem_email'
+        : convidados.has(String(c.email).toLowerCase()) ? 'convidado'
+        : 'sem_acesso',
+      convidadoEm: c.email ? convidados.get(String(c.email).toLowerCase()) || null : null,
+    }))
+    return NextResponse.json({ clients })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

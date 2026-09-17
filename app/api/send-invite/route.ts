@@ -46,11 +46,15 @@ export async function POST(req: NextRequest) {
     if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
     const body = await req.json()
-    const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy } = body
+    const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy, clientId } = body
     if (!clientEmail) return NextResponse.json({ error: 'Email is required' }, { status: 400 })
 
     const db = supabaseAdmin()
     const { data: invite, error } = await db.from('client_invitations').insert({
+      // De quem é este convite. Sem isto, aceitar criava um cadastro NOVO em
+      // vez de completar o que já existe — e quem foi importado ficava com
+      // dois cadastros, um sem login e outro com, e o histórico partido.
+      client_id:    clientId || null,
       client_name:  clientName || clientEmail.split('@')[0],
       client_email: clientEmail,
       client_type:  clientType || 'individual',

@@ -40,14 +40,36 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
       throw authErr
     }
 
-    await db.from('clients').insert({
+    // Este convite é de um cadastro que já existe? Pelo client_id gravado no
+    // envio, ou pelo e-mail. Se for, COMPLETA aquele cadastro — inserir outro
+    // deixaria a mesma pessoa duas vezes na carteira, uma com login e outra
+    // sem, com documentos e faturas divididos entre as duas.
+    let alvo: string | null = invite.client_id || null
+    if (!alvo) {
+      const { data: porEmail } = await db.from('clients')
+        .select('id').eq('email', invite.client_email).is('user_id', null).limit(1)
+      alvo = porEmail?.[0]?.id || null
+    }
+
+    const dados = {
       user_id: auth.user.id, name: name || invite.client_email, email: invite.client_email,
       phone: phone || null, type: type || 'individual', language: invite.language || 'en',
       assignee: invite.assignee || null, stage: 'Gathering Docs',
       address_line1: address || null, city: city || null, state: state || 'MA', zip: zip || null,
       business_name: businessName || null, ein: ein || null, business_type: entityType || null,
       industry: industry || null, filing_status: filingStatus || null, active: true,
-    })
+    }
+
+    if (alvo) {
+      // O que o cliente escreveu vale; o que ele deixou em branco não apaga o
+      // que a equipe já tinha cadastrado.
+      const patch = Object.fromEntries(Object.entries(dados).filter(([, v]) => v !== null && v !== ''))
+      const { error: upErr } = await db.from('clients').update(patch).eq('id', alvo)
+      if (upErr) throw upErr
+    } else {
+      const { error: insErr } = await db.from('clients').insert(dados)
+      if (insErr) throw insErr
+    }
 
     await db.from('client_invitations').update({ status: 'registered', registered_at: new Date().toISOString(), client_name: name }).eq('id', invite.id)
 
