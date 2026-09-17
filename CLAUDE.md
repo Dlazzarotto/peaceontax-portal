@@ -288,6 +288,21 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   rota E a prévia da tela chamam `entradaDoPedido` — a mesma conta num lugar
   só. A recusa diz o valor máximo em dólar, não a regra abstrata. 26 casos
   em `testes/entrada-parcelamento.mts`.
+- **Pagamento PARCIAL é aceito em qualquer forma.** O gatilho
+  `atualiza_saldo_da_fatura` (agora versionado em
+  `sql/gatilho-saldo-da-fatura-v1.sql`) não valida valor: recalcula
+  `paid_total` pela soma de `invoice_payments` e marca a fatura como
+  `partial`. Uma entrada de $250 em $1.000 entra e deixa saldo de $750 — que
+  é o que o parcelamento usa. Havia um comentário na rota de pagamentos
+  atribuindo ao banco uma recusa de valor parcial que ele nunca fez, e essa
+  frase passou a valer como regra. **Schema que só existe no banco vira
+  folclore**: gatilho ou constraint aplicado à mão vai para `sql/`, mesmo que
+  só como `create or replace` do que já está lá. A regra de "à vista" que
+  EXISTE é outra: parcelamento exige cartão ou ACH como forma esperada,
+  porque o Stripe não debita dinheiro automaticamente.
+  Duas decisões pendentes no gatilho, anotadas no arquivo: fatura vencida com
+  pagamento parcial aparece como `partial` e nunca como `overdue`; e
+  `current_date` é UTC, então o vencimento vira `overdue` às 20h de Malden.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

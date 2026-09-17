@@ -13,7 +13,19 @@
 // autorizar `receber` a quem também emite, sem esta trava a mesma pessoa
 // emitiria por $500, receberia em espécie e registraria $300.
 // Ver lib/recebimento-aprovacao.ts.
-// Dinheiro, Zelle e Venmo são à vista — o banco recusa valor parcial.
+// PAGAMENTO PARCIAL É ACEITO em qualquer forma de pagamento.
+//
+// Aqui havia o oposto escrito, atribuindo ao banco uma recusa de valor
+// parcial que ele nunca fez: o gatilho `atualiza_saldo_da_fatura` não valida
+// nada, só recalcula `paid_total` e marca a fatura como `partial`. A entrada
+// de $250 numa fatura de $1.000 entra e deixa saldo de $750 — que é o que o
+// parcelamento usa. O gatilho agora está versionado em
+// sql/gatilho-saldo-da-fatura-v1.sql: schema que só existe no banco vira
+// folclore, e foi exatamente o que aconteceu com esta linha.
+//
+// A regra de "à vista" que EXISTE é outra: parcelamento exige cartão ou ACH
+// como forma esperada (app/api/billing/invoices), porque o Stripe não debita
+// dinheiro automaticamente. Nada a ver com valor parcial.
 //
 // Fatura com cobrança automática no Stripe (mensalidade ou parcelamento):
 // o recebimento manual (Zelle, dinheiro…) tem de TIRAR a fatura da linha de
@@ -251,7 +263,9 @@ export async function POST(req: NextRequest) {
     created_by: auth.userId,
   })
   if (error) {
-    // O gatilho do banco devolve a mensagem de "à vista" com o valor certo
+    // Não há validação de valor no banco (ver o cabeçalho): o que chega aqui
+    // é erro de escrita mesmo — coluna, tipo, permissão. Repassar a mensagem
+    // crua é melhor que inventar uma explicação.
     return NextResponse.json({ error: error.message }, { status: 400 })
   }
 
