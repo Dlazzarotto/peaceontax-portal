@@ -13,11 +13,14 @@
 //   SUPABASE_ACCESS_TOKEN  token pessoal do Supabase + NEXT_PUBLIC_SUPABASE_URL
 //                          (ou SUPABASE_PROJECT_REF) → usa a API de gestão, por
 //                          HTTPS. Serve onde a porta do Postgres é bloqueada.
-//   Só SUPABASE_PROJECT_REF, sem token → também usa a API, mas sem mandar o
-//                          cabeçalho: é o caso do Claude Code na nuvem com o
-//                          token guardado como "API credential" do ambiente —
-//                          o proxy anexa o Bearer ao sair, e o token nunca
-//                          entra na sessão. É a forma mais segura.
+//
+//   NÃO existe modo "só SUPABASE_PROJECT_REF". Já esteve escrito aqui que o
+//   proxy do Claude Code anexaria o Bearer na saída, deixando o token fora da
+//   sessão. Não anexa: o proxy daquele ambiente é só de TLS e roteamento, e o
+//   pedido saía SEM cabeçalho de autorização — a Supabase respondia 401 e a
+//   mensagem não dizia o motivo, então parecia token revogado. Sem
+//   SUPABASE_ACCESS_TOKEN ou SUPABASE_DB_URL no ambiente, não há como aplicar
+//   daqui: a migração vai à mão no SQL Editor e depois --registrar anota.
 //
 // Cada arquivo roda inteiro, na ordem em que foi passado. Os arquivos de sql/
 // são idempotentes por regra do projeto, então repetir não estraga — mas o
@@ -79,6 +82,12 @@ async function viaApi(sql) {
     method: 'POST', headers, body: JSON.stringify({ query: sql, read_only: false }),
   })
   const texto = await r.text()
+  if (r.status === 401) {
+    throw new Error(
+      'API 401: o Supabase recusou a credencial. O token pode estar revogado, expirado, '
+      + 'ou sem permissao neste projeto. Confira em Supabase -> Account -> Access Tokens '
+      + '(um token que nunca funcionou aparece como "Never used").')
+  }
   if (!r.ok) throw new Error(`API ${r.status}: ${texto.slice(0, 600)}`)
   return texto
 }
@@ -86,7 +95,8 @@ async function viaApi(sql) {
 function escolherExecutor() {
   if (process.env.SUPABASE_DB_URL) return { nome: 'psql', run: viaPsql }
   if (process.env.SUPABASE_ACCESS_TOKEN) return { nome: 'API de gestão', run: viaApi }
-  if (process.env.SUPABASE_PROJECT_REF) return { nome: 'API de gestão (credencial anexada pelo proxy)', run: viaApi }
+  // PROJECT_REF sozinho NÃO autentica: ver o comentário do cabeçalho.
+  // Tentar assim mesmo só produz um 401 sem explicação.
   return null
 }
 
@@ -124,7 +134,19 @@ async function main() {
 
   const exec = escolherExecutor()
   if (!exec) {
-    console.error('Sem credencial. Defina SUPABASE_DB_URL (psql), SUPABASE_ACCESS_TOKEN (API) ou, com o token como API credential do ambiente, SUPABASE_PROJECT_REF.')
+    console.error('Sem credencial para falar com o Supabase.')
+    console.error('')
+    console.error('  Defina UMA destas no ambiente (nao no codigo, nao no Git):')
+    console.error('    SUPABASE_DB_URL       cadeia de conexao do Postgres -> usa psql')
+    console.error('    SUPABASE_ACCESS_TOKEN token pessoal do Supabase -> usa a API de gestao')
+    console.error('')
+    if (process.env.SUPABASE_PROJECT_REF) {
+      console.error(`  SUPABASE_PROJECT_REF esta definido (${process.env.SUPABASE_PROJECT_REF}), mas ele sozinho`)
+      console.error('  NAO autentica: diz em qual projeto mexer, nao quem esta mexendo.')
+      console.error('')
+    }
+    console.error('  Sem isso, aplique no SQL Editor do Supabase e depois anote com:')
+    console.error('    npm run migrar -- --registrar sql/<arquivo>.sql')
     process.exit(2)
   }
   console.log(`Conexão: ${exec.nome}`)

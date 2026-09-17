@@ -31,6 +31,9 @@ npm run testes                   # testes de lógica pura (testes/*.mts), sem fr
 npm run migrar -- sql/x.sql      # aplica migração no Supabase e anota em schema_migrations
                                  # precisa de SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN
                                  # (API, por HTTPS) SÓ no ambiente. --pendentes lista o que falta.
+                                 # SUPABASE_PROJECT_REF sozinho NÃO autentica — ele diz em qual
+                                 # projeto mexer, não quem está mexendo. Sem token, a migração vai
+                                 # à mão no SQL Editor e `--registrar` anota depois.
 npm run build                    # next build
 npm run dev                      # servidor local (precisa de .env.local, ver .env.example)
 ```
