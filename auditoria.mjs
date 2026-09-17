@@ -359,6 +359,14 @@ checar('O corte do dia e o do escritorio', 'lib/dia-da-firma.ts',
 checar('A lista filtra por quem emitiu e por hoje', 'app/api/billing/invoices/route.ts',
        /!perms\.verTodasFaturas[\s\S]{0,160}created_by[\s\S]{0,120}corteDeHoje/,
        'o assistente voltaria a ver a carteira inteira')
+recusar('Enviar nao pega carona em cancelar', 'app/api/billing/invoices/route.ts',
+        /if \(!perms\.cancelar\) return NextResponse\.json\(\{ error: 'Enviar/,
+        'soltar cancelar passaria a soltar o envio junto, calado')
+checar('Enviar tem trava propria', 'app/api/billing/invoices/route.ts',
+       /if \(!perms\.enviar\)/, 'a acao send precisa conferir perms.enviar')
+checar('Criar e enviar passa pela mesma trava', 'app/api/billing/invoices/route.ts',
+       /b\.enviarAgora[\s\S]{0,120}!perms\.enviar/,
+       'o atalho de um clique nao pode furar a permissao de enviar')
 checar('O ?id= respeita o mesmo escopo', 'app/api/billing/invoices/route.ts',
        /doc\.created_by !== auth\.userId/,
        'filtrar a lista e deixar o id aberto e fechar a porta e esquecer a janela')

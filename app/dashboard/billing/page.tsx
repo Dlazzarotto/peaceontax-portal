@@ -240,7 +240,10 @@ export default function BillingPage() {
     })
   }
 
-  const criar = async () => {
+  // enviarAgora: o documento continua nascendo rascunho no servidor; quem já
+  // pode enviar faz os dois passos num clique, em vez de criar, procurar na
+  // lista e clicar Enviar com fila no balcão.
+  const criar = async (enviarAgora = false) => {
     if (!fCliente) { setMsg('⚠️ Escolha o cliente.'); return }
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/invoices', {
@@ -250,11 +253,12 @@ export default function BillingPage() {
         paymentPlan: fPlano, expectedMethod: fForma || null,
         discount: Number(fDesconto) || 0, notes: fNotas, items: itens,
         installments: Number(fParcelas) || 0, firstDueDate: fPrimeiroVenc || null,
+        ...(enviarAgora ? { enviarAgora: true } : {}),
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
-    setMsg(`✓ ${d.message}`)
+    setMsg(d.aviso ? `✓ ${d.message} ⚠️ ${d.aviso}` : `✓ ${d.message}`)
     setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }])
     setFVenc(''); setFNotas(''); setFDesconto('0')
     load()
@@ -718,9 +722,18 @@ export default function BillingPage() {
                 <button onClick={() => { setEditandoId(null); setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }]) }}
                   style={btn('#6A7A9A')}>Cancelar edição</button>
               </>
-            ) : (
-              <button onClick={criar} disabled={busy} style={btn('#1A6B4A', busy)}>Criar rascunho</button>
-            )}
+            ) : (<>
+              <button onClick={() => criar(false)} disabled={busy} style={btn('#6A7A9A', busy)}>
+                Salvar rascunho
+              </button>
+              {/* Quem não pode enviar vê só "Salvar rascunho" — e o rascunho
+                  fica salvo para um gerente enviar depois. */}
+              {perms?.enviar && (
+                <button onClick={() => criar(true)} disabled={busy} style={btn('#1A6B4A', busy)}>
+                  {fTipo === 'estimate' ? 'Criar e enviar orçamento' : 'Criar e enviar fatura'}
+                </button>
+              )}
+            </>)}
           </div>
         </section>
       )}

@@ -77,10 +77,22 @@ pura e testada):
 3. o **sócio é imune** — concessão negativa não o alcança. Tirar poder de
    sócio se faz mudando o nível, à vista, não por uma chave solta.
 
-As doze chaves: `criar · verTodasFaturas · receber · editar · duplicar ·
-cancelar · darDesconto · estornar · apagar · editarCliente ·
+As treze chaves: `criar · enviar · verTodasFaturas · receber · editar ·
+duplicar · cancelar · darDesconto · estornar · apagar · editarCliente ·
 verRelatorios · verTotais`. A mesma lista está no `CHECK` da migração mais
 recente, e a auditoria falha se as duas divergirem.
+
+**Documento nasce rascunho; enviar é outra decisão.** Preencher e mandar ao
+cliente são passos separados de propósito: o assistente preenche, alguém
+confere e envia. Mas quem já pode enviar não precisa criar, procurar na
+lista e clicar Enviar — o botão **Criar e enviar** faz os dois num clique,
+com a mesma conferência de permissão no servidor. Quem não pode enviar vê
+apenas **Salvar rascunho**, e o rascunho fica salvo para um gerente enviar.
+
+Enviar tem chave própria (`enviar`). Estava preso a `cancelar` no código:
+enquanto tudo era decidido por nível dava no mesmo, mas com autorização
+individual soltar `cancelar` passaria a soltar o envio junto, calado, e
+retirar `cancelar` tiraria o envio sem ninguém entender por quê.
 
 **A lista de faturas é do dia, e é de quem emitiu.** Sem `verTodasFaturas`,
 a pessoa vê apenas as faturas que ela mesma emitiu **hoje**; amanhã a lista

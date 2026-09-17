@@ -120,7 +120,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
   salvar e o motivo fica gravado. A lista de chaves está no módulo E no
   `CHECK` do SQL; a auditoria falha se divergirem.
-  Migrações: `sql/permissoes-por-pessoa-v1.sql` e `-v2.sql` (chaves novas).
+  Migrações: `sql/permissoes-por-pessoa-v1.sql` (tabela) e `-v3.sql`, que
+  troca o `CHECK` inteiro e por isso CONTÉM a `-v2.sql` — rodar só a v3 basta.
+- **Documento nasce rascunho; enviar é outra decisão, com chave própria.**
+  `enviar` estava pendurado em `perms.cancelar`: com autorização individual,
+  soltar cancelar soltaria o envio junto. Quem pode enviar tem o botão
+  **Criar e enviar** (`enviarAgora` no POST, conferido no servidor); quem não
+  pode vê só **Salvar rascunho**, e o rascunho não se perde.
 - **A lista de faturas é do dia e é de quem emitiu.** Sem `verTodasFaturas`,
   `GET /api/billing/invoices` filtra por `created_by` + `created_at >=`
   início do dia; o `?id=` respeita o mesmo escopo. O corte vem de

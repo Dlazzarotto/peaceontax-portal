@@ -25,7 +25,7 @@
 import type { StaffLevel } from '@/lib/staff-perms'
 
 export type ChavePermissao =
-  | 'criar' | 'verTodasFaturas' | 'receber' | 'duplicar' | 'editar' | 'estornar'
+  | 'criar' | 'enviar' | 'verTodasFaturas' | 'receber' | 'duplicar' | 'editar' | 'estornar'
   | 'cancelar' | 'apagar' | 'darDesconto' | 'editarCliente'
   | 'verRelatorios' | 'verTotais'
 
@@ -41,6 +41,8 @@ export interface Permissao {
 export const PERMISSOES: Permissao[] = [
   { chave: 'criar',         titulo: 'Emitir orçamento e fatura',
     descricao: 'Preencher e enviar a fatura ao cliente.' },
+  { chave: 'enviar',        titulo: 'Enviar a fatura ao cliente',
+    descricao: 'Tirar do rascunho: o cliente recebe e-mail e vê em Pagamentos.' },
   { chave: 'verTodasFaturas', titulo: 'Ver as faturas de todo mundo',
     descricao: 'Sem isto, a pessoa vê apenas as faturas que ela mesma emitiu hoje.' },
   { chave: 'receber',       titulo: 'Receber pagamento',
@@ -80,6 +82,9 @@ export function padraoDoNivel(nivel: StaffLevel): Conjunto {
   const senior = nivel === 'owner' || nivel === 'manager'
   return {
     criar:         true,          // todos emitem
+    // Enviar é o passo em que o documento deixa de ser rascunho e chega ao
+    // cliente. Andava pendurado em `cancelar`: soltar um soltava o outro.
+    enviar:        senior,
     // Sem isto, a lista mostra só o que a própria pessoa emitiu HOJE.
     // Quem emite não precisa da carteira inteira à vista para trabalhar.
     verTodasFaturas: senior,

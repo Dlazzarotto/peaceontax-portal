@@ -204,10 +204,44 @@ export async function POST(req: NextRequest) {
     staff_level: perms.nivel, next: { number: inv.number, total },
   }).then(() => null, () => null)
 
+  // ── Criar e enviar num passo ──
+  // O documento continua NASCENDO rascunho: o assistente preenche e alguém
+  // confere antes de o cliente ver. Mas para quem já pode enviar, obrigar a
+  // criar, achar na lista e clicar Enviar são três passos no balcão com fila.
+  // Quem não pode enviar não perde o trabalho: o rascunho fica salvo.
+  let envio = ''
+  let aviso: string | null = null
+  if (b.enviarAgora) {
+    if (!perms.enviar) {
+      aviso = RECUSA.enviar
+    } else {
+      const { data: cheia } = await db.from('invoices').select('*').eq('id', inv.id).single()
+      await db.from('invoices')
+        .update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', inv.id)
+      await db.from('invoice_audit').insert({
+        invoice_id: inv.id, action: 'sent', performed_by: auth.userId, staff_level: perms.nivel,
+      }).then(() => null, () => null)
+      const r = await avisarClienteDaFatura(db, cheia)
+      envio = r.email
+        ? ' e enviado ao cliente (e-mail e portal)'
+        : r.motivo
+          ? ` e enviado (portal; e-mail não saiu: ${r.motivo})`
+          : ' e enviado ao cliente (portal)'
+    }
+  }
+
+  const doc = docType === 'estimate' ? 'Orçamento' : 'Fatura'
+  const partes = [
+    `${doc} ${inv.number} ${envio ? `criado${envio}` : 'criado como rascunho'}`,
+    parcelas ? `${parcelas} parcelas geradas` : '',
+  ].filter(Boolean)
+
   return NextResponse.json({
-    ok: true, id: inv.id, number: inv.number,
-    message: `${docType === 'estimate' ? 'Orçamento' : 'Fatura'} ${inv.number} criado como rascunho`
-      + (parcelas ? ` · ${parcelas} parcelas geradas` : '') + '.',
+    ok: true, id: inv.id, number: inv.number, enviado: !!envio,
+    message: partes.join(' · ') + '.',
+    // Rascunho salvo mas sem permissão para enviar: o trabalho não se perde,
+    // e a tela diz o que fazer em vez de fingir que deu tudo certo.
+    aviso,
   })
 }
 
@@ -226,7 +260,10 @@ export async function PATCH(req: NextRequest) {
   if (!inv) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
 
   if (action === 'send') {
-    if (!perms.cancelar) return NextResponse.json({ error: 'Enviar ao cliente é de gerente ou sócio.' }, { status: 403 })
+    // Estava preso a `perms.cancelar`. Dava no mesmo enquanto tudo era por
+    // nível; com autorização individual, soltar cancelar soltava o envio
+    // junto, e retirar cancelar tirava o envio sem ninguém entender por quê.
+    if (!perms.enviar) return NextResponse.json({ error: RECUSA.enviar }, { status: 403 })
     if (inv.status !== 'draft') return NextResponse.json({ error: 'Só rascunho pode ser enviado.' }, { status: 400 })
     await db.from('invoices').update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', id)
     await db.from('invoice_audit').insert({ invoice_id: id, action: 'sent', performed_by: auth.userId, staff_level: perms.nivel }).then(() => null, () => null)
