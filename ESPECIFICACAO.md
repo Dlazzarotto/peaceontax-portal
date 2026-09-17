@@ -53,6 +53,132 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 
 O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
 
+**Dentro da firma, todo mundo vê todos os clientes.** `canAccessClient` faz
+`if (auth.isStaff) return true`. A coluna `clients.assignee` é rótulo de
+CRM — aparece na lista, na ficha e no e-mail de convite —, **não** é
+controle de acesso. A tela de equipe chegou a prometer "Staff: view and
+edit assigned clients only", o que nunca foi verdade; o texto foi
+corrigido para descrever o que o sistema faz. Restringir assistente aos
+clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
+temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
+
+### 3.1 Autorizações por pessoa, em cima do nível
+
+O nível é um degrau inteiro. Para autorizar a assistente a **receber no
+balcão** era preciso promovê-la a gerente — e gerente traz junto cancelar,
+apagar e estornar. Agora o sócio autoriza a **chave exata**, e retira quando
+quiser, sem mexer no nível.
+
+O conjunto final é montado por `permissoesDe` (`lib/permissoes.ts`, lógica
+pura e testada):
+
+1. o **nível** dá a base;
+2. cada **autorização** é um sim ou um não explícito, que vence o nível;
+3. o **sócio é imune** — concessão negativa não o alcança. Tirar poder de
+   sócio se faz mudando o nível, à vista, não por uma chave solta.
+
+As dez chaves: `criar · receber · editar · duplicar · cancelar ·
+darDesconto · estornar · apagar · verRelatorios · verTotais`. A mesma lista
+está no `CHECK` da migração, e a auditoria falha se as duas divergirem.
+
+**A trilha é a tabela.** `staff_grants` é *append-only*: cada decisão grava
+uma linha com quem autorizou, quando, o motivo (obrigatório) e o conflito
+de separação de funções, se houve. O estado atual é a última linha de cada
+chave, pela view `staff_grants_atual`. Estado e histórico não podem
+discordar porque são a mesma coisa — princípio 2.
+
+**Separação de funções, princípio 1.** Todos emitem fatura. Autorizar
+`receber` a quem emite quebra "quem emite não dá baixa" — é o vetor de
+fraude clássico (emitir por $500, receber em dinheiro, registrar $300).
+Não é proibido: é decisão do sócio, e existem casos legítimos. Mas
+`conflitoDeSeparacao` devolve em uma frase o que está sendo quebrado, a
+tela mostra **antes** de salvar, e o motivo fica gravado. Autorização assim
+é decisão registrada, não clique. O mesmo vale para `estornar` concedido a
+quem recebe — aí a pessoa desfaria o próprio recebimento.
+
+Quem autoriza é **só o sócio**, e ninguém mexe nas próprias permissões.
+Editar fatura continua pedindo senha e motivo para todo mundo que não seja
+sócio, inclusive quem recebeu a autorização: ela diz que a pessoa **pode**,
+não que pode sem deixar rastro.
+
+**Cartão e Zelle sozinho; o resto pede senha de gerente ou sócio.**
+Quem tem `receber` registra **cartão** e **Zelle** por conta própria — os
+dois deixam rastro fora do sistema (cobrança no Stripe, crédito no extrato
+da firma). **Dinheiro em espécie, cheque, wire, Venmo, débito em conta,
+financiamento e "outro"** só entram com o e-mail e a senha de um gerente ou
+sócio, e quem aprovou fica na trilha da fatura (`invoice_audit`).
+
+A lista em `lib/recebimento-aprovacao.ts` é de **livres**, não de
+bloqueadas: forma de pagamento nova nasce pedindo aprovação até alguém
+decidir o contrário. Errar para o lado da trava custa uma senha; errar para
+o outro custa dinheiro que ninguém reconstitui.
+
+Senha certa não basta — o sistema confere que quem aprovou é mesmo gerente
+ou sócio. E a trava é da **rota**, não da tela: esconder o botão não é
+controle de acesso.
+
+### 3.2 Duas perguntas diferentes: a porta e o poder
+
+São decisões separadas e não podem ser confundidas:
+
+1. **A porta — firma ou cliente?** Vem de `lib/papeis.ts`, e só de lá.
+   `user_metadata.role` do login é comparado com uma **lista fechada**:
+   `firm · owner · admin · manager · staff`. Papel fora da lista é **cliente**.
+   Errar para o lado restritivo tranca um funcionário, que o sócio libera em
+   um minuto; errar para o outro abre a carteira inteira.
+2. **O poder dentro da firma — owner, manager ou junior?** Vem de
+   `staff_roles`, por `lib/staff-perms.ts`, como na tabela acima.
+
+**Por que isto está escrito aqui.** O sistema tinha duas linguagens para a
+mesma coisa: o convite gravava `firm | admin | manager | staff`, e a porta
+lia `role === 'firm' ? 'firm' : 'client'`, escrito em três arquivos
+diferentes. Quem era convidado como **Staff** — o padrão do formulário —,
+Manager ou Admin virava **cliente** ao entrar: caía no `/portal`, via um
+portal vazio (não há linha em `clients` para ele) e levava 403 em toda rota
+de API. Só quem era convidado como Owner funcionava. A auditoria agora
+recusa qualquer arquivo que volte a comparar `user_metadata.role` com
+`'firm'` por conta própria.
+
+### 3.3 Toda rota de API confere quem está chamando
+
+O `middleware.ts` exige **sessão**, não identidade — a sessão de um cliente
+serve para bater em qualquer rota. A conferência de *quem* é obrigatória
+**dentro** da rota, e a auditoria recusa route.ts que não faça nenhuma:
+
+- `getAuth()` de `lib/api-auth.ts` — equipe × cliente, mais `canAccessClient`
+- `getUser()` + filtro por `user_id` — rotas do portal
+- `autorDaRequisicao` de `lib/wa-auth.ts` — atendimento (nível da equipe)
+- `CRON_SECRET`, assinatura do Stripe, assinatura da Twilio — máquinas
+
+Isto não é teoria. `/api/firm/users/[id]` não conferia nada e usava a
+service role key: **qualquer pessoa logada, inclusive um cliente**, podia
+`PATCH {"role":"firm"}` e virar firma, trocar a senha do sócio e assumir a
+conta, ou banir qualquer usuário. Junto com ela estavam sem guarda
+`/api/clients/[id]` (ler, editar e inativar qualquer cliente),
+`/api/documents/[id]` (link assinado de qualquer declaração), `/api/documents`,
+`/api/upload`, `/api/process-pdf` e `/api/firm/messages` (escrever em nome da
+firma na conversa de qualquer cliente).
+
+Duas regras que saíram daí:
+
+- **Corpo de requisição nunca vai inteiro para o banco.** `/api/clients/[id]`
+  fazia `update({...body})`: dava para gravar `user_id` e apontar a ficha de
+  um cliente para o login de outro. Só a lista de campos de `lib/novo-cliente.ts`.
+- **`user_metadata` se mescla, nunca se substitui.** A tela de equipe
+  reescrevia o metadata inteiro: corpo sem `role` rebaixava um membro da
+  firma a cliente e apagava `must_change_password`.
+
+Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso —
+a mudança de papel ali também atualiza `staff_roles`, senão a tela diz
+"Manager" e o sistema continua tratando como assistente.
+
+**O nível só é reescrito quando o papel muda.** Papel e nível podem
+discordar de propósito: existe hoje quem tem papel `firm` e nível `manager`,
+afinado à mão em `/api/account/team`. Sincronizar em toda gravação faria uma
+edição de telefone promover essa pessoa a sócia — e ela passaria a ver o
+faturamento consolidado, sem ninguém pedir. Quem manda no que a pessoa PODE
+é sempre o `staff_roles`.
+
 ---
 
 ## 4. Módulos
@@ -251,6 +377,10 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **Convite do portal, um a um, na lista de clientes.** É o par da importação, que traz a carteira sem convidar ninguém. Cada linha mostra o estado do acesso — *tem acesso*, *convite enviado* (com reenviar) ou *sem e-mail* — e o botão manda o convite daquele cliente. Sem isso, os 968 importados não tinham caminho nenhum para receber o login.
 - **Aceitar um convite passou a COMPLETAR o cadastro que já existe, em vez de criar outro.** O aceite inseria um cliente novo sempre. Para quem nunca esteve na carteira está certo; mas convidar alguém que já está — como todo mundo que veio do QuickBooks — criava um **segundo cadastro da mesma pessoa**, um sem login e outro com, com documentos e faturas divididos entre os dois. Agora o convite guarda de quem ele é (`client_invitations.client_id`) e o aceite atualiza aquele cadastro; na falta, procura pelo e-mail; só insere quando não existe mesmo ninguém. O que o cliente deixa em branco não apaga o que a equipe já tinha preenchido. Migração: `sql/convite-liga-ao-cliente-v1.sql`.
 - **A busca de clientes escapava sem curinga.** `ilike` com o termo cru fazia "100%" casar com "1000" e "100X" — o mesmo defeito já corrigido em Fornecedores. E a listagem ganhou limite: sem ele, `select('*')` sobre a carteira inteira voltava a cada tecla digitada.
+
+- **E-mail é contato, não identidade — quem identifica o login é o `user_id`.** A tabela `clients` exigia e-mail e o exigia único, e a carteira real desmente as duas coisas: **46 dos 970 clientes não têm e-mail** (cliente de balcão muitas vezes não tem, e isso não o impede de ser cliente) e **55 e-mails servem a mais de um cadastro** (o dono e a empresa dele no mesmo endereço). Juntas, as duas regras barravam a importação inteira: com 46 sem e-mail espalhados em 970 linhas e blocos de 200, todo bloco tinha pelo menos um — nenhum cliente entrava, e nada dizia por quê. Agora o e-mail aceita nulo e aceita repetir (vira índice de busca), e a **unicidade foi para o `user_id`**, que é onde faz falta: dois cadastros no mesmo login quebram o portal, porque as rotas do cliente buscam por `user_id` esperando um só. Migração: `sql/cliente-email-nao-e-identidade-v1.sql`.
+- **Cliente sem e-mail entra por escolha, não por regra.** Na importação ele sai separado, com um campo para incluir — desmarcado por padrão. Não é descarte: ele existe, é atendido no balcão e recebe fatura; só nunca vai receber acesso ao portal, porque o convite precisa de e-mail. Quem importa decide se quer o cadastro agora ou depois.
+- **Acesso ao portal continua só por e-mail e senha — decisão registrada.** Login por SMS foi avaliado e recusado: o portal guarda `ssn_last4` e é onde o cliente paga e assina, e o **FTC Safeguards Rule** exige multifator para sistema com informação de cliente. SMS como *único* fator não é multifator e é vulnerável a troca de chip. Além disso, dois métodos de login criam duas identidades no Auth para a mesma pessoa — exatamente a duplicação que a unicidade do `user_id` acabou de fechar. SMS como **segundo** fator continua em aberto e seria bem-vindo.
 
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.

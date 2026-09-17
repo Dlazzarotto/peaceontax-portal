@@ -1,11 +1,12 @@
 // Autenticação/autorização das rotas de API (Fase 1+)
-// - getAuth(): quem está logado e se é da equipe (role 'firm' no metadata)
+// - getAuth(): quem está logado e se é da equipe (lib/papeis.ts decide)
 // - canAccessClient(): staff acessa qualquer cliente; cliente só o próprio
 // - serviceDb(): client com service role (aceita os dois nomes de variável)
 
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
+import { ehDaFirma } from "@/lib/papeis";
 
 export interface AuthContext {
   userId: string;
@@ -23,7 +24,7 @@ export async function getAuth(): Promise<AuthContext | null> {
   if (!user) return null;
   return {
     userId: user.id,
-    isStaff: user.user_metadata?.role === "firm",
+    isStaff: ehDaFirma(user.user_metadata?.role),
   };
 }
 

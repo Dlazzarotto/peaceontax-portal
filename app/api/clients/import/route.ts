@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Importar a carteira é de gerente ou sócio.' }, { status: 403 })
   }
 
-  const { csv, aplicar } = await req.json().catch(() => ({}))
+  const { csv, aplicar, incluirSemEmail } = await req.json().catch(() => ({}))
   if (!csv || typeof csv !== 'string') {
     return NextResponse.json({ error: 'Envie o arquivo CSV.' }, { status: 400 })
   }
@@ -56,36 +56,41 @@ export async function POST(req: NextRequest) {
   if (errLista) return NextResponse.json({ error: errLista.message }, { status: 500 })
 
   const plano = planejarImportacao(registros, jaCadastrados || [])
+  // Cliente sem e-mail entra só a pedido: ele existe e é atendido no balcão,
+  // mas nunca vai receber acesso ao portal, e a equipe decide se quer o
+  // cadastro agora ou depois.
+  const entram = incluirSemEmail ? [...plano.novos, ...plano.semEmail] : plano.novos
 
   const resumo = {
     lidos: registros.length,
-    novos: plano.novos.length,
+    novos: entram.length,
+    semEmailDeFora: incluirSemEmail ? 0 : plano.semEmail.length,
     jaExistem: plano.jaExistem.length,
     repetidosNoArquivo: plano.repetidosNoArquivo.length,
     semNome: plano.semNome,
     telefonesDescartados: plano.telefonesDescartados,
-    empresas: plano.novos.filter(n => n.type === 'business').length,
-    pessoasFisicas: plano.novos.filter(n => n.type === 'individual').length,
-    semEmail: plano.novos.filter(n => !n.email).length,
+    empresas: entram.filter(n => n.type === 'business').length,
+    pessoasFisicas: entram.filter(n => n.type === 'individual').length,
+    semEmail: plano.semEmail.length,
     emailCompartilhado: plano.emailCompartilhado.length,
   }
 
   if (!aplicar) {
     return NextResponse.json({
       ok: true, previa: true, resumo,
-      amostra: plano.novos.slice(0, 15),
+      amostra: entram.slice(0, 15),
       jaExistem: plano.jaExistem.slice(0, 30).map(x => x.name),
       repetidos: plano.repetidosNoArquivo.map(x => x.name),
       emailCompartilhado: plano.emailCompartilhado.slice(0, 20),
     })
   }
 
-  if (!plano.novos.length) {
+  if (!entram.length) {
     return NextResponse.json({ ok: true, resumo, message: 'Nada a importar: todos já estão cadastrados.' })
   }
 
   const agora = new Date().toISOString()
-  const linhas = plano.novos.map(n => ({
+  const linhas = entram.map(n => ({
     name: n.name, email: n.email, phone: n.phone, type: n.type,
     stage: 'Onboarding', language: 'en', active: true,
     notes: `Importado do QuickBooks em ${agora.slice(0, 10)}.`,
@@ -96,24 +101,37 @@ export async function POST(req: NextRequest) {
   for (let i = 0; i < linhas.length; i += BLOCO) {
     const parte = linhas.slice(i, i + BLOCO)
     const { data, error } = await db.from('clients').insert(parte).select('id')
-    if (error) {
-      console.error('import clientes, bloco', i / BLOCO, error.message)
-      falhas.push(`bloco ${i + 1}–${i + parte.length}: ${error.message}`)
-      continue
-    }
-    gravados += data?.length || 0
-  }
+    if (!error) { gravados += data?.length || 0; continue }
 
-  await db.from('client_audit').insert({
-    client_id: null, action: 'import_quickbooks', performed_by: auth.userId,
-    next: { ...resumo, gravados, falhas: falhas.length },
-  }).then(() => null, () => null)
+    // O insert do Postgres é tudo-ou-nada: UMA linha recusada derruba as 200 do
+    // bloco. Quando isso acontece, tenta uma a uma — assim só fica de fora quem
+    // realmente não entra, e a mensagem diz QUEM e POR QUÊ, em vez de um
+    // "bloco falhou" que não ajuda ninguém.
+    console.error('import clientes, bloco', i / BLOCO, error.message, '— tentando linha a linha')
+    for (const linha of parte) {
+      const { error: e1 } = await db.from('clients').insert(linha)
+      if (e1) {
+        if (falhas.length < 20) falhas.push(`${linha.name}: ${e1.message}`)
+      } else gravados++
+    }
+  }
+  const recusados = linhas.length - gravados
+
+  // O resultado vai para o log SEMPRE. A trilha por cliente (client_audit) é
+  // por natureza de um cliente só e recusa client_id nulo — engolir esse erro
+  // fazia a importação não deixar registro nenhum de ter acontecido.
+  const registro = { ...resumo, gravados, recusados, falhas: falhas.slice(0, 20), por: auth.userId }
+  console.log('[import/clientes]', JSON.stringify(registro))
+  const { error: errTrilha } = await db.from('client_audit').insert({
+    client_id: null, action: 'import_quickbooks', performed_by: auth.userId, next: registro,
+  })
+  if (errTrilha) console.error('[import/clientes] trilha nao gravada:', errTrilha.message)
 
   return NextResponse.json({
-    ok: true, resumo, gravados, falhas,
+    ok: true, resumo, gravados, recusados, falhas,
     message: `${gravados} cliente(s) importado(s).`
       + (plano.jaExistem.length ? ` ${plano.jaExistem.length} já estavam cadastrados e ficaram de fora.` : '')
-      + (falhas.length ? ` ⚠️ ${falhas.length} bloco(s) falharam — veja a trilha.` : '')
+      + (recusados > 0 ? ` ⚠️ ${recusados} NÃO entraram — o motivo de cada um está abaixo.` : '')
       + ' Nenhum convite foi enviado: o acesso ao portal sai um a um, quando você quiser.',
   })
 }

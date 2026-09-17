@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { papelDoLogin } from '@/lib/papeis'
 
 const PUBLIC = ['/login', '/invite', '/reset-password', '/auth/callback', '/api/invite', '/agendar', '/privacy', '/terms', '/privacidade', '/staff-setup']
 
@@ -56,7 +57,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  const role = user.user_metadata?.role === 'firm' ? 'firm' : 'client'
+  // Firma x cliente vem de lib/papeis.ts, a fonte unica. Aqui lia-se
+  // role === 'firm', e quem era convidado como staff/manager/admin caia
+  // no portal do cliente.
+  const role = papelDoLogin(user)
 
   if (FIRM_ONLY.some(p => pathname.startsWith(p)) && role === 'client')
     return NextResponse.redirect(new URL('/portal', request.url))

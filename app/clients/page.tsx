@@ -45,6 +45,11 @@ export default function ClientsPage() {
 
   const [resumo, setResumo] = useState<Record<string, ResumoTipo> | null>(null)
   const [enviando, setEnviando] = useState<string | null>(null)
+  // Contador de recarga. router.refresh() atualiza o componente de servidor,
+  // e os dados desta tela vêm de um fetch no cliente: sem mexer nas
+  // dependências do efeito, ele nunca refazia a busca. Depois de importar, os
+  // cartões ficavam em zero — como se nada tivesse entrado.
+  const [recarga, setRecarga] = useState(0)
   const [aviso, setAviso] = useState('')
 
   const load = (q = '') => {
@@ -63,7 +68,7 @@ export default function ClientsPage() {
     fetch('/api/clients?resumo=1').then(r => r.json())
       .then(d => { setResumo(d.resumo || null); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [search, filter, tipo])
+  }, [search, filter, tipo, recarga])
 
   const updateStage = async (clientId: string, newStage: string) => {
     await fetch(`/api/clients/${clientId}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ stage: newStage }) })
@@ -100,8 +105,8 @@ export default function ClientsPage() {
     const pf  = resumo?.individual || ZERADO
     return (
       <div>
-        {showImport && <ImportarModal onPronto={() => { setShowImport(false); setResumo(null); router.refresh() }} onClose={() => setShowImport(false)} />}
-        {showNew && <NewClientModal onSave={() => { setShowNew(false); setShowNew(false) }} onClose={() => setShowNew(false)} />}
+        {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
+        {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:12 }}>
           <div>
@@ -193,8 +198,8 @@ export default function ClientsPage() {
 
   return (
     <div>
-      {showNew && <NewClientModal onSave={() => { setShowNew(false); load(search) }} onClose={() => setShowNew(false)} />}
-      {showImport && <ImportarModal onPronto={() => { setShowImport(false); load(search) }} onClose={() => setShowImport(false)} />}
+      {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
+      {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
 
       {aviso && (
         <div style={{ marginBottom:14, padding:'11px 15px', borderRadius:10, fontSize:14, fontWeight:600,
@@ -491,6 +496,11 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
   const [busy, setBusy]     = useState(false)
   const [erro, setErro]     = useState('')
   const [feito, setFeito]   = useState('')
+  const [falhas, setFalhas] = useState<string[]>([])
+  const [gravados, setGravados] = useState(0)
+  // Cliente sem e-mail nunca vai receber o portal. Por padrão fica de fora —
+  // a equipe marca quando quiser o cadastro dele para atender no balcão.
+  const [comSemEmail, setComSemEmail] = useState(false)
 
   const escolher = async (f: File | null) => {
     if (!f) return
@@ -499,15 +509,16 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
     setCsv(await f.text())
   }
 
-  const chamar = async (aplicar: boolean) => {
+  const chamar = async (aplicar: boolean, forcado?: boolean) => {
+    void forcado
     setBusy(true); setErro('')
     const d = await fetch('/api/clients/import', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csv, aplicar }),
+      body: JSON.stringify({ csv, aplicar, incluirSemEmail: comSemEmail }),
     }).then(r => r.json()).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setErro(d?.error || 'Não foi possível ler o arquivo.'); return }
-    if (aplicar) { setFeito(d.message); setPrevia(null) } else setPrevia(d)
+    if (aplicar) { setFeito(d.message); setFalhas(d.falhas || []); setGravados(d.gravados ?? 0); setPrevia(null) } else setPrevia(d)
   }
 
   const cx: React.CSSProperties = { background:'#fff', borderRadius:20, width:'100%', maxWidth:620, maxHeight:'90vh', overflowY:'auto' }
@@ -527,8 +538,28 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
         <div style={{ padding:'20px 24px' }}>
           {feito ? (
             <>
-              <div style={{ background:'#e8f5ee', color:'#1a6b4a', padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>{feito}</div>
+              {/* Verde só quando entrou alguém E ninguém foi recusado. A versão
+                  anterior pintava de verde qualquer resposta da rota — uma
+                  importação que gravou ZERO aparecia como sucesso, e foi assim
+                  que uma falha total passou por confirmada. */}
+              <div style={{
+                background: gravados > 0 && !falhas.length ? '#e8f5ee' : gravados > 0 ? '#fff4e8' : '#fdf0f0',
+                color: gravados > 0 && !falhas.length ? '#1a6b4a' : gravados > 0 ? '#8a5a00' : '#b02020',
+                padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>
+                {gravados === 0 && <div style={{ fontSize:15, fontWeight:800, marginBottom:4 }}>Nada foi importado.</div>}
+                {feito}
+              </div>
+              {falhas.length > 0 && (
+                <div style={{ marginTop:12, background:'#fdf0f0', border:'1px solid #f0c8c8', borderRadius:10, padding:'12px 15px' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'#b02020', marginBottom:6 }}>Não entraram:</div>
+                  <ul style={{ margin:0, paddingLeft:18, fontSize:12, color:'#8a3030', lineHeight:1.7 }}>
+                    {falhas.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                </div>
+              )}
               <div style={{ display:'flex', justifyContent:'flex-end', marginTop:16 }}>
+                <button onClick={() => { setFeito(''); setFalhas([]); setPrevia(null) }}
+                  style={{ padding:'10px 18px', borderRadius:9, border:'1px solid #e2e8f4', background:'#f8faff', color:'#6a7a9a', cursor:'pointer', fontSize:13 }}>Tentar de novo</button>
                 <button onClick={onPronto} style={{ padding:'10px 24px', borderRadius:9, border:'none', background:'#2D3278', color:'#fff', cursor:'pointer', fontSize:14, fontWeight:700 }}>Ver a lista</button>
               </div>
             </>
@@ -559,9 +590,26 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
                     {previa.resumo.repetidosNoArquivo > 0 && linha('Repetidos dentro do arquivo', previa.resumo.repetidosNoArquivo, '#c06010')}
                     {linha('— empresas', previa.resumo.empresas)}
                     {linha('— pessoas físicas', previa.resumo.pessoasFisicas)}
-                    {previa.resumo.semEmail > 0 && linha('Sem e-mail (não terão portal)', previa.resumo.semEmail, '#6a7a9a')}
+                    {previa.resumo.semEmailDeFora > 0 && linha('Sem e-mail (ficam de fora)', previa.resumo.semEmailDeFora, '#6a7a9a')}
                     {previa.resumo.telefonesDescartados > 0 && linha('Telefones inválidos descartados', previa.resumo.telefonesDescartados, '#6a7a9a')}
                   </div>
+
+                  {previa.resumo.semEmail > 0 && (
+                    <label style={{ display:'flex', alignItems:'flex-start', gap:9, background:'#f8faff',
+                      border:'1px solid #e2e8f4', borderRadius:10, padding:'11px 14px', marginBottom:12,
+                      fontSize:13, color:'#4a5a70', cursor:'pointer', lineHeight:1.55 }}>
+                      <input type="checkbox" checked={comSemEmail} style={{ marginTop:3 }}
+                        onChange={e => { setComSemEmail(e.target.checked); setPrevia(null) }} />
+                      <span>
+                        <b>Incluir os {previa.resumo.semEmail} sem e-mail</b>
+                        <div style={{ fontSize:11.5, color:'#9aaab0', marginTop:2 }}>
+                          Eles existem e são atendidos no balcão, mas nunca vão receber acesso ao
+                          portal — o convite precisa de e-mail. Desmarcado, ficam de fora desta
+                          importação e podem ser trazidos depois.
+                        </div>
+                      </span>
+                    </label>
+                  )}
 
                   {previa.resumo.emailCompartilhado > 0 && (
                     <div style={{ background:'#fff8e8', border:'1px solid #f0d8a8', borderRadius:10, padding:'11px 14px', fontSize:12.5, color:'#5a4a1a', lineHeight:1.6, marginBottom:12 }}>

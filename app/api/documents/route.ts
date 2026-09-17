@@ -1,7 +1,14 @@
+// CORRECAO DE SEGURANCA: a rota nao conferia quem chamava e usava a service
+// role key. Qualquer pessoa logada anexava arquivo na pasta de qualquer
+// cliente. Agora: equipe anexa em qualquer um, cliente so na propria pasta.
+
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
+import { getAuth, canAccessClient } from '@/lib/api-auth'
 
 export async function POST(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth) return NextResponse.json({ error: 'Nao autenticado' }, { status: 401 })
   try {
     const formData    = await req.formData()
     const file        = formData.get('file') as File
@@ -20,6 +27,8 @@ export async function POST(req: NextRequest) {
     if (!file || !clientId || !taxYear || !category) {
       return NextResponse.json({ error: 'Missing required fields: file, clientId, taxYear, category' }, { status: 400 })
     }
+    if (!(await canAccessClient(auth, clientId)))
+      return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
     const db = supabaseAdmin()
     const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`

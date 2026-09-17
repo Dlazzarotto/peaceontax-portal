@@ -15,6 +15,7 @@
 
 import { createHash } from 'crypto'
 import { serviceDb } from '@/lib/api-auth'
+import type { Concessoes, ChavePermissao } from '@/lib/permissoes'
 
 export type StaffLevel = 'owner' | 'manager' | 'junior'
 
@@ -66,6 +67,30 @@ export async function registrarNivel(params: {
     updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id' })
   return nivel
+}
+
+/**
+ * Autorizações individuais gravadas para esta pessoa.
+ *
+ * Lê a view staff_grants_atual (a última decisão de cada chave). Se a
+ * migração ainda não rodou, devolve vazio: o sistema volta a se comportar
+ * exatamente como o nível manda, em vez de travar o financeiro inteiro.
+ */
+export async function concessoesDe(userId: string): Promise<Concessoes> {
+  try {
+    const { data, error } = await serviceDb()
+      .from('staff_grants_atual')
+      .select('chave, concedido')
+      .eq('user_id', userId)
+    if (error || !data) return {}
+    const c: Concessoes = {}
+    for (const linha of data as { chave: string; concedido: boolean }[]) {
+      c[linha.chave as ChavePermissao] = linha.concedido
+    }
+    return c
+  } catch {
+    return {}
+  }
 }
 
 export function hashPin(pin: string): string {

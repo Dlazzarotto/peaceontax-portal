@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
+import { papelDoLogin } from '@/lib/papeis'
 
 const URL  = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -23,6 +24,7 @@ export async function getUser() {
   return user
 }
 
+/** Firma x cliente. A regra mora em lib/papeis.ts — nao repita aqui. */
 export function getRole(user: any): 'firm' | 'client' {
-  return user?.user_metadata?.role === 'firm' ? 'firm' : 'client'
+  return papelDoLogin(user)
 }

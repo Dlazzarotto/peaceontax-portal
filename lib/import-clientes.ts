@@ -35,6 +35,8 @@ export interface PlanoDeImportacao {
   novos: LinhaImportada[]
   jaExistem: Descartado[]
   repetidosNoArquivo: Descartado[]
+  /** Sem e-mail: entram só se a equipe pedir. Não têm como receber o portal. */
+  semEmail: LinhaImportada[]
   semNome: number
   /** Mesmo e-mail, nomes diferentes: dono e empresa. Entram, mas a equipe precisa saber. */
   emailCompartilhado: { email: string; nomes: string[] }[]
@@ -92,6 +94,9 @@ export function lerCsv(texto: string): Record<string, string>[] {
 /**
  * Compara o arquivo com quem já está cadastrado e devolve o que fazer.
  * Nada é gravado aqui: a equipe vê o plano antes de confirmar.
+ *
+ * Quem não tem e-mail sai em `semEmail`, não em `novos`: entra só se a equipe
+ * marcar na tela. Não é descarte — é decisão de quem importa.
  */
 export function planejarImportacao(
   registros: Record<string, string>[],
@@ -104,7 +109,7 @@ export function planejarImportacao(
   }
 
   const plano: PlanoDeImportacao = {
-    novos: [], jaExistem: [], repetidosNoArquivo: [],
+    novos: [], jaExistem: [], repetidosNoArquivo: [], semEmail: [],
     semNome: 0, emailCompartilhado: [], telefonesDescartados: 0,
   }
   const vistosNoArquivo = new Set<string>()
@@ -124,8 +129,13 @@ export function planejarImportacao(
     const phone = telefoneDoQuickBooks(telBruto)
     if (telBruto && !phone) plano.telefonesDescartados++
 
-    if (email) porEmail.set(email, [...(porEmail.get(email) || []), nome])
-    plano.novos.push({ name: nome, email, phone, type: tipoDoQuickBooks(r['Client type']) })
+    const linha: LinhaImportada = { name: nome, email, phone, type: tipoDoQuickBooks(r['Client type']) }
+    // Sem e-mail não é erro: é cliente de balcão, que existe e é atendido. Só
+    // não tem como receber o acesso ao portal. Fica separado para a equipe
+    // decidir se entra nesta importação.
+    if (!email) { plano.semEmail.push(linha); continue }
+    porEmail.set(email, [...(porEmail.get(email) || []), nome])
+    plano.novos.push(linha)
   }
 
   for (const [email, nomes] of porEmail) {

@@ -4,7 +4,15 @@
 //   → registra o recebimento. O saldo e a situação da fatura são
 //     atualizados pelo próprio banco (gatilho).
 //
-// Só gerente ou sócio: quem emite não dá baixa.
+// Só quem tem autorização para receber (nível de gerente/sócio, ou
+// autorização individual dada pelo sócio em Settings → Users).
+//
+// Sozinho, só CARTÃO e ZELLE — os dois que deixam rastro fora do sistema
+// (Stripe e extrato do banco). Qualquer outra forma, dinheiro em espécie à
+// frente, pede a senha de um gerente ou sócio. Como o sócio agora pode
+// autorizar `receber` a quem também emite, sem esta trava a mesma pessoa
+// emitiria por $500, receberia em espécie e registraria $300.
+// Ver lib/recebimento-aprovacao.ts.
 // Dinheiro, Zelle e Venmo são à vista — o banco recusa valor parcial.
 //
 // Fatura com cobrança automática no Stripe (mensalidade ou parcelamento):
@@ -26,6 +34,8 @@ import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito, avisoDeBaixaComAchEmTransito, limparAchEmTransito } from '@/lib/ach-transito'
+import { exigeAprovacao, podeAprovar, notaDaAprovacao, AVISO } from '@/lib/recebimento-aprovacao'
+import { getStaffLevel } from '@/lib/staff-perms'
 
 export const dynamic = 'force-dynamic'
 
@@ -199,6 +209,37 @@ export async function POST(req: NextRequest) {
     }, { status: 409 })
   }
 
+  // ── Forma fora de cartão/Zelle: aprovação de gerente ou sócio ──
+  // Fica por último de propósito: não se manda buscar um gerente para depois
+  // a fatura ser recusada por outro motivo.
+  let aprovador: { email: string; userId: string } | null = null
+  if (exigeAprovacao(method)) {
+    const emailAp = String(b.approverEmail || '').trim().toLowerCase()
+    const senhaAp = String(b.approverPassword || '')
+    if (!emailAp || !senhaAp) {
+      return NextResponse.json({ error: AVISO.falta(method), precisaAprovacao: true }, { status: 400 })
+    }
+    const sbAp = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+    const { data: sessao, error: apErr } = await sbAp.auth.signInWithPassword({
+      email: emailAp, password: senhaAp,
+    })
+    if (apErr || !sessao?.user) {
+      const m = apErr?.message || ''
+      if (/rate|too many|429/i.test(m)) {
+        return NextResponse.json({ error: AVISO.tentativas, precisaAprovacao: true }, { status: 429 })
+      }
+      return NextResponse.json({ error: AVISO.senha(emailAp), precisaAprovacao: true }, { status: 401 })
+    }
+    // Senha certa não basta: tem de ser gerente ou sócio.
+    if (!podeAprovar(await getStaffLevel(sessao.user.id))) {
+      return NextResponse.json({ error: AVISO.nivel, precisaAprovacao: true }, { status: 403 })
+    }
+    aprovador = { email: emailAp, userId: sessao.user.id }
+  }
+
   const { error } = await db.from('invoice_payments').insert({
     invoice_id: inv.id,
     client_id: inv.client_id,
@@ -216,7 +257,14 @@ export async function POST(req: NextRequest) {
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'payment', performed_by: auth.userId,
-    staff_level: perms.nivel, next: { amount: valor, method, comAchEmTransito: !!transito },
+    staff_level: perms.nivel,
+    // Quem aprovou fica na trilha da fatura: sem isso a aprovação acontece
+    // e não sobra prova de que aconteceu.
+    reason: aprovador ? notaDaAprovacao(aprovador.email, valor, method) : null,
+    next: {
+      amount: valor, method, comAchEmTransito: !!transito,
+      ...(aprovador ? { aprovadoPor: aprovador.userId, aprovadorEmail: aprovador.email } : {}),
+    },
   }).then(() => null, () => null)
 
   // A equipe confirmou a baixa sabendo do débito a caminho: o trânsito acabou

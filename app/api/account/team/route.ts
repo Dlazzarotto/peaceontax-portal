@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { ehDaFirma } from '@/lib/papeis'
 
 export async function GET() {
   const auth = await getAuth()
@@ -17,10 +18,11 @@ export async function GET() {
 
   const db = serviceDb()
 
-  // Todos os usuários com role firm no Auth
+  // Todos os logins da firma. Filtrava por role === 'firm' e a equipe
+  // convidada como staff/manager/admin nao aparecia aqui.
   const { data: usersData } = await db.auth.admin.listUsers({ perPage: 100 })
   const firmUsers = (usersData?.users || []).filter(
-    (u: any) => u.user_metadata?.role === 'firm'
+    (u: any) => ehDaFirma(u.user_metadata?.role)
   )
 
   const { data: roles } = await db.from('staff_roles').select('user_id, level, approval_pin_hash')

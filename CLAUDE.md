@@ -79,6 +79,18 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `sentidoTransferencia`, `contasDeFora`, `cartaoCitado`, `ehPagamentoNoCartao`,
   isolamento `nonprofit`). Alterou um, altera os três. Unificar num módulo
   único é dívida aceita, não decisão tomada.
+- **Sessão não é identidade.** O `middleware.ts` só garante que existe login
+  — a sessão de um cliente bate em qualquer rota. Conferir QUEM está
+  chamando é obrigatório DENTRO da rota (`getAuth`, `getUser` + filtro por
+  `user_id`, `autorDaRequisicao`, `CRON_SECRET` ou assinatura), e a auditoria
+  recusa route.ts sem nenhuma delas. `/api/firm/users/[id]` não conferia nada
+  e usava a service role key: qualquer cliente logado virava firma, trocava a
+  senha do sócio ou banía qualquer um. Junto com ela, `/api/clients/[id]`,
+  `/api/documents[/id]`, `/api/upload`, `/api/process-pdf` e
+  `/api/firm/messages`. Daí também: **corpo de requisição nunca vai inteiro
+  para o banco** (`clients/[id]` fazia `update({...body})` — dava para gravar
+  `user_id`) e **`user_metadata` se mescla, nunca se substitui** (corpo sem
+  `role` rebaixava um membro da firma a cliente).
 - **Toda rota de API exige sessão** (`middleware.ts`). A lista `API_PUBLIC` é
   fechada: só entra rota que um visitante sem login precisa mesmo chamar
   (agendamento, convite, webhooks, cron da Vercel). Rota de `/api/cron/` só
@@ -86,9 +98,43 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   existir. Rotinas agendadas ficam em `vercel.json`. Dentro da rota, `getAuth` de
   `lib/api-auth.ts` confere o dono: equipe acessa qualquer cliente, cliente só
   o próprio.
+- **Firma × cliente se decide em `lib/papeis.ts`, e só lá.** `ehDaFirma` tem
+  uma lista FECHADA (`firm · owner · admin · manager · staff`); papel fora
+  dela é cliente. `middleware.ts`, `getRole` de `lib/supabase-server.ts` e
+  `isStaff` de `lib/api-auth.ts` perguntam ali. Antes cada um comparava
+  `role === 'firm'` por conta própria, e quem era convidado como **staff**
+  (o padrão do formulário), manager ou admin virava CLIENTE ao entrar: caía
+  no `/portal`, sem linha em `clients`, com 403 em toda rota. A auditoria
+  recusa quem voltar a comparar `user_metadata.role` com `'firm'`.
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
-  `manager`, `junior`. Quem não está na tabela é `junior`. O
-  `user_metadata.role` do Supabase só distingue firma × cliente no middleware.
+  `manager`, `junior`. Quem não está na tabela é `junior`. São duas
+  perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
+- **Em cima do nível há autorização por pessoa** (`lib/permissoes.ts`,
+  tabela `staff_grants`). O nível é a base; cada concessão é um sim ou não
+  explícito que o vence; o sócio é imune a concessão negativa. Quem monta o
+  conjunto é `permissoesDe` — `lib/billing-perms.ts` só busca o que está
+  gravado, e as 12 rotas de `billing/` herdam pelo mesmo funil. A tabela é
+  APPEND-ONLY: o estado atual é a view `staff_grants_atual`, então estado e
+  histórico não podem discordar. Motivo é obrigatório, só o sócio autoriza,
+  ninguém mexe no próprio. Autorizar `receber` a quem emite quebra o
+  princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
+  salvar e o motivo fica gravado. A lista de chaves está no módulo E no
+  `CHECK` do SQL; a auditoria falha se divergirem.
+  Migração: `sql/permissoes-por-pessoa-v1.sql`.
+- **Recebimento: cartão e Zelle sozinho, o resto com senha de gerente/sócio**
+  (`lib/recebimento-aprovacao.ts`). `FORMAS_LIVRES` é uma lista de LIVRES,
+  não de bloqueadas — forma nova nasce pedindo aprovação. Espécie é o caso
+  que originou: não existe até alguém digitar, e o sócio agora pode
+  autorizar `receber` a quem também emite. Senha certa não basta, `podeAprovar`
+  confere o nível do aprovador; quem aprovou vai para `invoice_audit`
+  (`reason` e `next.aprovadoPor`). A trava é da ROTA — a tela só antecipa.
+- **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
+  `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
+  controle de acesso. A tela de equipe prometia "Staff: assigned clients
+  only" — nunca foi verdade, o texto foi corrigido. Restringir de fato é
+  decisão do sócio, pendente. O texto de cada nível em
+  `app/settings/users/page.tsx` descreve o que o sistema FAZ (matriz da
+  seção 3): mudou a matriz, muda o texto.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
@@ -189,6 +235,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   diz de quem é o convite; o aceite atualiza aquele cliente e só insere quando
   não há nenhum. Antes inseria sempre — convidar quem veio da importação
   criava a mesma pessoa duas vezes, uma com login e outra sem.
+- **E-mail é contato; identidade é o `user_id`.** `clients.email` aceita nulo
+  (46 clientes reais não têm) e aceita repetir (dono e empresa dele dividem
+  um). O que é único é `user_id` — dois cadastros no mesmo login quebram o
+  portal. Acesso ao portal é só por e-mail e senha: SMS como único fator não
+  é multifator, e o FTC Safeguards Rule exige multifator aqui.
 - **Cliente repetido é NOME igual, não e-mail igual.** Na carteira real, 56
   e-mails servem a mais de um cadastro e só um é duplicata: o resto é o dono e
   a empresa dele no mesmo endereço. Recusar por e-mail barrava 55 cadastros
@@ -285,4 +336,8 @@ middleware.ts        controle de acesso por rota
   roda no deploy: aplica-se com `npm run migrar -- sql/<arquivo>.sql` (que
   anota em `public.schema_migrations`) ou à mão no SQL Editor — e nesse caso
   `npm run migrar -- --registrar sql/<arquivo>.sql` anota que foi feito.
+  **A chave do livro é o CAMINHO, não o nome**: `sql/painel-v1.sql`, nunca
+  `painel-v1.sql` (`migrar.mjs` monta `sql/${f}` para consultar). Registro
+  feito com o nome curto vira uma linha que ninguém encontra, e `--pendentes`
+  segue dizendo PENDENTE — alguém roda a migração de novo.
   A entrega sempre diz qual migração precisa rodar.

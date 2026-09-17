@@ -4,6 +4,7 @@
 // recebimento, duplicação e cancelamento — cada botão conforme o nível.
 
 import { useState, useEffect } from 'react'
+import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 
 interface Inv {
   id: string; number: string; doc_type: string; status: string; cliente: string
@@ -116,6 +117,11 @@ export default function BillingPage() {
   const [rValor, setRValor] = useState('')
   const [rForma, setRForma] = useState('zelle')
   const [rRef, setRRef] = useState('')
+  // Cartão e Zelle a equipe registra sozinha; o resto pede senha de gerente
+  // ou sócio (lib/recebimento-aprovacao.ts). Não fica em memória depois de
+  // salvar: senha de terceiro não sobra em tela aberta no balcão.
+  const [apEmail, setApEmail] = useState('')
+  const [apSenha, setApSenha] = useState('')
   const [pagamentos, setPagamentos] = useState<any[]>([])
   const [estPass, setEstPass] = useState(''); const [estMotivo, setEstMotivo] = useState('')
 
@@ -415,6 +421,7 @@ export default function BillingPage() {
       body: JSON.stringify({
         invoiceId: receber.id, amount: Number(rValor), method: rForma, reference: rRef,
         ...(confirmarComAch ? { confirmarComAch: true } : {}),
+        ...(exigeAprovacao(rForma) ? { approverEmail: apEmail, approverPassword: apSenha } : {}),
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
@@ -424,10 +431,14 @@ export default function BillingPage() {
       if (confirm(`${d.error}\n\nRegistrar assim mesmo?`)) return salvarRecebimento(true)
       return
     }
-    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); setApSenha(''); return }
     setMsg(`✓ ${d.message}`)
-    setReceber(null); setRRef(''); load()
+    setReceber(null); setRRef(''); setApEmail(''); setApSenha(''); load()
   }
+
+  // Sem a aprovação preenchida o botão não sai do lugar: melhor travar aqui
+  // do que mandar a senha vazia e voltar com erro.
+  const faltaAprovacao = exigeAprovacao(rForma) && (!apEmail.trim() || !apSenha)
 
   const card: React.CSSProperties = { background: '#fff', border: '1px solid #E2E8F4', borderRadius: 16, padding: '18px 20px', marginBottom: 16 }
   const inp: React.CSSProperties = { padding: '10px 12px', border: '1.5px solid #E2E8F4', borderRadius: 9, fontSize: 14.5, outline: 'none' }
@@ -1116,6 +1127,27 @@ export default function BillingPage() {
             <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>Referência (Conf#, nº do cheque)</label>
             <input value={rRef} onChange={e => setRRef(e.target.value)}
               style={{ ...inp, width: '100%', marginBottom: 14, boxSizing: 'border-box' as const }} />
+
+            {exigeAprovacao(rForma) && (
+              <div style={{ background: '#FFF8E8', border: '1.5px solid #F0D8A0', borderRadius: 11,
+                padding: '13px 15px', marginBottom: 14 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: '#7A5A10', marginBottom: 4 }}>
+                  🔐 {nomeDaForma(rForma)} pede aprovação
+                </div>
+                <p style={{ fontSize: 12, color: '#7A5A10', margin: '0 0 10px', lineHeight: 1.55 }}>
+                  Um gerente ou sócio precisa autorizar este lançamento com o
+                  próprio login. Cartão e Zelle você registra sozinho.
+                </p>
+                <input value={apEmail} onChange={e => setApEmail(e.target.value)}
+                  placeholder="E-mail de quem autoriza" autoComplete="off"
+                  style={{ ...inp, width: '100%', marginBottom: 8, boxSizing: 'border-box' as const,
+                    borderColor: '#E0C880', fontSize: 13 }} />
+                <input type="password" value={apSenha} onChange={e => setApSenha(e.target.value)}
+                  placeholder="Senha de quem autoriza" autoComplete="new-password"
+                  style={{ ...inp, width: '100%', boxSizing: 'border-box' as const,
+                    borderColor: '#E0C880', fontSize: 13 }} />
+              </div>
+            )}
             </>)}
 
             {receber.saldo > 0 && rForma === 'card' && (
@@ -1183,8 +1215,11 @@ export default function BillingPage() {
                 {receber.saldo > 0 ? 'Cancelar' : 'Fechar'}
               </button>
               {receber.saldo > 0 && (
-                <button onClick={() => salvarRecebimento()} disabled={busy} style={btn('#1A6B4A', busy)}>
-                  {rForma === 'card' ? 'Já cobrei — registrar' : 'Registrar'}
+                <button onClick={() => salvarRecebimento()} disabled={busy || faltaAprovacao}
+                  style={btn('#1A6B4A', busy || faltaAprovacao)}
+                  title={faltaAprovacao ? 'Preencha o e-mail e a senha de quem autoriza' : ''}>
+                  {rForma === 'card' ? 'Já cobrei — registrar'
+                    : faltaAprovacao ? 'Aguardando aprovação' : 'Registrar'}
                 </button>
               )}
             </div>

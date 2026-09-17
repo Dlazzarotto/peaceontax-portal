@@ -239,6 +239,110 @@ for (const p of arquivos(raiz, exts)) {
 if (!corrompidos) ok('nenhum arquivo com acentos corrompidos')
 if (!boms) ok('nenhum arquivo com BOM')
 
+titulo('FIRMA x CLIENTE SE DECIDE NUM LUGAR SO (lib/papeis.ts)')
+// O convite da equipe grava role = firm|admin|manager|staff; a porta de
+// entrada lia role === 'firm'. Quem entrava como staff (o padrao do
+// formulario) virava CLIENTE e caia no portal. Agora todos perguntam a
+// lib/papeis.ts — e nenhum outro arquivo pode repetir a comparacao.
+checar('lib/papeis.ts existe', 'lib/papeis.ts', /export function ehDaFirma/, 'a fonte unica sumiu')
+for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts']) {
+  checar(`${alvo} pergunta a lib/papeis`, alvo, /from ['"]@\/lib\/papeis['"]/, 'voltou a decidir sozinho')
+}
+{
+  // Ler user_metadata.role e compara-lo com 'firm' e o que nao pode se
+  // repetir. Comparar a variavel ja calculada por papelDoLogin e normal.
+  const CRU = /(user_)?metadata[^\n]{0,40}\.role\s*===\s*['"]firm['"]/
+  let repetem = []
+  for (const arq of arquivos(join(raiz, 'app'), ['.ts', '.tsx']))
+    if (CRU.test(readFileSync(arq, 'utf8'))) repetem.push(rel(arq))
+  for (const arq of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'])
+    if (CRU.test(readFileSync(join(raiz, arq), 'utf8'))) repetem.push(arq)
+  repetem.length
+    ? falta('Ninguem repete a comparacao role === "firm"', `use ehDaFirma: ${repetem.join(', ')}`)
+    : ok('Ninguem repete a comparacao role === "firm"')
+}
+
+titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
+// /api/firm/users/[id] nao conferia e usava a service role key: qualquer
+// cliente logado virava firma ou trocava a senha do socio.
+{
+  // Rotas abertas de proposito — a mesma lista de API_PUBLIC do middleware,
+  // mais o logout (so encerra a propria sessao).
+  const ABERTAS = [
+    'app/api/agenda/slots/route.ts',
+    'app/api/agenda/bookings/route.ts',
+    'app/api/invite/[token]/route.ts',
+    'app/api/firm/setup/[token]/route.ts',
+    'app/api/auth/logout/route.ts',
+  ]
+  // getAuth() (equipe x cliente), getUser() + filtro por user_id (rotas do
+  // portal), nivel da equipe (WhatsApp), CRON_SECRET, assinatura do Stripe
+  // e assinatura da Twilio (o header chega em minusculo).
+  const CONFERE = /getAuth\(|getUser\(|autorDaRequisicao\(|CRON_SECRET|constructEvent|twilio-signature/i
+  const soltas = []
+  for (const arq of arquivos(join(raiz, 'app', 'api'), ['route.ts'])) {
+    const nome = rel(arq)
+    if (ABERTAS.includes(nome)) continue
+    if (!CONFERE.test(readFileSync(arq, 'utf8'))) soltas.push(nome)
+  }
+  soltas.length
+    ? falta('Nenhuma rota de API sem conferencia', `sem getAuth: ${soltas.join(', ')}`)
+    : ok('Nenhuma rota de API sem conferencia')
+}
+
+titulo('AUTORIZACOES POR PESSOA (nivel + concessoes)')
+checar('lib/permissoes.ts existe', 'lib/permissoes.ts', /export function permissoesDe/,
+       'o modulo que monta o conjunto sumiu')
+checar('O financeiro monta pelo modulo puro', 'lib/billing-perms.ts',
+       /from ['"]@\/lib\/permissoes['"]/,
+       'billing-perms voltou a calcular a matriz sozinho — duas definicoes divergem em silencio')
+checar('Concessao e lida do banco', 'lib/staff-perms.ts', /staff_grants_atual/,
+       'sem ler a view, a autorizacao dada na tela nao vale nada')
+checar('So o socio autoriza', 'app/api/account/grants/route.ts', /!== 'owner'/,
+       'a rota de autorizacoes precisa exigir socio')
+checar('Motivo e obrigatorio na autorizacao', 'app/api/account/grants/route.ts',
+       /razao\.length < 3/, 'acao sensivel pede motivo — principio 3')
+{
+  // A lista de chaves vive em dois lugares: o modulo e o CHECK do SQL.
+  // Divergir em silencio significa autorizacao que a tela oferece e o banco
+  // recusa — ou pior, chave gravada que o codigo nunca le.
+  const mod = readFileSync(join(raiz, 'lib/permissoes.ts'), 'utf8')
+  const sql = existsSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'))
+    ? readFileSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'), 'utf8') : ''
+  const noModulo = Array.from(mod.matchAll(/chave:\s*'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
+  const bloco = (sql.match(/chave in \(([^)]*)\)/s) || [])[1] || ''
+  const noSql = Array.from(bloco.matchAll(/'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
+  JSON.stringify(noModulo) === JSON.stringify(noSql) && noModulo.length
+    ? ok('Chaves do modulo e do CHECK do SQL batem')
+    : falta('Chaves do modulo e do CHECK do SQL batem',
+            `modulo: ${noModulo.join(',')} | sql: ${noSql.join(',')}`)
+}
+
+titulo('RECEBIMENTO: CARTAO E ZELLE SOZINHO, O RESTO COM APROVACAO')
+checar('A regra mora num modulo so', 'lib/recebimento-aprovacao.ts',
+       /export const FORMAS_LIVRES/, 'a lista de formas livres sumiu')
+checar('A rota de pagamento aplica a regra', 'app/api/billing/payments/route.ts',
+       /exigeAprovacao\(method\)/,
+       'sem isto o dinheiro em especie entra sem aprovacao de gerente')
+checar('Senha certa nao basta: confere o nivel', 'app/api/billing/payments/route.ts',
+       /podeAprovar\(await getStaffLevel/,
+       'qualquer login valido aprovaria — inclusive o de um cliente')
+checar('Quem aprovou fica na trilha', 'app/api/billing/payments/route.ts',
+       /aprovadoPor/, 'aprovacao sem registro nao e aprovacao')
+recusar('A trava nao vive so na tela', 'app/dashboard/billing/page.tsx',
+        /approverPassword['"]?\s*:\s*apSenha\s*\}\s*\)\s*\}\s*$/m,
+        'a conferencia tem de estar na rota, nao so no componente')
+
+titulo('LIVRO DE MIGRACOES: A CHAVE E O CAMINHO')
+// migrar.mjs consulta por `sql/<arquivo>.sql`. Registro anotado a mao com o
+// nome curto vira linha orfa e --pendentes segue mandando rodar de novo.
+checar('migrar.mjs monta a chave com o caminho', 'scripts/migrar.mjs',
+       /const nome = `sql\/\$\{f\}`/,
+       'mudou a forma da chave — o CLAUDE.md e os registros manuais precisam acompanhar')
+checar('O CLAUDE.md avisa sobre a chave', 'CLAUDE.md',
+       /A chave do livro é o CAMINHO/,
+       'sem esse aviso, o registro manual sai com o nome curto')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

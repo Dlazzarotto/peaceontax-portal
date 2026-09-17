@@ -1,16 +1,27 @@
 // lib/billing-perms.ts — quem pode o quê no financeiro
 //
-// Assistente: SOMENTE emite estimate e invoice. Não recebe, não cancela,
-//             não duplica, não dá desconto e não vê relatórios.
-//             (Separação de funções: quem emite não dá baixa no pagamento.)
-// Gerente:    emite, recebe pagamento, duplica fatura emitida, cancela,
-//             apaga e concede desconto — mas NUNCA acessa relatórios.
-// Sócio:      tudo, incluindo relatórios e totais do negócio.
+// O conjunto sai de DUAS coisas, nesta ordem:
+//   1. o NÍVEL (owner · manager · junior), que é a base;
+//   2. as AUTORIZAÇÕES individuais que o sócio deu ou retirou daquela
+//      pessoa em Settings → Users (tabela staff_grants).
 //
-// A checagem é sempre no SERVIDOR. Esconder botão na tela não é controle
-// de acesso: sem isto, bastaria chamar a rota direto.
+// Quem monta o conjunto é `permissoesDe` de lib/permissoes.ts — lógica pura,
+// coberta por testes. Aqui só se busca o que está gravado.
+//
+// Base por nível:
+//   Assistente: SOMENTE emite estimate e invoice. Não recebe, não cancela,
+//               não duplica, não dá desconto e não vê relatórios.
+//               (Separação de funções: quem emite não dá baixa.)
+//   Gerente:    emite, recebe, duplica, cancela, apaga, estorna e dá
+//               desconto — mas NUNCA acessa relatórios nem totais.
+//   Sócio:      tudo. E é imune a concessão negativa: tirar poder de sócio
+//               se faz mudando o nível, à vista.
+//
+// A checagem é sempre no SERVIDOR. Esconder botão na tela não é controle de
+// acesso: sem isto, bastaria chamar a rota direto.
 
-import { getStaffLevel, type StaffLevel } from '@/lib/staff-perms'
+import { getStaffLevel, concessoesDe, type StaffLevel } from '@/lib/staff-perms'
+import { permissoesDe } from '@/lib/permissoes'
 
 export interface PermissoesFinanceiro {
   nivel: StaffLevel
@@ -19,7 +30,7 @@ export interface PermissoesFinanceiro {
   duplicar: boolean       // copiar uma fatura já emitida
   editar: boolean         // alterar uma fatura já criada
   estornar: boolean       // desfazer um pagamento registrado
-  senhaNaEdicao: boolean  // gerente precisa confirmar com senha e motivo
+  senhaNaEdicao: boolean  // quem não é sócio confirma com senha e motivo
   cancelar: boolean
   apagar: boolean
   darDesconto: boolean
@@ -29,35 +40,27 @@ export interface PermissoesFinanceiro {
 
 export async function permissoesFinanceiro(userId: string): Promise<PermissoesFinanceiro> {
   const nivel = await getStaffLevel(userId)
-  const senior = nivel === 'owner' || nivel === 'manager'
+  const concessoes = nivel === 'owner' ? null : await concessoesDe(userId)
+  const p = permissoesDe(nivel, concessoes)
   return {
     nivel,
-    criar: true,             // todos emitem
-    receber: senior,         // baixa de pagamento: gerente ou sócio
-    duplicar: senior,
-    editar: senior,
-    estornar: senior,
-    // Sócio edita direto; gerente confirma com senha e justifica a alteração
-    senhaNaEdicao: nivel === 'manager',
-    cancelar: senior,
-    apagar: senior,
-    // Desconto: só gerente ou sócio. Diferente dos orçamentos, aqui NÃO existe
-    // liberação por PIN — assistente não concede desconto de forma alguma.
-    darDesconto: senior,
-    verRelatorios: nivel === 'owner',
-    verTotais: nivel === 'owner',
+    ...p,
+    // Sócio edita direto; qualquer outro justifica a alteração — inclusive
+    // o assistente que recebeu autorização para editar. A autorização diz
+    // que ele PODE, não que ele pode sem deixar rastro.
+    senhaNaEdicao: nivel !== 'owner',
   }
 }
 
 /** Mensagem padrão de recusa, para as rotas responderem igual. */
 export const RECUSA = {
-  apagar: 'Apagar fatura é permitido apenas a sócio ou gerente. Cancele a fatura — ela continua no histórico.',
-  totais: 'Os totais de faturamento são visíveis apenas ao sócio.',
-  relatorios: 'Relatórios de faturamento são exclusivos do sócio.',
-  receber: 'Dar baixa em pagamento é permitido a gerente ou sócio.',
-  duplicar: 'Duplicar fatura emitida é permitido a gerente ou sócio.',
-  cancelar: 'Cancelar fatura é permitido a gerente ou sócio.',
-  editar: 'Editar fatura é permitido a gerente ou sócio.',
-  estornar: 'Estornar pagamento é permitido a gerente ou sócio.',
-  desconto: 'Desconto só pode ser concedido por gerente ou sócio.',
+  apagar: 'Apagar fatura exige autorização. Cancele a fatura — ela continua no histórico.',
+  totais: 'Os totais de faturamento exigem autorização do sócio.',
+  relatorios: 'Relatórios de faturamento exigem autorização do sócio.',
+  receber: 'Dar baixa em pagamento exige autorização — fale com o sócio.',
+  duplicar: 'Duplicar fatura emitida exige autorização.',
+  cancelar: 'Cancelar fatura exige autorização.',
+  editar: 'Editar fatura exige autorização.',
+  estornar: 'Estornar pagamento exige autorização.',
+  desconto: 'Conceder desconto exige autorização.',
 }
