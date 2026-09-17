@@ -235,6 +235,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **O `npm run migrar` nunca conseguiu aplicar nada sozinho — e o motivo estava errado no próprio script.** Estava escrito ali que, no Claude Code na nuvem, bastaria `SUPABASE_PROJECT_REF` porque o proxy anexaria o token na saída, mantendo-o fora da sessão. **Não anexa**: aquele proxy é só de TLS e roteamento. O pedido saía sem cabeçalho de autorização e a Supabase respondia `401 Unauthorized` — a mesma resposta que ela dá para token revogado, o que fez parecer problema de token. O modo foi removido, e a mensagem de erro passou a dizer o que falta e o que fazer sem isso. `SUPABASE_PROJECT_REF` diz em qual projeto mexer, não quem está mexendo.
 
+- **Fechado o diagnóstico do `npm run migrar`: é o ambiente, não o token.** Prova cruzada — o mesmo token responde a lista de projetos da máquina do sócio e `401` de dentro do Claude Code na nuvem. O proxy de saída de lá mexe no cabeçalho `Authorization`: para a API do GitHub ele o substitui pela credencial dele (pedido sem cabeçalho e pedido com token errado voltam os dois autenticados), e para a `api.supabase.com` ele não chega. `psql` também não serve: a porta 5432 é inalcançável, o proxy só faz HTTP CONNECT. **Trocar de token não resolve** — de lá, migração é sempre pelo SQL Editor. O sintoma engana porque a Supabase responde o mesmo `401 Unauthorized` para token ausente, inválido e revogado.
+
 **A construir:**
 - Nada pendente da lista original. Próximos itens entram aqui quando forem decididos.
 
