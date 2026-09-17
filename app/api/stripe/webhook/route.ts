@@ -15,6 +15,8 @@
 //                                parcela marcada 'failed'; alerta à equipe
 //                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
 //   invoice.payment_failed     → alerta a equipe (cobrança manual)
+//   checkout.session.expired   → débito em conta começado e não concluído: a
+//                                fatura sai de "dinheiro a caminho"
 //   invoice.voided             → cobrança anulada no painel: cancela a fatura
 //                                aqui (ou alerta, se já houver recebimento) e
 //                                devolve a parcela ao cronograma
@@ -37,6 +39,7 @@ import { FREQ_STRIPE, firstInstallmentDate, round2, type Frequency } from '@/lib
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
+import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
@@ -138,6 +141,8 @@ export async function POST(req: NextRequest) {
       const meta = session.metadata ?? {}
       const valor = Number(session.amount_total || 0) / 100
       if (meta.invoice_id) {
+        // O dinheiro não vem: a fatura volta a ser uma fatura em aberto comum
+        await limparAchEmTransito(db, meta.invoice_id)
         await db.from('invoice_audit').insert({
           invoice_id: meta.invoice_id, action: 'stripe_declined',
           reason: 'débito em conta (ACH) devolvido pelo banco',
@@ -240,6 +245,29 @@ export async function POST(req: NextRequest) {
           motivo: `débito devolvido: ${motivo}`, origem: 'ach_returned', detalhe: { charge: charge.id },
         })
         await avisarEquipe(db, pago.invoice_id, 'ach_returned', Number(pago.amount), String(motivo))
+      }
+      return NextResponse.json({ received: true })
+    }
+
+    // ============ SESSÃO DE PAGAMENTO EXPIRADA ============
+    // Débito em conta que o cliente começou e não concluiu (verificação da
+    // conta abandonada). Sem isto a fatura ficava marcada "dinheiro a caminho"
+    // para sempre, fora da cobrança, esperando um ACH que nunca vem.
+    if (event.type === 'checkout.session.expired') {
+      const session = event.data.object as Stripe.Checkout.Session
+      const inv = await faturaDaSessaoAch(db, session.id)
+      if (inv) {
+        await limparAchEmTransito(db, inv.id)
+        await db.from('invoice_audit').insert({
+          invoice_id: inv.id, action: 'ach_expirado',
+          reason: 'o cliente não concluiu o débito em conta — a sessão do Stripe expirou',
+          next: { session: session.id, valor: Number(inv.ach_valor || 0) },
+        }).then(() => null, () => null)
+        await db.from('plan_alerts').insert({
+          plan_id: null, client_id: inv.client_id, type: 'ach_expirado',
+          message: `🏦 O débito em conta da fatura ${inv.number} não foi concluído pelo cliente e a sessão expirou.`
+            + ' A fatura voltou para a cobrança normal.',
+        }).then(() => null, () => null)
       }
       return NextResponse.json({ received: true })
     }
@@ -642,14 +670,22 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
   // ACH: o 'completed' chega com o débito ainda em processamento. O dinheiro
   // é confirmado depois por async_payment_succeeded — aí sim entra como pago.
   if (session.payment_status !== 'paid') {
+    const valor = Number(session.amount_total || 0) / 100
+    // A fatura passa a SABER que há dinheiro a caminho. Sem isso ela era
+    // indistinguível de uma não paga: cobrava lembrete e aceitava baixa
+    // manual, que viraria recebimento em dobro quando o ACH caísse.
+    await marcarAchEmTransito(db, inv.id, session.id, valor)
     await db.from('invoice_audit').insert({
       invoice_id: inv.id, action: 'stripe_processing',
-      next: { session: session.id, valor: Number(session.amount_total || 0) / 100, status: session.payment_status },
+      next: { session: session.id, valor, status: session.payment_status },
     }).then(() => null, () => null)
     await notifyClient(db, inv.client_id,
       `🏦 Recebemos o pedido de débito em conta da fatura ${inv.number}. O banco leva alguns dias para confirmar; avisamos aqui quando entrar.`)
     return
   }
+
+  // Chegou pago: se havia trânsito marcado nesta fatura, ele terminou aqui
+  await limparAchEmTransito(db, inv.id)
 
   // Idempotência: o Stripe reenvia o evento se não confirmarmos
   const { data: jaTem } = await db.from('invoice_payments')

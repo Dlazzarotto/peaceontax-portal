@@ -144,6 +144,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   idioma que atendem (`idiomaDoPlaid` em `app/api/plaid/link-token`,
   `localeStripe` em `lib/avisos.ts`); recusado, cai para inglês em vez de
   bloquear o cliente.
+- **ACH a caminho é estado, em `lib/ach-transito.ts`.** Entre o
+  `checkout.session.completed` e a confirmação do banco a fatura guarda
+  `ach_desde`/`ach_sessao`/`ach_valor`. Com isso: a tela mostra, o lembrete
+  de cobrança é recusado e a baixa manual pede confirmação — senão o Zelle
+  registrado no meio vira recebimento em dobro. `checkout.session.expired`
+  tira do limbo; a rotina diária alerta acima de sete dias. Dinheiro só entra
+  no `async_payment_succeeded`.
 - **Um plano, uma assinatura.** `checkout.session.completed` cancela a
   assinatura duplicada quando o plano já tem outra registrada — dois
   cadastros concluídos criavam duas assinaturas e a primeira cobrava para

@@ -9,6 +9,7 @@ interface Inv {
   id: string; number: string; doc_type: string; status: string; cliente: string
   issue_date: string; due_date: string | null; total: number; paid_total: number; saldo: number
   payment_plan: string; expected_method: string | null
+  ach_desde?: string | null; ach_valor?: number | null
 }
 interface Item { description: string; qty: number; unitPrice: number; serviceId?: string }
 
@@ -373,16 +374,23 @@ export default function BillingPage() {
     setReceber(null); load()
   }
 
-  const salvarRecebimento = async () => {
+  const salvarRecebimento = async (confirmarComAch = false) => {
     if (!receber) return
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/payments', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         invoiceId: receber.id, amount: Number(rValor), method: rForma, reference: rRef,
+        ...(confirmarComAch ? { confirmarComAch: true } : {}),
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
+    // Débito em conta a caminho: a rota recusa e explica. Quem confirma assume
+    // que aquele débito não vai entrar — senão a baixa sai em dobro.
+    if (d?.precisaConfirmarAch) {
+      if (confirm(`${d.error}\n\nRegistrar assim mesmo?`)) return salvarRecebimento(true)
+      return
+    }
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
     setReceber(null); setRRef(''); load()
@@ -699,6 +707,15 @@ export default function BillingPage() {
                       <td style={{ padding: '10px' }}>
                         <span style={{ fontSize: 12.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20,
                           color: st.cor, background: `${st.cor}14`, whiteSpace: 'nowrap' as const }}>{st.rotulo}</span>
+                        {/* Débito em conta a caminho: sem isto a fatura parecia
+                            simplesmente não paga, e a equipe cobrava ou dava
+                            baixa por fora em cima de dinheiro já enviado. */}
+                        {inv.ach_desde && (
+                          <div title={`Débito em conta iniciado em ${dataUS(inv.ach_desde)} — o banco leva alguns dias`}
+                            style={{ marginTop: 4, fontSize: 11.5, fontWeight: 700, color: '#0A6A8A', whiteSpace: 'nowrap' as const }}>
+                            🏦 {money(Number(inv.ach_valor || 0))} a caminho
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
                         {inv.status === 'draft' && perms?.cancelar && (
@@ -1070,7 +1087,7 @@ export default function BillingPage() {
                 {receber.saldo > 0 ? 'Cancelar' : 'Fechar'}
               </button>
               {receber.saldo > 0 && (
-                <button onClick={salvarRecebimento} disabled={busy} style={btn('#1A6B4A', busy)}>
+                <button onClick={() => salvarRecebimento()} disabled={busy} style={btn('#1A6B4A', busy)}>
                   {rForma === 'card' ? 'Já cobrei — registrar' : 'Registrar'}
                 </button>
               )}
