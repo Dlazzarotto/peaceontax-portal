@@ -422,9 +422,14 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
          'mandar procurar o botao em outra aba e onde a equipe travava')
   checar('A tela abre o cancelamento na propria recusa', 'app/dashboard/billing/page.tsx',
          /d\?\.planoExistente/, 'a recusa tem de oferecer o caminho, nao so o texto')
-  checar('A tela sabe se o plano chegou a cobrar', 'app/dashboard/billing/page.tsx',
-         /!pl\?\.stripe_subscription_id && !pl\?\.stripe_schedule_id/,
+  // Quem decide e o SERVIDOR: a rota devolve `nuncaComecou` e a tela obedece.
+  // Este invariante pedia o contrario (a tela lendo os ids do Stripe) e foi
+  // justamente esse select que fez a lista de parcelamentos desaparecer.
+  checar('A rota decide se o plano chegou a cobrar', arq,
+         /nuncaComecou: Number\(p\.paid_installments/,
          'sem isso o modal fala de um debito que nunca existiu')
+  checar('A tela obedece o servidor', 'app/dashboard/billing/page.tsx',
+         /!!pl\?\.nuncaComecou/, 'a tela voltou a decidir por conta propria')
 }
 
 
