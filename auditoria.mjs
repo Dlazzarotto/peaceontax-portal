@@ -99,6 +99,26 @@ checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export func
 checar('Detalhe da conta: mes validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', 'const month = mesBruto &&', 'mes cru voltaria para o link do Voltar')
 checar('Detalhe da conta: categoria escapada', 'app/api/bookkeeping/category-detail/route.ts', 'escaparHtml(category)', 'XSS refletido pelo nome da conta')
 
+titulo('IMPRESSOS: VOLTAR E CELULAR')
+checar('Barra tem destino fixo alem do Voltar', 'lib/relatorio-barra.ts', 'data-painel=', 'Voltar depende do historico; sem destino fixo nao ha volta garantida')
+checar('Todo impresso declara o viewport', 'lib/relatorio-barra.ts', 'export const META_RELATORIO', 'celular renderiza a ~980px e a barra sai do alcance')
+for (const imp of [
+  'app/api/bookkeeping/pnl/route.ts',
+  'app/api/bookkeeping/vendors/route.ts',
+  'app/api/bookkeeping/balance-sheet/route.ts',
+  'app/api/bookkeeping/category-detail/route.ts',
+  'app/api/billing/print/route.ts',
+  'app/api/quotes/[id]/document/route.ts',
+  'lib/relatorios-financeiro.ts',
+  'lib/contract-html.ts',
+]) checar(`Viewport em ${imp.split('/').pop()}`, imp, 'META_RELATORIO', 'impresso ilegivel no celular')
+
+titulo('MENU DA FIRMA')
+checar('Menu num componente so', 'components/FirmNav.tsx', 'export default function FirmNav', 'menu duplicado em quatro layouts, cada um com itens diferentes')
+checar('Menu recolhe ao escolher', 'components/FirmNav.tsx', 'const fechar = ()', 'sanfona ficava aberta depois de escolher (era <details> nativo)')
+for (const lay of ['app/dashboard/layout.tsx', 'app/clients/layout.tsx', 'app/invitations/layout.tsx', 'app/settings/layout.tsx'])
+  checar(`Layout usa o FirmNav: ${lay.split('/')[1]}`, lay, 'FirmNav', 'layout com menu proprio volta a divergir')
+
 titulo('PAGAMENTO PELO PORTAL')
 checar('Fatura: so o dono do cadastro paga', 'app/api/portal/billing/checkout/route.ts', ".eq('client_id', c.id)", 'cliente pagaria fatura de outro')
 checar('Fatura: as tres formas num link so', 'lib/stripe-formas.ts', "FORMAS_DO_CLIENTE = ['card', 'us_bank_account', 'klarna']", 'cliente nao escolheria Klarna/ACH')
@@ -106,8 +126,17 @@ checar('Fatura: o portal usa a lista unica de formas', 'app/api/portal/billing/c
 checar('Forma inativa na conta nao derruba a sessao', 'lib/stripe-formas.ts', 'sessaoComFormasDisponiveis', 'sem ACH ativo ninguem pagava nem cadastrava debito')
 checar('Plano: a sessao passa pela lista de formas disponiveis', 'lib/plan-checkout.ts', 'sessaoComFormasDisponiveis', 'cadastro de debito morreria inteiro por uma forma desativada')
 checar('Plaid: idioma do cliente nao bloqueia o banco', 'app/api/plaid/link-token/route.ts', 'idiomaDoPlaid', 'cliente que nao fala ingles nao conectava a conta')
+checar('Contrato do fluxo antigo tambem assina no portal', 'app/api/portal/contract-sign/route.ts', 'tornarAssinanteEmbutido', 'cliente ficava sem botao e a fatura parcelada travada')
 checar('Plano: so plano liberado pela equipe (awaiting_*)', 'app/api/portal/plan-checkout/route.ts', "['awaiting_entry', 'awaiting_setup']", 'rascunho apareceria para o cliente')
 checar('Sessao dos planos numa lib so', 'lib/plan-checkout.ts', 'criarSessaoDoPlano', 'tres rotas montando a sessao de tres jeitos')
+checar('Parcela vem da invoice, nao de contador', 'lib/parcela-stripe.ts', 'export async function parcelaDaInvoice', 'evento fora de ordem dava baixa na parcela errada')
+checar('Total de parcelas e recontado, nao incrementado', 'lib/parcela-stripe.ts', 'export async function recontarParcelas', 'paid_installments divergia do cronograma')
+checar('Webhook usa a lib da parcela', 'app/api/stripe/webhook/route.ts', "from '@/lib/parcela-stripe'", 'webhook voltaria a contar na mao')
+checar('Webhook: cobranca anulada no Stripe cancela a fatura aqui', 'app/api/stripe/webhook/route.ts', "event.type === 'invoice.voided'", 'fatura anulada la seguia no contas a receber aqui')
+checar('Um plano, uma assinatura', 'app/api/stripe/webhook/route.ts', 'cancelarAssinaturaDuplicada', 'cadastro concluido duas vezes cobrava o cliente em dobro para sempre')
+checar('Recobranca e idempotente', 'app/api/billing/recharge/route.ts', 'idempotencyKey', 'dois cliques cobravam duas vezes do cliente')
+checar('Plano parado avisa a equipe', 'lib/planos-parados.ts', 'export async function alertarPlanosParados', 'plano esperando o cliente ficava parado para sempre sem ninguem ver')
+checar('Cron roda o aviso de plano parado', 'app/api/cron/billing-reminders/route.ts', 'alertarPlanosParados', 'a rotina existiria sem ninguem chamar')
 checar('Webhook: forma real vem do PaymentIntent', 'app/api/stripe/webhook/route.ts', 'formaDoPagamento', 'cartao entraria como Klarna quando as duas sao oferecidas')
 checar('Webhook: ACH confirmado dias depois', 'app/api/stripe/webhook/route.ts', 'checkout.session.async_payment_succeeded', 'debito em conta nunca seria registrado')
 checar('Webhook: entrada por ACH so ativa com dinheiro confirmado', 'app/api/stripe/webhook/route.ts', "'entry_processing'", 'parcelamento comecaria com entrada que o banco pode devolver')

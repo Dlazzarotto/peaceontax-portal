@@ -5,6 +5,9 @@
 // a Vercel envia em "Authorization: Bearer <CRON_SECRET>". Sem a variável
 // configurada a rota recusa tudo — nunca fica aberta por omissão.
 //
+// Na mesma rodada também alerta a equipe sobre plano que parou esperando o
+// cliente (lib/planos-parados.ts) — nada é cancelado, só avisado.
+//
 //   ?dry=1     só lista quem seria avisado, sem enviar nada
 //   ?dias=N    avisa N dias antes (padrão 3) — útil para teste
 //
@@ -16,6 +19,8 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { executarAvisosDeCobranca } from '@/lib/billing-reminders'
+import { alertarPlanosParados } from '@/lib/planos-parados'
+import { serviceDb } from '@/lib/api-auth'
 
 function autorizado(req: NextRequest): boolean {
   const segredo = process.env.CRON_SECRET
@@ -40,7 +45,19 @@ export async function GET(req: NextRequest) {
     const r = await executarAvisosDeCobranca({ dry, diasAntes })
     console.log('[cron/billing-reminders]', JSON.stringify({ alvo: r.alvo, total: r.total, dry,
       canais: r.resultados.map(x => `${x.planId}:${x.canal}`) }))
-    return NextResponse.json({ ok: true, dry, ...r })
+
+    // Na mesma rodada: plano que parou esperando o cliente. Sem isto, plano em
+    // awaiting_* ficava parado para sempre e ninguem percebia - nao ha tela que
+    // liste "parados".
+    let parados: { alvo: number; alertados: string[] } = { alvo: 0, alertados: [] }
+    try {
+      parados = await alertarPlanosParados(serviceDb(), { dry })
+      if (parados.alertados.length) console.log('[cron/planos-parados]', JSON.stringify(parados))
+    } catch (e) {
+      // Falhar aqui nao pode derrubar o aviso de cobranca, que e o principal
+      console.error('[cron/planos-parados] falha:', e)
+    }
+    return NextResponse.json({ ok: true, dry, ...r, parados })
   } catch (e) {
     console.error('[cron/billing-reminders] falha:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

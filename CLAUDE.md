@@ -26,6 +26,8 @@ npm install --legacy-peer-deps   # obrigatório o --legacy-peer-deps (mesmo flag
 npm run typecheck                # tsc --noEmit — tem de passar limpo
 npm run lint                     # ESLint (next/core-web-vitals) — sem erros; avisos são dívida conhecida
 npm run auditoria                # 30+ invariantes do sistema; sai com 1 se algum falhar
+npm run testes                   # testes de lógica pura (testes/*.mts), sem framework
+                                 # só o que decide dinheiro e não dá para conferir lendo
 npm run migrar -- sql/x.sql      # aplica migração no Supabase e anota em schema_migrations
                                  # precisa de SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN
                                  # (API, por HTTPS) SÓ no ambiente. --pendentes lista o que falta.
@@ -94,7 +96,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   hora do clique (o link expira em 24h). Contrato assinado no portal libera o
   débito (`contract_signed_by_client` em `plan_audit`, conferido pela API do
   DocuSign). O webhook do Stripe lê a forma real no PaymentIntent e trata o
-  ACH assíncrono.
+  ACH assíncrono. Contrato do fluxo antigo (convite por e-mail, sem
+  `clientUserId`) também assina no portal: a rota promove o destinatário a
+  embutido no clique — o que invalida o link do e-mail dele, então só se faz
+  a pedido do cliente e nunca depois de assinado.
 - **Plano mensal ≠ parcelamento. Primeiro emite, depois cobra.** A fatura
   do mês nasce em aberto no `invoice.finalized` do Stripe e guarda
   `stripe_invoice`; o `invoice.paid` só dá baixa.
@@ -111,6 +116,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
   sempre de uma fatura, não se cancela em andamento — só quitação antecipada
   ou parcela que falhou recebida por fora (`billing/payments`).
+- **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
+  `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
+  no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
+  `paid_installments` é **recontado** do cronograma, não incrementado.
+  `paid_installments + 1` errava sempre que o Stripe entregava evento fora de
+  ordem, uma parcela falhava e a seguinte passava, ou houve baixa manual.
 - **Encerrar parcelamento é `lib/parcelamento.ts`, em todos os caminhos.**
   Quitação, fatura quitada pelo Stripe e cancelamento da fatura chamam a
   mesma rotina. Ela também FECHA as invoices de parcela já abertas no
@@ -133,6 +144,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   idioma que atendem (`idiomaDoPlaid` em `app/api/plaid/link-token`,
   `localeStripe` em `lib/avisos.ts`); recusado, cai para inglês em vez de
   bloquear o cliente.
+- **Um plano, uma assinatura.** `checkout.session.completed` cancela a
+  assinatura duplicada quando o plano já tem outra registrada — dois
+  cadastros concluídos criavam duas assinaturas e a primeira cobrava para
+  sempre, invisível. Cobrar de novo (`billing/recharge`) leva
+  `idempotencyKey`: `invoices.pay` não é idempotente sozinho.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
@@ -143,6 +159,17 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   URL ou do banco vai em atributo escapado (`escaparHtml` de
   `lib/relatorio-barra.ts`) e o script é fixo. `JSON.stringify` dentro de
   script **não** protege: ele não escapa `</script>`.
+- **Menu da firma é `components/FirmNav.tsx`, um só.** Os quatro layouts
+  (`app/dashboard`, `app/clients`, `app/invitations`, `app/settings`) o
+  usam — item novo entra lá, uma vez. É client component de propósito: com
+  `<details>` nativo a sanfona do celular ficava ABERTA depois de escolher,
+  porque a navegação do App Router não recarrega a página.
+- **Todo impresso leva `META_RELATORIO` e `barraDoRelatorio`** (de
+  `lib/relatorio-barra.ts`). Sem o viewport o celular desenha a página a
+  ~980px e a barra sai do alcance. A barra tem Voltar (contextual), um
+  destino FIXO (Dashboard, ou Meu portal no relatório do cliente) e
+  Imprimir — o Voltar sozinho depende do histórico e de o navegador deixar
+  fechar a aba.
 - **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
   aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
 - **Número que a tela mostra tem definição num módulo puro**, não na página:
@@ -157,8 +184,8 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   editados no Windows. A
   auditoria falha se encontrar isso. Se um editor no Windows for usado, salve
   como "UTF-8" (não "UTF-8 with BOM").
-- Não versionar `.bak`. Os dois que existem (`middleware.ts.bak`,
-  `app/dashboard/layout.tsx.bak`) são lixo histórico; a auditoria os lista.
+- Não versionar `.bak` (o `.gitignore` já barra). Os dois que existiam eram
+  lixo histórico e foram removidos.
 - Rotas de API: `app/api/<módulo>/<recurso>/route.ts`, com comentário de
   cabeçalho listando os verbos e quem pode chamar.
 - Chaves e segredos só em variáveis de ambiente (ver `.env.example`); nunca no
@@ -191,8 +218,6 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Menu da firma duplicado em quatro layouts (`app/dashboard`, `app/clients`,
-  `app/invitations`, `app/settings`). Mudança de menu precisa ir nos quatro.
 - Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro;
   `staff_roles` × `team_members`. Duplicações conhecidas, resolução pendente
   de decisão do sócio.
@@ -203,8 +228,8 @@ middleware.ts        controle de acesso por rota
 
 - Leia `ESPECIFICACAO.md` antes de mudar regra de negócio. Se a mudança pedida
   contraria um princípio da seção 2, diga isso antes de implementar.
-- Ao concluir: `npm run typecheck && npm run lint && npm run auditoria`, e só
-  então commit. Mensagem de commit em português, no imperativo curto, como o
+- Ao concluir: `npm run typecheck && npm run lint && npm run auditoria &&
+  npm run testes`, e só então commit. Mensagem de commit em português, no imperativo curto, como o
   histórico já faz.
 - Migração de banco: arquivo SQL novo em `sql/`, idempotente, com bloco de
   conferência no fim (padrão de `sql/whatsapp-atendimento-v1.sql`). Ela **não**

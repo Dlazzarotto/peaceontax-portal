@@ -36,9 +36,14 @@ export async function POST(req: NextRequest) {
   let alvo: string | null = inv.stripe_invoice || null
   let parcela: { seq: number; amount: number } | null = null
   if (!alvo) {
-    const { data: f } = await db.from('invoice_installments')
+    // A parcela que falhou MAIS ANTIGA que tenha invoice no Stripe. Antes
+    // olhava só a primeira que falhou: se ela tivesse ficado sem invoice
+    // (falha antes do finalized), a rota dizia que não havia o que cobrar,
+    // mesmo com outra parcela cobrável logo atrás.
+    const { data: falhas } = await db.from('invoice_installments')
       .select('seq, amount, stripe_invoice').eq('invoice_id', inv.id).eq('status', 'failed')
-      .order('seq').limit(1).maybeSingle()
+      .not('stripe_invoice', 'is', null).order('seq').limit(1)
+    const f = falhas?.[0]
     if (f?.stripe_invoice) { alvo = f.stripe_invoice; parcela = { seq: f.seq, amount: Number(f.amount) } }
   }
   if (!alvo) {
@@ -48,19 +53,35 @@ export async function POST(req: NextRequest) {
   }
 
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2026-06-24.dahlia' as Stripe.LatestApiVersion })
+
+  // Dois cliques (ou duas pessoas) cobravam DUAS VEZES do cliente:
+  // `invoices.pay` não é idempotente por conta própria. A chave é a invoice
+  // do Stripe mais quantas vezes ela já foi recobrada — cliques simultâneos
+  // leem o mesmo número, então o Stripe trata o segundo como repetição;
+  // uma nova tentativa deliberada, depois, tem número novo e passa.
+  const { count: tentativas } = await db.from('invoice_audit')
+    .select('id', { count: 'exact', head: true })
+    .eq('invoice_id', inv.id).eq('action', 'recharge_requested')
+  const chave = `recharge:${alvo}:${tentativas ?? 0}`
+
   let resultado: string
   let ok = true
   try {
-    const paga = await stripe.invoices.pay(alvo)
+    const paga = await stripe.invoices.pay(alvo, {}, { idempotencyKey: chave })
     resultado = paga.status === 'paid' ? 'cobrada' : `pedido enviado (${paga.status})`
-  } catch (e) {
+  } catch (e: any) {
     ok = false
-    resultado = (e as Error).message || 'o Stripe recusou'
+    // O Stripe recusa pagar invoice já paga: não é erro da equipe, é o
+    // webhook que ainda não chegou.
+    const msg = String(e?.raw?.message || e?.message || '')
+    resultado = /already (been )?paid|no longer open/i.test(msg)
+      ? 'esta cobrança já foi paga no Stripe — a baixa chega pelo webhook'
+      : (msg || 'o Stripe recusou')
   }
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'recharge_requested', performed_by: auth.userId,
-    staff_level: perms.nivel, next: { stripeInvoice: alvo, parcela, ok, resultado },
+    staff_level: perms.nivel, next: { stripeInvoice: alvo, parcela, ok, resultado, chave },
   }).then(() => null, () => null)
 
   if (!ok) return NextResponse.json({ error: `Nova cobrança recusada: ${resultado}` }, { status: 502 })

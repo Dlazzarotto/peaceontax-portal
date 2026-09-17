@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio, escaparHtml } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -128,8 +128,11 @@ export async function GET(req: NextRequest) {
   const period = month ? `${month.padStart(2, '0')}/${year}` : String(year)
 
   const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`
-  const barra = barraDoRelatorio({ voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L' })
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escaparHtml(category)} — ${period}</title>
+  const barra = barraDoRelatorio({
+    voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L',
+    painelPara: isClient ? '/portal' : '/dashboard',
+  })
+  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>${escaparHtml(category)} — ${period}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 860px; margin: 34px auto; color: #000; padding: 0 20px; }
     .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;

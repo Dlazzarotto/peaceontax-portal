@@ -8,7 +8,7 @@
 // logo, subtotais em negrito, total em linha dupla, sinal de menos (nunca
 // parênteses), Georgia/Times. Datas MM/DD/YYYY, moeda em dólar.
 
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 import { money, fmtUS } from '@/lib/format'
 import { round2 } from '@/lib/plans'
 import { FIRM } from '@/lib/contract-html'
@@ -163,7 +163,7 @@ export function renderRelatorio(opts: { titulo: string; periodo: string; secoes:
   const resumo = opts.resumo?.length
     ? `<table class="resumo">${opts.resumo.map(r => `<tr><td>${esc(r.rotulo)}</td><td class="r b">${esc(r.valor)}</td></tr>`).join('')}</table>` : ''
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(opts.titulo)} — ${esc(opts.periodo)}</title>
+  return `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>${esc(opts.titulo)} — ${esc(opts.periodo)}</title>
   <style>
     * { box-sizing:border-box; }
     body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; margin:0; padding:24px; font-size:13.5px; }

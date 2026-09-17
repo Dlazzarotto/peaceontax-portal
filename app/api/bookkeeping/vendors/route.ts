@@ -3,7 +3,7 @@
 // com seção de candidatos a 1099 (Contract Labor / Rent / Legal ≥ $600 no ano).
 
 import { NextRequest, NextResponse } from 'next/server'
-import { barraDoRelatorio } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 
@@ -85,8 +85,11 @@ export async function GET(req: NextRequest) {
   const displayName = client?.business_name || client?.name || ''
   const money = (n: number) => `$${n.toFixed(2)}`
 
-  const barra = barraDoRelatorio({ voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping' })
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const barra = barraDoRelatorio({
+    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    painelPara: isClient ? '/portal' : '/dashboard',
+  })
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
 <title>Vendors ${year} — ${displayName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }

@@ -164,22 +164,15 @@ export default function PaymentsPage() {
               <div style={{ fontSize: 14, color: '#1a2a3a' }}>
                 <b>{c.plano ? rotuloPlano(c.plano) : 'Service agreement'}</b>
                 <div style={{ fontSize: 12, color: '#6a7a9a', marginTop: 3 }}>{t.signHint}</div>
+                {!c.embedded && <div style={{ fontSize: 11.5, color: '#9aaab0', marginTop: 3, lineHeight: 1.5 }}>{t.signByEmailHelp}</div>}
               </div>
-              {c.embedded ? (
-                <button onClick={() => abrir(`c${c.id}`, '/api/portal/contract-sign', { id: c.id })} disabled={!!busy} style={botao('#5A1A8A', !!busy)}>
-                  {busy === `c${c.id}` ? t.opening : t.sign}
-                </button>
-              ) : (
-                // Contrato mandado pelo fluxo antigo (e-mail do DocuSign): não há
-                // botão aqui. Sem uma instrução, o cliente fica sem saída — a
-                // fatura também não oferece ação enquanto ele não assina.
-                <span style={{ fontSize: 12.5, color: '#5A1A8A', fontWeight: 700, maxWidth: 300, textAlign: 'right' }}>
-                  {t.signByEmail}
-                  <div style={{ fontSize: 11.5, fontWeight: 400, color: '#6a7a9a', marginTop: 4, lineHeight: 1.5 }}>
-                    {t.signByEmailHelp}
-                  </div>
-                </span>
-              )}
+              {/* Botão sempre: o contrato do fluxo antigo (e-mail do DocuSign)
+                  também assina aqui — a rota promove o destinatário na hora.
+                  Antes ficava só o aviso "assine pelo e-mail", sem saída, e a
+                  fatura parcelada ficava travada junto. */}
+              <button onClick={() => abrir(`c${c.id}`, '/api/portal/contract-sign', { id: c.id })} disabled={!!busy} style={botao('#5A1A8A', !!busy)}>
+                {busy === `c${c.id}` ? t.opening : t.sign}
+              </button>
             </div>
           ))}
         </div>

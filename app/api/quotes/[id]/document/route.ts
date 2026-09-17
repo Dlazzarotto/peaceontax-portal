@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -90,6 +91,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const client = quote.clients as any
   const lang = ['pt','en','es'].includes(client?.language) ? client.language : 'en'
   const t = T[lang]
+  // Mesma barra do resto dos impressos: Voltar, destino fixo e Imprimir.
+  // O botao laranja solto so imprimia — quem abria em aba nova ficava sem volta.
+  const barra = barraDoRelatorio({
+    voltarPara: auth.isStaff ? '/dashboard/billing' : '/portal/payments',
+    painelPara: auth.isStaff ? '/dashboard' : '/portal',
+    rotuloImprimir: t.print,
+  })
   const isPaid = quote.status === 'paid'
 
   // Garante numeração (fallback caso a migração não tenha numerado)
@@ -138,6 +146,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 <html lang="${lang}">
 <head>
 <meta charset="utf-8">
+${META_RELATORIO}
 <title>${docNumber} — ${FIRM.name}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -171,16 +180,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   .terms h3 { font-size:14px; text-transform:uppercase; letter-spacing:1px; color:#2D3278; margin-bottom:8px; }
   .terms li { font-size:13.5px; color:#5a6a7a; line-height:1.7; margin-left:18px; }
   .thanks { margin-top:26px; font-size:16px; color:#F47B20; font-weight:700; text-align:center; }
-  .printbtn { position:fixed; top:18px; right:18px; background:#F47B20; color:#fff; border:none; font-size:16px; font-weight:700; padding:14px 22px; border-radius:10px; cursor:pointer; box-shadow:0 4px 16px rgba(244,123,32,0.4); min-height:48px; }
+  ${barra.css}
   @media print {
     body { background:#fff; padding:0; }
     .sheet { box-shadow:none; padding:20px 8px; max-width:100%; }
-    .printbtn { display:none; }
   }
 </style>
 </head>
 <body>
-<button class="printbtn" onclick="window.print()">🖨️ ${t.print}</button>
+${barra.html}
 <div class="sheet">
   <div class="top">
     <div class="firm">
