@@ -26,6 +26,7 @@ import { permissoesDe } from '@/lib/permissoes'
 export interface PermissoesFinanceiro {
   nivel: StaffLevel
   criar: boolean          // emitir estimate/invoice
+  verTodasFaturas: boolean // sem isto, só as próprias faturas do dia
   receber: boolean        // dar baixa em pagamento
   duplicar: boolean       // copiar uma fatura já emitida
   editar: boolean         // alterar uma fatura já criada
@@ -34,6 +35,7 @@ export interface PermissoesFinanceiro {
   cancelar: boolean
   apagar: boolean
   darDesconto: boolean
+  editarCliente: boolean  // nome, e-mail, telefone, endereço, EIN
   verRelatorios: boolean  // relatórios de faturamento
   verTotais: boolean      // números consolidados do negócio
 }

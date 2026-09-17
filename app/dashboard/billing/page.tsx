@@ -725,6 +725,17 @@ export default function BillingPage() {
         </section>
       )}
 
+      {/* Lista curta não pode parecer defeito: quem vê só as próprias faturas
+          do dia precisa saber que é assim de propósito. */}
+      {dados.escopo?.apenasMinhas && (
+        <div style={{ background: '#F0F4FF', border: '1px solid #C8D4F0', borderRadius: 11,
+          padding: '11px 14px', marginBottom: 14, fontSize: 13, color: '#2D3278', lineHeight: 1.55 }}>
+          👁️ Você está vendo <strong>apenas as faturas que você emitiu hoje</strong>.
+          Amanhã esta lista recomeça. Precisa consultar uma fatura de outro dia
+          ou de outra pessoa? Peça ao sócio ou ao gerente.
+        </div>
+      )}
+
       {loading ? <p style={{ fontSize: 15, color: '#6A7A9A' }}>Carregando…</p> : (
         <div style={{ ...card, overflowX: 'auto' as const }}>
           {lista.length === 0 ? (

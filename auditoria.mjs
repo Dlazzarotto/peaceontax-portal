@@ -307,8 +307,18 @@ checar('Motivo e obrigatorio na autorizacao', 'app/api/account/grants/route.ts',
   // Divergir em silencio significa autorizacao que a tela oferece e o banco
   // recusa — ou pior, chave gravada que o codigo nunca le.
   const mod = readFileSync(join(raiz, 'lib/permissoes.ts'), 'utf8')
-  const sql = existsSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'))
-    ? readFileSync(join(raiz, 'sql/permissoes-por-pessoa-v1.sql'), 'utf8') : ''
+  // A lista vale a da migracao MAIS RECENTE que define o CHECK: a v2 troca
+  // o da v1 inteiro. Olhar so a v1 acusaria divergencia a cada chave nova.
+  const dirSqlP = join(raiz, 'sql')
+  const versoes = existsSync(dirSqlP)
+    ? readdirSync(dirSqlP)
+        .filter(f => /^permissoes-por-pessoa-v\d+\.sql$/.test(f))
+        .sort((a, b) => Number(a.match(/v(\d+)/)[1]) - Number(b.match(/v(\d+)/)[1]))
+    : []
+  const comCheck = versoes.filter(f =>
+    /chave in \(/.test(readFileSync(join(dirSqlP, f), 'utf8')))
+  const sql = comCheck.length
+    ? readFileSync(join(dirSqlP, comCheck[comCheck.length - 1]), 'utf8') : ''
   const noModulo = Array.from(mod.matchAll(/chave:\s*'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
   const bloco = (sql.match(/chave in \(([^)]*)\)/s) || [])[1] || ''
   const noSql = Array.from(bloco.matchAll(/'([a-zA-Z]+)'/g)).map(m => m[1]).sort()
@@ -342,6 +352,26 @@ checar('migrar.mjs monta a chave com o caminho', 'scripts/migrar.mjs',
 checar('O CLAUDE.md avisa sobre a chave', 'CLAUDE.md',
        /A chave do livro é o CAMINHO/,
        'sem esse aviso, o registro manual sai com o nome curto')
+
+titulo('ESCOPO DA LISTA DE FATURAS E PORTA UNICA DO CADASTRO')
+checar('O corte do dia e o do escritorio', 'lib/dia-da-firma.ts',
+       /America\/New_York/, 'sem fuso proprio a lista zera as 20h de Malden')
+checar('A lista filtra por quem emitiu e por hoje', 'app/api/billing/invoices/route.ts',
+       /!perms\.verTodasFaturas[\s\S]{0,160}created_by[\s\S]{0,120}corteDeHoje/,
+       'o assistente voltaria a ver a carteira inteira')
+checar('O ?id= respeita o mesmo escopo', 'app/api/billing/invoices/route.ts',
+       /doc\.created_by !== auth\.userId/,
+       'filtrar a lista e deixar o id aberto e fechar a porta e esquecer a janela')
+checar('Cadastro de cliente so muda com autorizacao', 'app/api/clients/profile/route.ts',
+       /!perms\.editarCliente/, 'a rota do cadastro precisa exigir editarCliente')
+checar('E com senha e motivo', 'app/api/clients/profile/route.ts',
+       /signInWithPassword/, 'regra 3: acao sensivel pede senha e motivo')
+recusar('A ficha nao e a segunda porta do cadastro', 'app/api/clients/[id]/route.ts',
+        /camposDoCliente/,
+        'PATCH da ficha aceitava nome, e-mail e telefone sem senha, motivo nem trilha')
+checar('A ficha so move o fluxo', 'app/api/clients/[id]/route.ts',
+       /CAMPOS_DE_FLUXO = \['stage', 'assignee', 'notes'\]/,
+       'a lista de campos do fluxo mudou — confira se nao entrou dado de cadastro')
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []

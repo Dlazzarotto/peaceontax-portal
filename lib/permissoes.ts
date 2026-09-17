@@ -25,8 +25,9 @@
 import type { StaffLevel } from '@/lib/staff-perms'
 
 export type ChavePermissao =
-  | 'criar' | 'receber' | 'duplicar' | 'editar' | 'estornar'
-  | 'cancelar' | 'apagar' | 'darDesconto' | 'verRelatorios' | 'verTotais'
+  | 'criar' | 'verTodasFaturas' | 'receber' | 'duplicar' | 'editar' | 'estornar'
+  | 'cancelar' | 'apagar' | 'darDesconto' | 'editarCliente'
+  | 'verRelatorios' | 'verTotais'
 
 export interface Permissao {
   chave: ChavePermissao
@@ -40,6 +41,8 @@ export interface Permissao {
 export const PERMISSOES: Permissao[] = [
   { chave: 'criar',         titulo: 'Emitir orçamento e fatura',
     descricao: 'Preencher e enviar a fatura ao cliente.' },
+  { chave: 'verTodasFaturas', titulo: 'Ver as faturas de todo mundo',
+    descricao: 'Sem isto, a pessoa vê apenas as faturas que ela mesma emitiu hoje.' },
   { chave: 'receber',       titulo: 'Receber pagamento',
     descricao: 'Dar baixa: dinheiro, cheque, Zelle, cartão no balcão.',
     separacao: 'quem emite a fatura passaria a dar baixa nela' },
@@ -56,6 +59,8 @@ export const PERMISSOES: Permissao[] = [
     separacao: 'quem recebe passaria a poder desfazer o próprio recebimento' },
   { chave: 'apagar',        titulo: 'Apagar fatura',
     descricao: 'Exceção. Bloqueado quando já houve pagamento.' },
+  { chave: 'editarCliente', titulo: 'Editar cadastro do cliente',
+    descricao: 'Nome, e-mail, telefone, endereço, EIN. Pede senha e motivo.' },
   { chave: 'verRelatorios', titulo: 'Ver relatórios do faturamento',
     descricao: 'Aging, recorrência, histórico de cobrança.' },
   { chave: 'verTotais',     titulo: 'Ver totais do negócio',
@@ -75,6 +80,9 @@ export function padraoDoNivel(nivel: StaffLevel): Conjunto {
   const senior = nivel === 'owner' || nivel === 'manager'
   return {
     criar:         true,          // todos emitem
+    // Sem isto, a lista mostra só o que a própria pessoa emitiu HOJE.
+    // Quem emite não precisa da carteira inteira à vista para trabalhar.
+    verTodasFaturas: senior,
     receber:       senior,
     duplicar:      senior,
     editar:        senior,
@@ -82,6 +90,9 @@ export function padraoDoNivel(nivel: StaffLevel): Conjunto {
     cancelar:      senior,
     apagar:        senior,
     darDesconto:   senior,
+    // Dado de cliente é cadastro, não rascunho: mexe em quem a firma
+    // atende e em como ela o alcança.
+    editarCliente: senior,
     verRelatorios: nivel === 'owner',
     verTotais:     nivel === 'owner',
   }

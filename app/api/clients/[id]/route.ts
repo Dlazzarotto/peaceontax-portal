@@ -1,8 +1,16 @@
 // /api/clients/[id] — ficha do cliente
 //
 // GET    → ficha + documentos + mensagens (equipe, ou o próprio cliente)
-// PATCH  → edita a ficha (só equipe)
+// PATCH  → move a ficha no FLUXO: etapa, responsável, anotação interna
 // DELETE → inativa o cadastro (só equipe); nunca apaga
+//
+// DADO DE CLIENTE NÃO PASSA POR AQUI. Nome, e-mail, telefone, endereço e EIN
+// só mudam por /api/clients/profile, que exige a autorização `editarCliente`,
+// senha e motivo, e grava previous_state/new_state em client_audit. Esta rota
+// aceitava os mesmos campos sem nada disso: eram duas portas para a mesma
+// sala, uma com guarda e outra sem — dava para trocar o e-mail de um cliente
+// (e com ele o acesso ao portal) sem deixar rastro. Agora a lista é fechada
+// no fluxo, e campo de cadastro é recusado apontando o caminho certo.
 //
 // CORREÇÃO DE SEGURANÇA: a rota NÃO CONFERIA QUEM CHAMAVA e usava a service
 // role key. Qualquer pessoa logada — inclusive um cliente — lia, editava e
@@ -12,7 +20,10 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
-import { camposDoCliente } from '@/lib/novo-cliente'
+
+// O que é FLUXO: onde a ficha está no quadro e com quem. Isso é trabalho do
+// dia e não muda quem o cliente é nem como a firma o alcança.
+const CAMPOS_DE_FLUXO = ['stage', 'assignee', 'notes'] as const
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
   const auth = await getAuth()
@@ -38,16 +49,44 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   try {
-    // Só os campos da ficha. O corpo nunca vai inteiro para o update —
-    // user_id é identidade, não dado de formulário.
-    const campos = camposDoCliente(await req.json())
+    const corpo = await req.json()
+
+    // Pedir campo de cadastro por aqui não é erro de digitação: é o caminho
+    // que existia antes. Recusar em silêncio esconderia a mudança.
+    const deCadastro = Object.keys(corpo || {})
+      .filter(k => !(CAMPOS_DE_FLUXO as readonly string[]).includes(k))
+    if (deCadastro.length) {
+      return NextResponse.json({
+        error: `Dado de cadastro (${deCadastro.join(', ')}) muda na ficha do cliente, ` +
+               `com senha e motivo. Esta tela altera apenas etapa, responsável e anotação.`,
+      }, { status: 400 })
+    }
+
+    const campos: Record<string, unknown> = {}
+    for (const k of CAMPOS_DE_FLUXO) {
+      if (corpo?.[k] === undefined) continue
+      const t = String(corpo[k]).trim()
+      campos[k] = t === '' ? null : t
+    }
     if (!Object.keys(campos).length)
       return NextResponse.json({ error: 'Nada para alterar.' }, { status: 400 })
 
-    const { data, error } = await serviceDb().from('clients')
+    const db = serviceDb()
+    const { data: antes } = await db.from('clients')
+      .select('stage, assignee, notes').eq('id', params.id).maybeSingle()
+
+    const { data, error } = await db.from('clients')
       .update({ ...campos, updated_at: new Date().toISOString() })
       .eq('id', params.id).select().single()
     if (error) throw error
+
+    // Mover a ficha é trabalho do dia e não pede motivo — mas fica registrado
+    // quem moveu e de onde para onde.
+    await db.from('client_audit').insert({
+      client_id: params.id, action: 'fluxo', performed_by: auth.userId,
+      previous_state: antes ?? null, new_state: campos,
+    }).then(() => null, () => null)
+
     return NextResponse.json({ client: data })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

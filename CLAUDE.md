@@ -120,7 +120,21 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
   salvar e o motivo fica gravado. A lista de chaves está no módulo E no
   `CHECK` do SQL; a auditoria falha se divergirem.
-  Migração: `sql/permissoes-por-pessoa-v1.sql`.
+  Migrações: `sql/permissoes-por-pessoa-v1.sql` e `-v2.sql` (chaves novas).
+- **A lista de faturas é do dia e é de quem emitiu.** Sem `verTodasFaturas`,
+  `GET /api/billing/invoices` filtra por `created_by` + `created_at >=`
+  início do dia; o `?id=` respeita o mesmo escopo. O corte vem de
+  `lib/dia-da-firma.ts` (`America/New_York`), nunca do servidor: às 20h de
+  Malden já é o dia seguinte em UTC e a lista zerava no meio do expediente.
+  O módulo trata os dois domingos de horário de verão — 15 casos em
+  `testes/dia-da-firma.mts`.
+- **Dado de cliente tem uma porta só: `/api/clients/profile`**, com
+  `editarCliente` + senha da própria pessoa + motivo, gravando
+  `previous_state`/`new_state` em `client_audit`. `/api/clients/[id]` PATCH
+  move apenas o FLUXO (`stage`, `assignee`, `notes`) e recusa campo de
+  cadastro apontando o caminho certo — aceitava nome, e-mail e telefone sem
+  nada disso, e trocar o e-mail troca o acesso do cliente ao portal. Aqui
+  era PIN e virou senha (princípio 3); o PIN segue em uso nos orçamentos.
 - **Recebimento: cartão e Zelle sozinho, o resto com senha de gerente/sócio**
   (`lib/recebimento-aprovacao.ts`). `FORMAS_LIVRES` é uma lista de LIVRES,
   não de bloqueadas — forma nova nasce pedindo aprovação. Espécie é o caso

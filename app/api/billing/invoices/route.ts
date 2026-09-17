@@ -9,9 +9,16 @@
 // DELETE ?id=
 //
 // Permissões (lib/billing-perms):
-//   assistente → SÓ cria (nasce rascunho)
+//   assistente → SÓ cria (nasce rascunho), e a LISTA mostra apenas as
+//                faturas que ele mesmo emitiu HOJE — no dia seguinte zera.
+//                Quem emite não precisa da carteira inteira à vista.
 //   gerente    → envia, reenvia, recebe, duplica, cancela, apaga
 //   sócio      → tudo + relatórios
+//
+// O corte do dia é o do ESCRITÓRIO (lib/dia-da-firma.ts), não o do servidor:
+// às 20h de Malden já é o dia seguinte em UTC, e a lista zeraria no meio do
+// expediente da temporada. Soltar a lista inteira para alguém é autorização
+// individual (`verTodasFaturas`), sem promover de nível.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
@@ -22,6 +29,7 @@ import { fmtUS, money } from '@/lib/format'
 import Stripe from 'stripe'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito } from '@/lib/ach-transito'
+import { corteDeHoje, dataDaFirma } from '@/lib/dia-da-firma'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,6 +51,11 @@ export async function GET(req: NextRequest) {
       db.from('invoice_items').select('*').eq('invoice_id', umId).order('sort'),
     ])
     if (!doc) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+    // Filtrar a lista e deixar ?id= aberto seria fechar a porta e esquecer a
+    // janela: bastaria o id para ver qualquer fatura da carteira.
+    if (!perms.verTodasFaturas && doc.created_by !== auth.userId) {
+      return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+    }
     return NextResponse.json({ invoice: doc, items: itens || [], perms })
   }
 
@@ -51,6 +64,12 @@ export async function GET(req: NextRequest) {
     .order('issue_date', { ascending: false })
     .order('number', { ascending: false })
     .limit(400)
+
+  // Sem `verTodasFaturas`: só o que a própria pessoa emitiu hoje.
+  // A trava é daqui, não da tela — a rota responde a quem a chamar direto.
+  if (!perms.verTodasFaturas) {
+    q = q.eq('created_by', auth.userId).gte('created_at', corteDeHoje())
+  }
 
   if (sp.get('doc')) q = q.eq('doc_type', sp.get('doc'))
   if (sp.get('status')) q = q.eq('status', sp.get('status'))
@@ -75,6 +94,10 @@ export async function GET(req: NextRequest) {
       id: x.id, nome: x.label, preco: Number(x.amount) || 0, code: x.code, kind: x.kind,
     })),
     perms,
+    // A tela precisa dizer POR QUE a lista está curta, senão parece defeito.
+    escopo: perms.verTodasFaturas
+      ? null
+      : { apenasMinhas: true, dia: dataDaFirma() },
   })
 }
 
