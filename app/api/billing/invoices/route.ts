@@ -21,6 +21,7 @@ import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/aviso
 import { fmtUS, money } from '@/lib/format'
 import Stripe from 'stripe'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
+import { achEmTransito, diasEmTransito } from '@/lib/ach-transito'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,7 +47,7 @@ export async function GET(req: NextRequest) {
   }
 
   let q = db.from('invoices')
-    .select('id, client_id, doc_type, number, status, issue_date, due_date, total, paid_total, payment_plan, expected_method, financier, notes, clients(business_name, name)')
+    .select('id, client_id, doc_type, number, status, issue_date, due_date, total, paid_total, payment_plan, expected_method, financier, notes, ach_desde, ach_valor, clients(business_name, name)')
     .order('issue_date', { ascending: false })
     .order('number', { ascending: false })
     .limit(400)
@@ -232,6 +233,18 @@ export async function PATCH(req: NextRequest) {
     if (saldoAberto <= 0) {
       return NextResponse.json({
         error: 'Fatura quitada: não há o que cobrar. Para mandar o documento ao cliente, use Imprimir.',
+      }, { status: 409 })
+    }
+
+    // Débito em conta a caminho: cobrar quem já mandou o dinheiro é o tipo de
+    // mensagem que custa cliente. Reenviar o documento continua liberado.
+    const transito = achEmTransito(inv)
+    if (lembrete && transito) {
+      const dias = diasEmTransito(transito.desde)
+      return NextResponse.json({
+        error: `${inv.number} tem um débito em conta de $${transito.valor.toFixed(2)} a caminho há ${dias} dia(s)`
+          + ' — o cliente já pagou e o banco ainda não confirmou. Cobrar agora seria cobrar duas vezes.'
+          + ' Use Reenviar se ele só quer o documento.',
       }, { status: 409 })
     }
 

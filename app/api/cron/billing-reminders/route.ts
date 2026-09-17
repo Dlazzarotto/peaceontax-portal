@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { executarAvisosDeCobranca } from '@/lib/billing-reminders'
 import { alertarPlanosParados } from '@/lib/planos-parados'
+import { alertarAchParado } from '@/lib/ach-transito'
 import { serviceDb } from '@/lib/api-auth'
 
 function autorizado(req: NextRequest): boolean {
@@ -57,7 +58,18 @@ export async function GET(req: NextRequest) {
       // Falhar aqui nao pode derrubar o aviso de cobranca, que e o principal
       console.error('[cron/planos-parados] falha:', e)
     }
-    return NextResponse.json({ ok: true, dry, ...r, parados })
+    // E debito em conta que ficou pelo caminho: o ACH normal leva ate quatro
+    // dias uteis; passou disso, ou a confirmacao se perdeu, ou o cliente nao
+    // concluiu a verificacao da conta - e a fatura ficava fora da cobranca
+    // esperando dinheiro que nao vem.
+    let achParado: { alvo: number; alertados: string[] } = { alvo: 0, alertados: [] }
+    try {
+      achParado = await alertarAchParado(serviceDb(), { dry })
+      if (achParado.alertados.length) console.log('[cron/ach-parado]', JSON.stringify(achParado))
+    } catch (e) {
+      console.error('[cron/ach-parado] falha:', e)
+    }
+    return NextResponse.json({ ok: true, dry, ...r, parados, achParado })
   } catch (e) {
     console.error('[cron/billing-reminders] falha:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

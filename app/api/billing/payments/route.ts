@@ -25,6 +25,7 @@ import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
+import { achEmTransito, diasEmTransito, avisoDeBaixaComAchEmTransito, limparAchEmTransito } from '@/lib/ach-transito'
 
 export const dynamic = 'force-dynamic'
 
@@ -142,9 +143,22 @@ export async function POST(req: NextRequest) {
 
   const db = serviceDb()
   const { data: inv } = await db.from('invoices')
-    .select('id, client_id, number, total, paid_total, status, stripe_invoice').eq('id', b.invoiceId).single()
+    .select('id, client_id, number, total, paid_total, status, stripe_invoice, ach_desde, ach_valor')
+    .eq('id', b.invoiceId).single()
   if (!inv) return NextResponse.json({ error: 'Fatura não encontrada' }, { status: 404 })
   if (inv.status === 'void') return NextResponse.json({ error: 'Fatura cancelada não recebe pagamento.' }, { status: 409 })
+
+  // Débito em conta a caminho: receber por fora agora vira baixa EM DOBRO
+  // quando o banco confirmar. Não se proíbe — o cliente pode ter cancelado o
+  // débito e pago por Zelle —, mas ninguém dá baixa sem saber disso.
+  const transito = achEmTransito(inv)
+  if (transito && b.confirmarComAch !== true) {
+    const dias = diasEmTransito(transito.desde)
+    return NextResponse.json({
+      error: avisoDeBaixaComAchEmTransito(inv.number, transito, dias),
+      precisaConfirmarAch: true, achValor: transito.valor, achDias: dias,
+    }, { status: 409 })
+  }
 
   const saldo = Math.round((Number(inv.total) - Number(inv.paid_total)) * 100) / 100
   if (valor > saldo + 0.005) {
@@ -202,8 +216,21 @@ export async function POST(req: NextRequest) {
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'payment', performed_by: auth.userId,
-    staff_level: perms.nivel, next: { amount: valor, method },
+    staff_level: perms.nivel, next: { amount: valor, method, comAchEmTransito: !!transito },
   }).then(() => null, () => null)
+
+  // A equipe confirmou a baixa sabendo do débito a caminho: o trânsito acabou
+  // aqui. Se o ACH cair depois assim mesmo, chega como recebimento novo e o
+  // saldo acusa — e é o que se quer, em vez de ficar marcado para sempre.
+  if (transito) {
+    await limparAchEmTransito(db, inv.id)
+    await db.from('invoice_audit').insert({
+      invoice_id: inv.id, action: 'ach_descartado', performed_by: auth.userId,
+      staff_level: perms.nivel,
+      reason: `Recebimento manual registrado com débito de $${transito.valor.toFixed(2)} ainda em trânsito.`,
+      next: { valor: transito.valor, desde: transito.desde },
+    }).then(() => null, () => null)
+  }
 
   let notaQuitacao = ''
   if (plano && quitacao) {

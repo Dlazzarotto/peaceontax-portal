@@ -31,6 +31,9 @@ npm run testes                   # testes de lógica pura (testes/*.mts), sem fr
 npm run migrar -- sql/x.sql      # aplica migração no Supabase e anota em schema_migrations
                                  # precisa de SUPABASE_DB_URL (psql) ou SUPABASE_ACCESS_TOKEN
                                  # (API, por HTTPS) SÓ no ambiente. --pendentes lista o que falta.
+                                 # SUPABASE_PROJECT_REF sozinho NÃO autentica — ele diz em qual
+                                 # projeto mexer, não quem está mexendo. Sem token, a migração vai
+                                 # à mão no SQL Editor e `--registrar` anota depois.
 npm run build                    # next build
 npm run dev                      # servidor local (precisa de .env.local, ver .env.example)
 ```
@@ -144,6 +147,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   idioma que atendem (`idiomaDoPlaid` em `app/api/plaid/link-token`,
   `localeStripe` em `lib/avisos.ts`); recusado, cai para inglês em vez de
   bloquear o cliente.
+- **ACH a caminho é estado, em `lib/ach-transito.ts`.** Entre o
+  `checkout.session.completed` e a confirmação do banco a fatura guarda
+  `ach_desde`/`ach_sessao`/`ach_valor`. Com isso: a tela mostra, o lembrete
+  de cobrança é recusado e a baixa manual pede confirmação — senão o Zelle
+  registrado no meio vira recebimento em dobro. quem tira do limbo é a
+  rotina diária, que alerta acima de sete dias — `checkout.session.expired`
+  é só rede de segurança (o Stripe expira sessão ABERTA, e a de ACH costuma
+  ser concluída; o que demora é o dinheiro). Dinheiro só entra
+  no `async_payment_succeeded`.
 - **Um plano, uma assinatura.** `checkout.session.completed` cancela a
   assinatura duplicada quando o plano já tem outra registrada — dois
   cadastros concluídos criavam duas assinaturas e a primeira cobrava para
