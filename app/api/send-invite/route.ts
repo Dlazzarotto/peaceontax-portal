@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
+import { getAuth } from '@/lib/api-auth'
 
 const PORTAL_URL  = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME   = 'Peace on Tax'
@@ -38,6 +39,12 @@ function buildEmailHTML(vars: { clientEmail: string; assignee: string; inviteUrl
 
 export async function POST(req: NextRequest) {
   try {
+    // Convite sai em nome da firma: só a equipe manda. O middleware garantia
+    // apenas que havia sessão — um cliente logado no portal podia convidar
+    // quem quisesse como se fosse a Peace on Tax.
+    const auth = await getAuth()
+    if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
     const body = await req.json()
     const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy } = body
     if (!clientEmail) return NextResponse.json({ error: 'Email is required' }, { status: 400 })

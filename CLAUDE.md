@@ -173,6 +173,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cadastros concluídos criavam duas assinaturas e a primeira cobrava para
   sempre, invisível. Cobrar de novo (`billing/recharge`) leva
   `idempotencyKey`: `invoices.pay` não é idempotente sozinho.
+- **Cadastro de cliente é `lib/novo-cliente.ts`.** O corpo do pedido nunca vai
+  direto para o insert — só os campos da lista (antes `user_id` entrava, e ele
+  amarra o cadastro a um login). Cliente com e-mail recebe o **convite do
+  portal ao ser criado**; dispensar é explícito. Cadastrar cabe dentro da
+  emissão da fatura (botão no Financeiro), e e-mail repetido é recusado
+  apontando o cadastro existente.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

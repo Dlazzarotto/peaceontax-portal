@@ -99,6 +99,9 @@ export default function BillingPage() {
   // formulário
   const [abrirNovo, setAbrirNovo] = useState(false)
   const [fCliente, setFCliente] = useState('')
+  // Cadastrar cliente sem sair da emissão: antes era ir a Clientes, cadastrar,
+  // voltar ao Financeiro e recomeçar a fatura.
+  const [novoCli, setNovoCli] = useState<{ nome: string; email: string; tipo: string; convidar: boolean } | null>(null)
   const [fTipo, setFTipo] = useState('invoice')
   const [fVenc, setFVenc] = useState('')
   const [fPlano, setFPlano] = useState('full')
@@ -249,6 +252,36 @@ export default function BillingPage() {
     setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }])
     setFVenc(''); setFNotas(''); setFDesconto('0')
     load()
+  }
+
+  const salvarNovoCliente = async () => {
+    if (!novoCli) return
+    if (!novoCli.nome.trim()) { setMsg('⚠️ Informe o nome do cliente.'); return }
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/clients', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: novoCli.nome.trim(), email: novoCli.email.trim(), type: novoCli.tipo,
+        stage: 'Onboarding', convidar: novoCli.convidar,
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    // E-mail repetido: a rota devolve o cliente que já existe — seleciona ele
+    // em vez de obrigar a equipe a procurar na outra tela.
+    if (d?.clientId) {
+      setFCliente(d.clientId); setNovoCli(null)
+      setMsg(`⚠️ ${d.error} Selecionei o cadastro que já existe.`)
+      await load()
+      return
+    }
+    if (!d?.client) { setMsg(`⚠️ ${d?.error || 'Não foi possível cadastrar.'}`); return }
+    setNovoCli(null)
+    await load()
+    setFCliente(d.client.id)
+    setMsg(`✓ ${d.client.name} cadastrado${
+      d.convite?.enviado ? ' e convidado ao portal' :
+      novoCli.convidar && novoCli.email ? ` (o convite não saiu: ${d.convite?.motivo || 'falha no e-mail'})` : ''
+    }. Já está selecionado nesta fatura.`)
   }
 
   const abrirEdicao = async (inv: Inv) => {
@@ -558,6 +591,12 @@ export default function BillingPage() {
               <option value="">— cliente —</option>
               {(dados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
             </select>
+            <button type="button" onClick={() => setNovoCli({ nome: '', email: '', tipo: 'individual', convidar: true })}
+              title="Cadastrar um cliente novo aqui mesmo"
+              style={{ ...inp, cursor: 'pointer', background: '#F0F4FF', border: '1.5px solid #2D3278',
+                color: '#2D3278', fontWeight: 700, whiteSpace: 'nowrap' as const }}>
+              + Novo cliente
+            </button>
             <select value={fTipo} onChange={e => setFTipo(e.target.value)} style={{ ...inp, cursor: 'pointer' }}>
               <option value="invoice">Fatura</option>
               <option value="estimate">Orçamento</option>
@@ -975,6 +1014,63 @@ export default function BillingPage() {
             )}
           </div>
         </>
+      )}
+
+      {/* Cadastro rápido, sem sair da emissão. Só o essencial: o resto do
+          cadastro se completa na ficha do cliente, e o convite já sai daqui. */}
+      {novoCli && (
+        <div onClick={() => setNovoCli(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, width: '100%', maxWidth: 440, padding: '20px 22px' }}>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+              Novo cliente
+            </h3>
+            <p style={{ fontSize: 13, color: '#6A7A9A', margin: '0 0 16px', lineHeight: 1.5 }}>
+              O necessário para emitir a fatura. O cadastro completo fica na ficha do cliente.
+            </p>
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              {[['individual', '👤 Pessoa física'], ['business', '🏢 Empresa']].map(([v, l]) => (
+                <button key={v} type="button" onClick={() => setNovoCli({ ...novoCli, tipo: v })}
+                  style={{ flex: 1, padding: '9px', borderRadius: 9, cursor: 'pointer', fontSize: 13.5, fontWeight: 700,
+                    border: novoCli.tipo === v ? '2px solid #2D3278' : '1.5px solid #E2E8F4',
+                    background: novoCli.tipo === v ? '#2D3278' : '#fff',
+                    color: novoCli.tipo === v ? '#fff' : '#6A7A9A' }}>{l}</button>
+              ))}
+            </div>
+
+            <input autoFocus value={novoCli.nome} onChange={e => setNovoCli({ ...novoCli, nome: e.target.value })}
+              placeholder={novoCli.tipo === 'business' ? 'Nome da empresa' : 'Nome completo'}
+              style={{ ...inp, width: '100%', boxSizing: 'border-box' as const, marginBottom: 10 }} />
+            <input value={novoCli.email} onChange={e => setNovoCli({ ...novoCli, email: e.target.value })}
+              placeholder="E-mail (para o acesso ao portal)" type="email"
+              style={{ ...inp, width: '100%', boxSizing: 'border-box' as const, marginBottom: 10 }} />
+
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: '#4A5A70',
+              marginBottom: 16, cursor: novoCli.email ? 'pointer' : 'not-allowed', opacity: novoCli.email ? 1 : 0.55 }}>
+              <input type="checkbox" checked={novoCli.convidar && !!novoCli.email} disabled={!novoCli.email}
+                onChange={e => setNovoCli({ ...novoCli, convidar: e.target.checked })} style={{ marginTop: 2 }} />
+              <span>
+                Enviar o convite de acesso ao portal agora
+                <div style={{ fontSize: 11.5, color: '#9AAAB0' }}>
+                  {novoCli.email
+                    ? 'Ele recebe um e-mail para criar a senha. Vale por 7 dias.'
+                    : 'Precisa de e-mail para enviar.'}
+                </div>
+              </span>
+            </label>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setNovoCli(null)} disabled={busy}
+                style={{ ...btn('#6A7A9A'), background: '#F0F4FA', color: '#4A5A70' }}>Cancelar</button>
+              <button type="button" onClick={salvarNovoCliente} disabled={busy} style={btn('#2D3278', busy)}>
+                {busy ? 'Salvando…' : 'Cadastrar e usar'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {receber && (
