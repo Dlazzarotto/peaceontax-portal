@@ -20,6 +20,9 @@
 //   invoice.voided             → cobrança anulada no painel: cancela a fatura
 //                                aqui (ou alerta, se já houver recebimento) e
 //                                devolve a parcela ao cronograma
+//   payment_intent.succeeded   → pagamento por PaymentIntent solto (leitor de
+//                                cartão no balcão): dá baixa na fatura do
+//                                metadata.invoice_id
 //   payment_intent.payment_failed → recusa de cobrança; desfaz o recebimento
 //                                se o dinheiro já tinha sido dado como recebido
 //   charge.refunded / charge.failed / charge.dispute.created / .closed
@@ -40,6 +43,7 @@ import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
+import { filtroDeRecebimento } from '@/lib/recebimento-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
 
 export const runtime = 'nodejs'
@@ -272,6 +276,17 @@ export async function POST(req: NextRequest) {
             + ' A fatura voltou para a cobrança normal.',
         }).then(() => null, () => null)
       }
+      return NextResponse.json({ received: true })
+    }
+
+    // ============ PAGAMENTO POR PAYMENTINTENT SOLTO ============
+    // Sem sessão de Checkout e sem invoice do Stripe: é o caso do leitor de
+    // cartão no balcão. Até aqui TODO recebimento chegava por
+    // checkout.session.completed ou invoice.paid, então uma cobrança fora
+    // desses dois caminhos seria aprovada no Stripe e a fatura nunca daria
+    // baixa. Só age com metadata.invoice_id nosso.
+    if (event.type === 'payment_intent.succeeded') {
+      await handleIntentPago(db, stripe, event.data.object as Stripe.PaymentIntent)
       return NextResponse.json({ received: true })
     }
 
@@ -690,10 +705,17 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
   // Chegou pago: se havia trânsito marcado nesta fatura, ele terminou aqui
   await limparAchEmTransito(db, inv.id)
 
-  // Idempotência: o Stripe reenvia o evento se não confirmarmos
-  const { data: jaTem } = await db.from('invoice_payments')
-    .select('id').eq('stripe_object', session.id).maybeSingle()
-  if (jaTem) return
+  // Idempotência. Duas coisas de uma vez:
+  //  - o Stripe reenvia o evento se não confirmarmos;
+  //  - o MESMO pagamento chega por dois eventos, checkout.session.completed e
+  //    payment_intent.succeeded, SEM ORDEM GARANTIDA. Olhar só a sessão fazia
+  //    o recebimento entrar duas vezes quando o intent chegava primeiro.
+  // Por isso a busca cobre a sessão E o intent, nas duas colunas.
+  const piId = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id
+  const filtro = filtroDeRecebimento(session.id, piId)
+  if (!filtro) return
+  const { data: jaTem } = await db.from('invoice_payments').select('id').or(filtro).limit(1)
+  if (jaTem?.length) return
 
   const forma = await formaDoPagamento(stripe, session)
   const viaKlarna = forma === 'klarna'
@@ -720,9 +742,22 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
     next: { valor: Number(session.amount_total || 0) / 100, session: session.id, forma, klarna: viaKlarna },
   }).then(() => null, () => null)
 
+  await depoisDoRecebimento(db, stripe, inv)
+}
+
+/**
+ * O que acontece DEPOIS de todo recebimento vindo do Stripe, seja ele de uma
+ * sessão de Checkout (portal, link da equipe) ou de um PaymentIntent solto
+ * (leitor de cartão no balcão). Estava escrito só dentro do caminho do
+ * Checkout; o dia em que outro caminho registrasse pagamento, nada disto
+ * aconteceria.
+ */
+async function depoisDoRecebimento(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, inv: any,
+) {
   // Fatura de mensalidade paga pelo portal: a invoice da assinatura no Stripe
   // ainda está em aberto e voltaria a cobrar — sai da linha de cobrança.
-  if ((inv as any).stripe_invoice) await tirarDaLinhaDeCobranca(stripe, (inv as any).stripe_invoice)
+  if (inv.stripe_invoice) await tirarDaLinhaDeCobranca(stripe, inv.stripe_invoice)
 
   // Fatura PARCELADA quitada de uma vez (cartão, Klarna ou ACH): é quitação
   // antecipada. Sem encerrar o parcelamento, a fatura fechava e o débito
@@ -744,6 +779,80 @@ async function handleFaturaPaga(db: ReturnType<typeof adminDb>, stripe: Stripe, 
 
   await notifyClient(db, inv.client_id,
     `✅ Pagamento da fatura ${inv.number} confirmado. Obrigado! 🙏`)
+}
+
+/** Forma real de um PaymentIntent solto (sem sessão de Checkout). */
+async function formaDoIntent(stripe: Stripe, pi: Stripe.PaymentIntent): Promise<'card' | 'ach' | 'klarna'> {
+  try {
+    const tipo = typeof pi.payment_method === 'string'
+      ? (await stripe.paymentIntents.retrieve(pi.id, { expand: ['payment_method'] })
+          .then(x => (x.payment_method as Stripe.PaymentMethod | null)?.type))
+      : (pi.payment_method as Stripe.PaymentMethod | null)?.type
+    if (tipo === 'klarna') return 'klarna'
+    if (tipo === 'us_bank_account') return 'ach'
+    // 'card_present' (leitor de balcão) também é cartão
+    if (tipo) return 'card'
+  } catch (e) {
+    console.error('formaDoIntent:', pi.id, (e as Error).message)
+  }
+  return 'card'
+}
+
+/**
+ * Pagamento que entrou por um PaymentIntent SOLTO — sem sessão de Checkout e
+ * sem invoice do Stripe. É o caso do leitor de cartão no balcão.
+ *
+ * Só age quando o intent carrega `metadata.invoice_id` NOSSO: assinatura,
+ * mensalidade e parcelamento têm caminho próprio (`invoice.paid`), e mexer
+ * neles aqui daria baixa em dobro.
+ */
+async function handleIntentPago(
+  db: ReturnType<typeof adminDb>, stripe: Stripe, pi: Stripe.PaymentIntent,
+) {
+  const invoiceId = pi.metadata?.invoice_id
+  if (!invoiceId) return
+
+  const { data: inv } = await db.from('invoices')
+    .select('id, client_id, number, total, paid_total, status, stripe_invoice')
+    .eq('id', invoiceId).maybeSingle()
+  if (!inv) {
+    console.error('handleIntentPago: fatura do metadata não existe', invoiceId, pi.id)
+    return
+  }
+
+  // Idempotência por ESTADO: o mesmo intent já virou recebimento? O Checkout
+  // grava o intent em `reference`, então as duas colunas precisam ser olhadas.
+  const filtro = filtroDeRecebimento(pi.id)
+  if (!filtro) return
+  const { data: jaTem } = await db.from('invoice_payments').select('id').or(filtro).limit(1)
+  if (jaTem?.length) return
+
+  const forma = await formaDoIntent(stripe, pi)
+  const viaKlarna = forma === 'klarna'
+  const valor = Math.round(Number(pi.amount_received || pi.amount || 0)) / 100
+  if (valor <= 0) return
+
+  const { error } = await db.from('invoice_payments').insert({
+    invoice_id: inv.id,
+    client_id: inv.client_id,
+    amount: valor,
+    method: viaKlarna ? 'external' : forma === 'ach' ? 'ach' : 'card',
+    financier: viaKlarna ? 'Klarna' : null,
+    reference: pi.id,
+    stripe_object: pi.id,
+    received_at: new Date().toISOString(),
+  })
+  if (error) { console.error('handleIntentPago:', pi.id, error.message); return }
+
+  // Débito em conta que estava a caminho nesta fatura terminou aqui
+  await limparAchEmTransito(db, inv.id)
+
+  await db.from('invoice_audit').insert({
+    invoice_id: inv.id, action: 'stripe_paid',
+    next: { valor, intent: pi.id, forma, origem: pi.metadata?.origem || 'payment_intent' },
+  }).then(() => null, () => null)
+
+  await depoisDoRecebimento(db, stripe, inv)
 }
 
 /** Marca a invoice do Stripe como paga fora dele: para de tentar cobrar. */

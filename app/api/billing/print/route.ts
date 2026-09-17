@@ -112,6 +112,22 @@ export async function GET(req: NextRequest) {
       </tbody>
     </table>` : ''
 
+  // Carimbo PAID: só em FATURA quitada, nunca em orçamento nem em fatura
+  // cancelada. O cliente que paga no balcão sai com o comprovante na mão, e
+  // quem recebe por e-mail vê na primeira olhada que não deve nada.
+  // A data é a do ÚLTIMO recebimento (é quando a dívida acabou), não a de hoje:
+  // reimprimir o documento meses depois não pode mudar o que ele atesta.
+  const quitada = !ehOrcamento && inv.status !== 'void'
+    && Number(inv.total) > 0 && saldo <= 0.005
+  const ultimoPag = (pagos || []).length ? (pagos as any[])[(pagos as any[]).length - 1] : null
+  const formasUsadas = Array.from(new Set((pagos || []).map((p: any) => FORMAS[p.method] || p.method)))
+  const carimbo = quitada ? `
+  <div class="carimbo" aria-label="Fatura paga">
+    <div class="carimbo-palavra">PAID</div>
+    <div class="carimbo-linha">${dataUS(ultimoPag?.received_at || inv.updated_at)}</div>
+    ${formasUsadas.length ? `<div class="carimbo-linha">${formasUsadas.join(' + ')}</div>` : ''}
+  </div>` : ''
+
   const barra = barraDoRelatorio({ voltarPara: '/dashboard/billing', rotuloImprimir: 'Imprimir / Salvar PDF' })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
 <title>${inv.number} — ${FIRM.name}</title><style>
@@ -141,8 +157,33 @@ export async function GET(req: NextRequest) {
   .obs { border-left:3px solid #000; padding-left:10px; font-size:11.5px; margin-top:16px; }
   .rodape { margin-top:26px; border-top:1px solid #000; padding-top:8px;
             font-size:10px; text-align:center; }
+  /* Carimbo de quitação, inclinado como um carimbo de borracha. Fica AO LADO
+     dos totais, no fluxo — a primeira versão era posicionada por cima e
+     cobria Total, Recebido e Quitada, justamente os números que importam.
+     No fluxo, também não depende de quantos itens a fatura tem. */
+  .fecho { display:flex; align-items:center; gap:24px; margin-top:6px; }
+  .fecho .totais { margin-left:auto; margin-top:0; }
+  .carimbo {
+    flex:0 0 auto; transform:rotate(-8deg); margin-left:8px;
+    border:4px double #1A6B4A; border-radius:10px; padding:6px 22px 8px;
+    text-align:center; color:#1A6B4A;
+  }
+  .carimbo-palavra {
+    font-family:Georgia,serif; font-size:40px; font-weight:700;
+    letter-spacing:6px; line-height:1.05;
+  }
+  .carimbo-linha { font-size:11px; letter-spacing:1.4px; text-transform:uppercase; }
+  @media (max-width:640px) {
+    .fecho { flex-direction:column-reverse; align-items:stretch; gap:14px; }
+    .carimbo { align-self:flex-start; margin-left:0; }
+    .carimbo-palavra { font-size:32px; }
+  }
   ${barra.css}
-  @media print { body { margin:0; } }
+  @media print {
+    body { margin:0; }
+    /* Sem isto o navegador imprime o carimbo desbotado ou some com a cor */
+    .carimbo { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
 </style></head><body>
   ${barra.html}
 
@@ -178,15 +219,18 @@ export async function GET(req: NextRequest) {
     <tbody>${linhasItens || '<tr><td colspan="4">Sem itens.</td></tr>'}</tbody>
   </table>
 
-  <table class="totais">
-    <tr><td>Subtotal</td><td class="num">${money(inv.subtotal)}</td></tr>
-    ${Number(inv.discount) > 0 ? `<tr><td>Desconto</td><td class="num">- ${money(inv.discount)}</td></tr>` : ''}
-    <tr class="destaque"><td>Total</td><td class="num">${money(inv.total)}</td></tr>
-    ${Number(inv.paid_total) > 0 ? `
-      <tr><td>Recebido</td><td class="num">- ${money(inv.paid_total)}</td></tr>
-      <tr class="destaque"><td>${saldo > 0 ? 'Saldo devedor' : 'Quitada'}</td>
-          <td class="num">${money(Math.max(saldo, 0))}</td></tr>` : ''}
-  </table>
+  <div class="fecho">
+    ${carimbo}
+    <table class="totais">
+      <tr><td>Subtotal</td><td class="num">${money(inv.subtotal)}</td></tr>
+      ${Number(inv.discount) > 0 ? `<tr><td>Desconto</td><td class="num">- ${money(inv.discount)}</td></tr>` : ''}
+      <tr class="destaque"><td>Total</td><td class="num">${money(inv.total)}</td></tr>
+      ${Number(inv.paid_total) > 0 ? `
+        <tr><td>Recebido</td><td class="num">- ${money(inv.paid_total)}</td></tr>
+        <tr class="destaque"><td>${saldo > 0 ? 'Saldo devedor' : 'Quitada'}</td>
+            <td class="num">${money(Math.max(saldo, 0))}</td></tr>` : ''}
+    </table>
+  </div>
 
   ${blocoParcelas}
   ${blocoPagamentos}

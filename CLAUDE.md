@@ -160,6 +160,14 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   é só rede de segurança (o Stripe expira sessão ABERTA, e a de ACH costuma
   ser concluída; o que demora é o dinheiro). Dinheiro só entra
   no `async_payment_succeeded`.
+- **Um pagamento, dois eventos, um lançamento.** O Checkout gera
+  `checkout.session.completed` E `payment_intent.succeeded`, sem ordem
+  garantida. Os dois caminhos procuram pelo MESMO conjunto de chaves
+  (`filtroDeRecebimento` de `lib/recebimento-stripe.ts`: sessão e intent, nas
+  colunas `stripe_object` e `reference`) — olhar só a própria chave lançava o
+  recebimento duas vezes. O que vem depois da baixa é `depoisDoRecebimento`,
+  uma rotina só. `payment_intent.succeeded` só age com `metadata.invoice_id`
+  nosso: mensalidade e parcelamento têm caminho próprio.
 - **Um plano, uma assinatura.** `checkout.session.completed` cancela a
   assinatura duplicada quando o plano já tem outra registrada — dois
   cadastros concluídos criavam duas assinaturas e a primeira cobrava para
