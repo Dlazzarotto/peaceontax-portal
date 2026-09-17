@@ -31,6 +31,15 @@ const ok = t => console.log(verde('[  OK  ]') + `  ${t}`)
 const falta = (t, porque) => { falhas++; console.log(vermelho('[FALTA ]') + `  ${t}`); if (porque) console.log(cinza(`           ${porque}`)) }
 const ver = t => console.log(amarelo('[ VER  ]') + `  ${t}`)
 
+// Invariante pela AUSENCIA: as vezes o que importa e o que o arquivo NAO faz.
+function recusar(nome, arquivo, padrao, porque) {
+  const caminho = join(raiz, arquivo)
+  if (!existsSync(caminho)) return falta(nome, `arquivo inexistente: ${arquivo}`)
+  const conteudo = readFileSync(caminho, 'utf8')
+  const achou = padrao instanceof RegExp ? padrao.test(conteudo) : conteudo.includes(padrao)
+  achou ? falta(nome, porque) : ok(nome)
+}
+
 function checar(nome, arquivo, padrao, porque) {
   const caminho = join(raiz, arquivo)
   if (!existsSync(caminho)) return falta(nome, `arquivo inexistente: ${arquivo}`)
@@ -124,6 +133,12 @@ checar('Corpo do pedido nao vai direto para o insert', 'app/api/clients/route.ts
 checar('Cadastrar manda o convite de acesso', 'app/api/clients/route.ts', 'deveConvidar', 'cliente ficava cadastrado sem nunca receber o login')
 checar('Convite sai so pela equipe', 'app/api/send-invite/route.ts', 'auth?.isStaff', 'cliente logado convidava em nome da firma')
 checar('Emitir fatura cadastra cliente novo', 'app/dashboard/billing/page.tsx', 'salvarNovoCliente', 'era preciso sair do Financeiro e recomecar a fatura')
+
+recusar('Importar NAO chama o convite', 'app/api/clients/import/route.ts', 'send-invite', 'quase mil convites de uma vez')
+checar('Importar diz que nao convidou', 'app/api/clients/import/route.ts', 'Nenhum convite foi enviado', 'a equipe ficaria sem saber que o acesso nao saiu')
+checar('Importar mostra o plano antes de gravar', 'app/api/clients/import/route.ts', 'if (!aplicar)', 'gravaria a carteira inteira sem ninguem conferir')
+checar('Duplicata e nome, nao e-mail', 'lib/import-clientes.ts', 'export function chaveDoNome', 'dono e empresa dividem o e-mail e sao clientes diferentes')
+checar('Importar e de gerente ou socio', 'app/api/clients/import/route.ts', "nivel !== 'owner'", 'qualquer assistente traria a carteira inteira')
 
 titulo('PAGAMENTO PELO PORTAL')
 checar('Fatura: so o dono do cadastro paga', 'app/api/portal/billing/checkout/route.ts', ".eq('client_id', c.id)", 'cliente pagaria fatura de outro')

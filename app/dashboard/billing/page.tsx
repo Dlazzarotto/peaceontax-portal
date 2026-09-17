@@ -278,7 +278,7 @@ export default function BillingPage() {
     setNovoCli(null)
     await load()
     setFCliente(d.client.id)
-    setMsg(`✓ ${d.client.name} cadastrado${
+    setMsg(`${d.aviso ? `⚠️ ${d.aviso} ` : '✓ '}${d.client.name} cadastrado${
       d.convite?.enviado ? ' e convidado ao portal' :
       novoCli.convidar && novoCli.email ? ` (o convite não saiu: ${d.convite?.motivo || 'falha no e-mail'})` : ''
     }. Já está selecionado nesta fatura.`)

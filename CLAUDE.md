@@ -179,6 +179,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   portal ao ser criado**; dispensar é explícito. Cadastrar cabe dentro da
   emissão da fatura (botão no Financeiro), e e-mail repetido é recusado
   apontando o cadastro existente.
+- **Cliente repetido é NOME igual, não e-mail igual.** Na carteira real, 56
+  e-mails servem a mais de um cadastro e só um é duplicata: o resto é o dono e
+  a empresa dele no mesmo endereço. Recusar por e-mail barrava 55 cadastros
+  legítimos. A chave é `chaveDoNome` (`lib/import-clientes.ts`), que ignora
+  maiúscula, acento e pontuação e olha também a razão social; e-mail
+  compartilhado passa com aviso, porque o portal atende um cadastro só.
+- **Importar a carteira (`/api/clients/import`) mostra o plano antes de
+  gravar e NUNCA envia convite** — quase mil e-mails de uma vez. Gerente ou
+  sócio.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

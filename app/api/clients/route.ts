@@ -44,17 +44,32 @@ export async function POST(req: NextRequest) {
     const campos = camposDoCliente(body)
     const critica = criticarCliente(campos)
     if (critica) return NextResponse.json({ error: critica }, { status: 400 })
+    let avisoEmail: string | null = null
 
-    // Mesmo e-mail duas vezes é quase sempre cadastro repetido, e dois cadastros
-    // com o mesmo e-mail brigam pelo portal do cliente.
+    // Duplicata é MESMO E-MAIL COM MESMO NOME. E-mail repetido sozinho não é:
+    // na carteira real, 56 e-mails aparecem em mais de um cadastro e só um é
+    // duplicata de verdade — o resto é o dono e a empresa dele no mesmo gmail
+    // ("Bruno Parreira" e "ABM Capital Group Inc"). São clientes diferentes,
+    // com declarações diferentes. Recusar pelo e-mail barrava 55 cadastros
+    // legítimos.
     if (campos.email) {
-      const { data: existe } = await db.from('clients')
-        .select('id, name').eq('email', campos.email).limit(1)
-      if (existe?.length) {
+      const { data: mesmoEmail } = await db.from('clients')
+        .select('id, name, business_name').eq('email', campos.email).limit(20)
+      const chave = (n: any) => String(n || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase().replace(/[.,'"]/g, '').replace(/\s+/g, ' ').trim()
+      const igual = (mesmoEmail || []).find(c =>
+        chave(c.name) === chave(campos.name) || (c.business_name && chave(c.business_name) === chave(campos.name)))
+      if (igual) {
         return NextResponse.json({
-          error: `Já existe cliente com este e-mail: ${existe[0].name}.`,
-          clientId: existe[0].id,
+          error: `Já existe cliente com este nome e e-mail: ${igual.name}.`,
+          clientId: igual.id,
         }, { status: 409 })
+      }
+      // Mesmo e-mail, nome diferente: passa, mas quem cadastra precisa saber —
+      // o acesso ao portal é por e-mail e só serve a um dos dois.
+      if (mesmoEmail?.length) {
+        avisoEmail = `Atenção: este e-mail já é de ${mesmoEmail.map(c => c.name).join(', ')}.`
+          + ' O acesso ao portal atende um cadastro só — confira qual deve ter o login.'
       }
     }
 
@@ -86,7 +101,7 @@ export async function POST(req: NextRequest) {
       if (!convite.enviado) console.error('convite do cliente novo:', campos.email, convite.motivo)
     }
 
-    return NextResponse.json({ client: data, convite })
+    return NextResponse.json({ client: data, convite, aviso: avisoEmail })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

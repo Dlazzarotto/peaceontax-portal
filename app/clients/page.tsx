@@ -29,6 +29,7 @@ export default function ClientsPage() {
   const [search,   setSearch]   = useState('')
   const [filter,   setFilter]   = useState('all')
   const [showNew,  setShowNew]  = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
 
   const load = (q = '') => {
@@ -57,6 +58,7 @@ export default function ClientsPage() {
   return (
     <div>
       {showNew && <NewClientModal onSave={() => { setShowNew(false); load(search) }} onClose={() => setShowNew(false)} />}
+      {showImport && <ImportarModal onPronto={() => { setShowImport(false); load(search) }} onClose={() => setShowImport(false)} />}
 
       {/* Header */}
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
@@ -71,6 +73,10 @@ export default function ClientsPage() {
               <button key={v} onClick={() => setView(v)} style={{ padding:'6px 14px', borderRadius:7, border:'none', cursor:'pointer', fontSize:12, fontWeight:700, background:view===v?'#fff':'transparent', color:view===v?'#2D3278':'#6a7a9a' }}>{l}</button>
             ))}
           </div>
+          <button onClick={() => setShowImport(true)} title="Trazer a carteira exportada do QuickBooks"
+            style={{ background:'#fff', color:'#2D3278', border:'1.5px solid #2D3278', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
+            ⬆ Importar do QuickBooks
+          </button>
           <button onClick={() => setShowNew(true)} style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', border:'none', padding:'10px 20px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
             + New Client
           </button>
@@ -290,6 +296,133 @@ function NewClientModal({ onSave, onClose }: { onSave: () => void; onClose: () =
               {saving?'Saving…':'Save Client'}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Importação da carteira do QuickBooks. Sempre em duas etapas: primeiro o
+// PLANO (o que entra, o que já existe, o que está repetido no arquivo), e só
+// depois de conferir é que grava. Importar NÃO envia convite — quase mil
+// e-mails de uma vez seria um desastre.
+function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: () => void }) {
+  const [csv, setCsv]       = useState('')
+  const [arquivo, setArq]   = useState('')
+  const [previa, setPrevia] = useState<any>(null)
+  const [busy, setBusy]     = useState(false)
+  const [erro, setErro]     = useState('')
+  const [feito, setFeito]   = useState('')
+
+  const escolher = async (f: File | null) => {
+    if (!f) return
+    setErro(''); setPrevia(null); setFeito('')
+    setArq(f.name)
+    setCsv(await f.text())
+  }
+
+  const chamar = async (aplicar: boolean) => {
+    setBusy(true); setErro('')
+    const d = await fetch('/api/clients/import', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csv, aplicar }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setErro(d?.error || 'Não foi possível ler o arquivo.'); return }
+    if (aplicar) { setFeito(d.message); setPrevia(null) } else setPrevia(d)
+  }
+
+  const cx: React.CSSProperties = { background:'#fff', borderRadius:20, width:'100%', maxWidth:620, maxHeight:'90vh', overflowY:'auto' }
+  const linha = (r: string, v: any, cor = '#0f2340') => (
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid #f0f4fa', fontSize:13.5 }}>
+      <span style={{ color:'#6a7a9a' }}>{r}</span><b style={{ color:cor }}>{v}</b>
+    </div>
+  )
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.6)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000, padding:20 }}>
+      <div style={cx}>
+        <div style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', padding:'18px 24px', borderRadius:'20px 20px 0 0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+          <h2 style={{ fontFamily:'Georgia,serif', fontSize:17, color:'#fff', margin:0 }}>Importar carteira do QuickBooks</h2>
+          <button onClick={onClose} style={{ background:'rgba(255,255,255,0.15)', border:'none', color:'#fff', width:28, height:28, borderRadius:7, cursor:'pointer', fontSize:15 }}>✕</button>
+        </div>
+        <div style={{ padding:'20px 24px' }}>
+          {feito ? (
+            <>
+              <div style={{ background:'#e8f5ee', color:'#1a6b4a', padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>{feito}</div>
+              <div style={{ display:'flex', justifyContent:'flex-end', marginTop:16 }}>
+                <button onClick={onPronto} style={{ padding:'10px 24px', borderRadius:9, border:'none', background:'#2D3278', color:'#fff', cursor:'pointer', fontSize:14, fontWeight:700 }}>Ver a lista</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize:13.5, color:'#6a7a9a', margin:'0 0 14px', lineHeight:1.6 }}>
+                No QuickBooks: <b>Clients → Export</b>. O arquivo vem com nome, e-mail, telefone e
+                o tipo (pessoa ou empresa). Quem já está cadastrado fica de fora — a comparação é
+                pelo nome, então maiúscula, acento e pontuação não atrapalham.
+              </p>
+
+              <input type="file" accept=".csv,text/csv" onChange={e => escolher(e.target.files?.[0] || null)}
+                style={{ width:'100%', padding:'10px', border:'1.5px dashed #2D3278', borderRadius:10, fontSize:13, marginBottom:12, boxSizing:'border-box' }} />
+
+              {arquivo && !previa && (
+                <button onClick={() => chamar(false)} disabled={busy || !csv}
+                  style={{ width:'100%', padding:'11px', borderRadius:9, border:'none', background:busy?'#e2e8f4':'#2D3278', color:busy?'#9aaab0':'#fff', cursor:busy?'wait':'pointer', fontSize:14, fontWeight:700 }}>
+                  {busy ? 'Conferindo…' : `Conferir ${arquivo}`}
+                </button>
+              )}
+
+              {previa && (
+                <div style={{ marginTop:4 }}>
+                  <div style={{ background:'#f8faff', border:'1px solid #e2e8f4', borderRadius:12, padding:'12px 16px', marginBottom:12 }}>
+                    {linha('Linhas no arquivo', previa.resumo.lidos)}
+                    {linha('Entram agora', previa.resumo.novos, '#1a6b4a')}
+                    {linha('Já cadastrados (ficam de fora)', previa.resumo.jaExistem, '#c06010')}
+                    {previa.resumo.repetidosNoArquivo > 0 && linha('Repetidos dentro do arquivo', previa.resumo.repetidosNoArquivo, '#c06010')}
+                    {linha('— empresas', previa.resumo.empresas)}
+                    {linha('— pessoas físicas', previa.resumo.pessoasFisicas)}
+                    {previa.resumo.semEmail > 0 && linha('Sem e-mail (não terão portal)', previa.resumo.semEmail, '#6a7a9a')}
+                    {previa.resumo.telefonesDescartados > 0 && linha('Telefones inválidos descartados', previa.resumo.telefonesDescartados, '#6a7a9a')}
+                  </div>
+
+                  {previa.resumo.emailCompartilhado > 0 && (
+                    <div style={{ background:'#fff8e8', border:'1px solid #f0d8a8', borderRadius:10, padding:'11px 14px', fontSize:12.5, color:'#5a4a1a', lineHeight:1.6, marginBottom:12 }}>
+                      <b>{previa.resumo.emailCompartilhado} e-mail(s) servem a mais de um cadastro</b> — normalmente
+                      o dono e a empresa dele. Os dois entram, porque são clientes diferentes. Só lembre que o
+                      acesso ao portal é por e-mail e atende um cadastro só.
+                      {previa.emailCompartilhado?.[0] && (
+                        <div style={{ marginTop:6, fontSize:11.5, color:'#8a7a4a' }}>
+                          ex.: {previa.emailCompartilhado[0].email} → {previa.emailCompartilhado[0].nomes.join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {previa.repetidos?.length > 0 && (
+                    <div style={{ fontSize:12, color:'#6a7a9a', marginBottom:12 }}>
+                      Repetidos no arquivo, entram uma vez: <b>{previa.repetidos.join(', ')}</b>
+                    </div>
+                  )}
+
+                  <div style={{ background:'#f0f4fa', borderRadius:10, padding:'11px 14px', fontSize:12.5, color:'#4a5a70', lineHeight:1.6, marginBottom:14 }}>
+                    <b>Nenhum convite será enviado.</b> Os clientes entram cadastrados; o acesso ao
+                    portal você manda depois, de quem quiser, pela ficha do cliente.
+                  </div>
+
+                  <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+                    <button onClick={() => { setPrevia(null); setArq(''); setCsv('') }} disabled={busy}
+                      style={{ padding:'10px 18px', borderRadius:9, border:'1px solid #e2e8f4', background:'#f8faff', color:'#6a7a9a', cursor:'pointer', fontSize:13 }}>Trocar arquivo</button>
+                    <button onClick={() => chamar(true)} disabled={busy || !previa.resumo.novos}
+                      style={{ padding:'10px 24px', borderRadius:9, border:'none', background:busy||!previa.resumo.novos?'#e2e8f4':'linear-gradient(135deg,#1a6b4a,#145a3a)', color:busy||!previa.resumo.novos?'#9aaab0':'#fff', cursor:busy?'wait':'pointer', fontSize:14, fontWeight:700 }}>
+                      {busy ? 'Importando…' : `Importar ${previa.resumo.novos}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {erro && <div style={{ background:'#fdf0f0', color:'#b02020', padding:'10px 14px', borderRadius:9, fontSize:13, marginTop:12 }}>{erro}</div>}
+            </>
+          )}
         </div>
       </div>
     </div>
