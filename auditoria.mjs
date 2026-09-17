@@ -427,6 +427,17 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
          'sem isso o modal fala de um debito que nunca existiu')
 }
 
+
+titulo('SCHEMA DO BANCO NAO PODE SER INVISIVEL')
+// O gatilho que mantem paid_total/status vivia so no banco. Um comentario
+// errado no codigo ("o banco recusa valor parcial") passou a valer como
+// regra e ninguem tinha como conferir — a afirmacao era falsa.
+checar('O gatilho do saldo esta versionado', 'sql/gatilho-saldo-da-fatura-v1.sql',
+       /atualiza_saldo_da_fatura/, 'sem o arquivo, a regra volta a ser folclore')
+recusar('Ninguem afirma que o banco recusa parcial', 'app/api/billing/payments/route.ts',
+        /banco recusa valor parcial/,
+        'o gatilho nao valida nada; pagamento parcial e aceito em qualquer forma')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
