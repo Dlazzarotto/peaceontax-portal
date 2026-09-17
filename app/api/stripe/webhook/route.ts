@@ -250,9 +250,12 @@ export async function POST(req: NextRequest) {
     }
 
     // ============ SESSÃO DE PAGAMENTO EXPIRADA ============
-    // Débito em conta que o cliente começou e não concluiu (verificação da
-    // conta abandonada). Sem isto a fatura ficava marcada "dinheiro a caminho"
-    // para sempre, fora da cobrança, esperando um ACH que nunca vem.
+    // Rede de segurança, NÃO a proteção principal: o Stripe expira sessão que
+    // ficou ABERTA, e a sessão de ACH normalmente é concluída pelo cliente (o
+    // dinheiro é que demora). Quem tira a fatura do limbo é o alerta de sete
+    // dias em lib/ach-transito.ts. Este trecho cobre o caso em que o Stripe
+    // expira uma sessão que chegou a marcar trânsito aqui — custa nada e
+    // evita a fatura ficar esperando um ACH que nunca vem.
     if (event.type === 'checkout.session.expired') {
       const session = event.data.object as Stripe.Checkout.Session
       const inv = await faturaDaSessaoAch(db, session.id)

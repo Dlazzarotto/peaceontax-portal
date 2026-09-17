@@ -148,8 +148,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `checkout.session.completed` e a confirmação do banco a fatura guarda
   `ach_desde`/`ach_sessao`/`ach_valor`. Com isso: a tela mostra, o lembrete
   de cobrança é recusado e a baixa manual pede confirmação — senão o Zelle
-  registrado no meio vira recebimento em dobro. `checkout.session.expired`
-  tira do limbo; a rotina diária alerta acima de sete dias. Dinheiro só entra
+  registrado no meio vira recebimento em dobro. quem tira do limbo é a
+  rotina diária, que alerta acima de sete dias — `checkout.session.expired`
+  é só rede de segurança (o Stripe expira sessão ABERTA, e a de ACH costuma
+  ser concluída; o que demora é o dinheiro). Dinheiro só entra
   no `async_payment_succeeded`.
 - **Um plano, uma assinatura.** `checkout.session.completed` cancela a
   assinatura duplicada quando o plano já tem outra registrada — dois
