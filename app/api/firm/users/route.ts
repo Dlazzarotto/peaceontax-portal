@@ -9,6 +9,7 @@ import { supabaseAdmin } from '@/lib/supabase-browser'
 import { randomBytes } from 'crypto'
 import { getAuth } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { ehDaFirma } from '@/lib/papeis'
 
 const PORTAL_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME  = 'Peace on Tax'
@@ -80,7 +81,7 @@ export async function GET() {
     const mapa = new Map((papeis || []).map((p: any) => [p.user_id, p.level]))
 
     const firmUsers = users
-      .filter(u => ['firm', 'staff', 'admin', 'manager'].includes(u.user_metadata?.role))
+      .filter(u => ehDaFirma(u.user_metadata?.role))
       .map(u => ({
         id:           u.id,
         email:        u.email,

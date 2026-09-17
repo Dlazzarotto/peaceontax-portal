@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { supabaseBrowser } from '@/lib/supabase-browser'
 import { useRouter } from 'next/navigation'
+import { ehDaFirma } from '@/lib/papeis'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -28,8 +29,9 @@ export default function LoginPage() {
       setLoading(false)
       return
     }
-    const userRole = data.user?.user_metadata?.role || role
-    router.push(userRole === 'firm' ? '/dashboard' : '/portal')
+    // Quem manda e o papel gravado no login, nao o botao escolhido aqui.
+    const daFirma = ehDaFirma(data.user?.user_metadata?.role)
+    router.push(daFirma ? '/dashboard' : '/portal')
     router.refresh()
   }
 

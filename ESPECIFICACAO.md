@@ -53,6 +53,61 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 
 O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
 
+### 3.1 Duas perguntas diferentes: a porta e o poder
+
+São decisões separadas e não podem ser confundidas:
+
+1. **A porta — firma ou cliente?** Vem de `lib/papeis.ts`, e só de lá.
+   `user_metadata.role` do login é comparado com uma **lista fechada**:
+   `firm · owner · admin · manager · staff`. Papel fora da lista é **cliente**.
+   Errar para o lado restritivo tranca um funcionário, que o sócio libera em
+   um minuto; errar para o outro abre a carteira inteira.
+2. **O poder dentro da firma — owner, manager ou junior?** Vem de
+   `staff_roles`, por `lib/staff-perms.ts`, como na tabela acima.
+
+**Por que isto está escrito aqui.** O sistema tinha duas linguagens para a
+mesma coisa: o convite gravava `firm | admin | manager | staff`, e a porta
+lia `role === 'firm' ? 'firm' : 'client'`, escrito em três arquivos
+diferentes. Quem era convidado como **Staff** — o padrão do formulário —,
+Manager ou Admin virava **cliente** ao entrar: caía no `/portal`, via um
+portal vazio (não há linha em `clients` para ele) e levava 403 em toda rota
+de API. Só quem era convidado como Owner funcionava. A auditoria agora
+recusa qualquer arquivo que volte a comparar `user_metadata.role` com
+`'firm'` por conta própria.
+
+### 3.2 Toda rota de API confere quem está chamando
+
+O `middleware.ts` exige **sessão**, não identidade — a sessão de um cliente
+serve para bater em qualquer rota. A conferência de *quem* é obrigatória
+**dentro** da rota, e a auditoria recusa route.ts que não faça nenhuma:
+
+- `getAuth()` de `lib/api-auth.ts` — equipe × cliente, mais `canAccessClient`
+- `getUser()` + filtro por `user_id` — rotas do portal
+- `autorDaRequisicao` de `lib/wa-auth.ts` — atendimento (nível da equipe)
+- `CRON_SECRET`, assinatura do Stripe, assinatura da Twilio — máquinas
+
+Isto não é teoria. `/api/firm/users/[id]` não conferia nada e usava a
+service role key: **qualquer pessoa logada, inclusive um cliente**, podia
+`PATCH {"role":"firm"}` e virar firma, trocar a senha do sócio e assumir a
+conta, ou banir qualquer usuário. Junto com ela estavam sem guarda
+`/api/clients/[id]` (ler, editar e inativar qualquer cliente),
+`/api/documents/[id]` (link assinado de qualquer declaração), `/api/documents`,
+`/api/upload`, `/api/process-pdf` e `/api/firm/messages` (escrever em nome da
+firma na conversa de qualquer cliente).
+
+Duas regras que saíram daí:
+
+- **Corpo de requisição nunca vai inteiro para o banco.** `/api/clients/[id]`
+  fazia `update({...body})`: dava para gravar `user_id` e apontar a ficha de
+  um cliente para o login de outro. Só a lista de campos de `lib/novo-cliente.ts`.
+- **`user_metadata` se mescla, nunca se substitui.** A tela de equipe
+  reescrevia o metadata inteiro: corpo sem `role` rebaixava um membro da
+  firma a cliente e apagava `must_change_password`.
+
+Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso —
+a mudança de papel ali também atualiza `staff_roles`, senão a tela diz
+"Manager" e o sistema continua tratando como assistente.
+
 ---
 
 ## 4. Módulos

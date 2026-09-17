@@ -1,23 +1,45 @@
+// /api/documents/[id] — abre ou apaga um documento
+//
+// CORREÇÃO DE SEGURANÇA: sem conferência de quem chamava. Qualquer pessoa
+// logada pedia o link assinado de QUALQUER documento — declaração, W-2,
+// extrato — bastando o id. E apagava.
+
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase-browser'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+
+async function documento(id: string) {
+  const { data } = await serviceDb().from('documents')
+    .select('*').eq('id', id).maybeSingle()
+  return data
+}
 
 export async function GET(_: NextRequest, { params }: { params: { id: string } }) {
+  const auth = await getAuth()
+  if (!auth) return NextResponse.json({ error: 'Não autenticado' }, { status: 401 })
+
   try {
-    const db = supabaseAdmin()
-    const { data: doc } = await db.from('documents').select('*').eq('id', params.id).single()
+    const doc = await documento(params.id)
     if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    const { data: { signedUrl } } = await db.storage.from('client-documents').createSignedUrl(doc.storage_path, 3600)
-    return NextResponse.json({ document: doc, url: signedUrl })
+    if (!(await canAccessClient(auth, doc.client_id)))
+      return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+
+    const { data } = await serviceDb().storage
+      .from('client-documents').createSignedUrl(doc.storage_path, 3600)
+    return NextResponse.json({ document: doc, url: data?.signedUrl })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
 }
 
 export async function DELETE(_: NextRequest, { params }: { params: { id: string } }) {
+  // Apagar documento do cliente é da equipe. O cliente envia, não remove.
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
   try {
-    const db = supabaseAdmin()
-    const { data: doc } = await db.from('documents').select('storage_path').eq('id', params.id).single()
-    if (doc) await db.storage.from('client-documents').remove([doc.storage_path])
+    const db = serviceDb()
+    const doc = await documento(params.id)
+    if (doc?.storage_path) await db.storage.from('client-documents').remove([doc.storage_path])
     await db.from('documents').delete().eq('id', params.id)
     return NextResponse.json({ success: true })
   } catch (err: any) {

@@ -79,6 +79,18 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `sentidoTransferencia`, `contasDeFora`, `cartaoCitado`, `ehPagamentoNoCartao`,
   isolamento `nonprofit`). Alterou um, altera os três. Unificar num módulo
   único é dívida aceita, não decisão tomada.
+- **Sessão não é identidade.** O `middleware.ts` só garante que existe login
+  — a sessão de um cliente bate em qualquer rota. Conferir QUEM está
+  chamando é obrigatório DENTRO da rota (`getAuth`, `getUser` + filtro por
+  `user_id`, `autorDaRequisicao`, `CRON_SECRET` ou assinatura), e a auditoria
+  recusa route.ts sem nenhuma delas. `/api/firm/users/[id]` não conferia nada
+  e usava a service role key: qualquer cliente logado virava firma, trocava a
+  senha do sócio ou banía qualquer um. Junto com ela, `/api/clients/[id]`,
+  `/api/documents[/id]`, `/api/upload`, `/api/process-pdf` e
+  `/api/firm/messages`. Daí também: **corpo de requisição nunca vai inteiro
+  para o banco** (`clients/[id]` fazia `update({...body})` — dava para gravar
+  `user_id`) e **`user_metadata` se mescla, nunca se substitui** (corpo sem
+  `role` rebaixava um membro da firma a cliente).
 - **Toda rota de API exige sessão** (`middleware.ts`). A lista `API_PUBLIC` é
   fechada: só entra rota que um visitante sem login precisa mesmo chamar
   (agendamento, convite, webhooks, cron da Vercel). Rota de `/api/cron/` só
@@ -86,9 +98,17 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   existir. Rotinas agendadas ficam em `vercel.json`. Dentro da rota, `getAuth` de
   `lib/api-auth.ts` confere o dono: equipe acessa qualquer cliente, cliente só
   o próprio.
+- **Firma × cliente se decide em `lib/papeis.ts`, e só lá.** `ehDaFirma` tem
+  uma lista FECHADA (`firm · owner · admin · manager · staff`); papel fora
+  dela é cliente. `middleware.ts`, `getRole` de `lib/supabase-server.ts` e
+  `isStaff` de `lib/api-auth.ts` perguntam ali. Antes cada um comparava
+  `role === 'firm'` por conta própria, e quem era convidado como **staff**
+  (o padrão do formulário), manager ou admin virava CLIENTE ao entrar: caía
+  no `/portal`, sem linha em `clients`, com 403 em toda rota. A auditoria
+  recusa quem voltar a comparar `user_metadata.role` com `'firm'`.
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
-  `manager`, `junior`. Quem não está na tabela é `junior`. O
-  `user_metadata.role` do Supabase só distingue firma × cliente no middleware.
+  `manager`, `junior`. Quem não está na tabela é `junior`. São duas
+  perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).

@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { getAuth } from '@/lib/api-auth'
 
+// CORRECAO DE SEGURANCA: sem conferencia de quem chamava. Extrato bancario e
+// bookkeeping — e cada chamada gasta credito da Anthropic.
 export async function POST(req: NextRequest) {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   try {
     const { pdfBase64, bank, month, year } = await req.json()
     if (!pdfBase64 || !bank) return NextResponse.json({ error: 'Missing fields' }, { status: 400 })

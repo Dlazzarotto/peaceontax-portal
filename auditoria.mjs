@@ -239,6 +239,57 @@ for (const p of arquivos(raiz, exts)) {
 if (!corrompidos) ok('nenhum arquivo com acentos corrompidos')
 if (!boms) ok('nenhum arquivo com BOM')
 
+titulo('FIRMA x CLIENTE SE DECIDE NUM LUGAR SO (lib/papeis.ts)')
+// O convite da equipe grava role = firm|admin|manager|staff; a porta de
+// entrada lia role === 'firm'. Quem entrava como staff (o padrao do
+// formulario) virava CLIENTE e caia no portal. Agora todos perguntam a
+// lib/papeis.ts — e nenhum outro arquivo pode repetir a comparacao.
+checar('lib/papeis.ts existe', 'lib/papeis.ts', /export function ehDaFirma/, 'a fonte unica sumiu')
+for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts']) {
+  checar(`${alvo} pergunta a lib/papeis`, alvo, /from ['"]@\/lib\/papeis['"]/, 'voltou a decidir sozinho')
+}
+{
+  // Ler user_metadata.role e compara-lo com 'firm' e o que nao pode se
+  // repetir. Comparar a variavel ja calculada por papelDoLogin e normal.
+  const CRU = /(user_)?metadata[^\n]{0,40}\.role\s*===\s*['"]firm['"]/
+  let repetem = []
+  for (const arq of arquivos(join(raiz, 'app'), ['.ts', '.tsx']))
+    if (CRU.test(readFileSync(arq, 'utf8'))) repetem.push(rel(arq))
+  for (const arq of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'])
+    if (CRU.test(readFileSync(join(raiz, arq), 'utf8'))) repetem.push(arq)
+  repetem.length
+    ? falta('Ninguem repete a comparacao role === "firm"', `use ehDaFirma: ${repetem.join(', ')}`)
+    : ok('Ninguem repete a comparacao role === "firm"')
+}
+
+titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
+// /api/firm/users/[id] nao conferia e usava a service role key: qualquer
+// cliente logado virava firma ou trocava a senha do socio.
+{
+  // Rotas abertas de proposito — a mesma lista de API_PUBLIC do middleware,
+  // mais o logout (so encerra a propria sessao).
+  const ABERTAS = [
+    'app/api/agenda/slots/route.ts',
+    'app/api/agenda/bookings/route.ts',
+    'app/api/invite/[token]/route.ts',
+    'app/api/firm/setup/[token]/route.ts',
+    'app/api/auth/logout/route.ts',
+  ]
+  // getAuth() (equipe x cliente), getUser() + filtro por user_id (rotas do
+  // portal), nivel da equipe (WhatsApp), CRON_SECRET, assinatura do Stripe
+  // e assinatura da Twilio (o header chega em minusculo).
+  const CONFERE = /getAuth\(|getUser\(|autorDaRequisicao\(|CRON_SECRET|constructEvent|twilio-signature/i
+  const soltas = []
+  for (const arq of arquivos(join(raiz, 'app', 'api'), ['route.ts'])) {
+    const nome = rel(arq)
+    if (ABERTAS.includes(nome)) continue
+    if (!CONFERE.test(readFileSync(arq, 'utf8'))) soltas.push(nome)
+  }
+  soltas.length
+    ? falta('Nenhuma rota de API sem conferencia', `sem getAuth: ${soltas.join(', ')}`)
+    : ok('Nenhuma rota de API sem conferencia')
+}
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
