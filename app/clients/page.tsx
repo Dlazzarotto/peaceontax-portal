@@ -497,6 +497,7 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
   const [erro, setErro]     = useState('')
   const [feito, setFeito]   = useState('')
   const [falhas, setFalhas] = useState<string[]>([])
+  const [gravados, setGravados] = useState(0)
 
   const escolher = async (f: File | null) => {
     if (!f) return
@@ -513,7 +514,7 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
     }).then(r => r.json()).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setErro(d?.error || 'Não foi possível ler o arquivo.'); return }
-    if (aplicar) { setFeito(d.message); setFalhas(d.falhas || []); setPrevia(null) } else setPrevia(d)
+    if (aplicar) { setFeito(d.message); setFalhas(d.falhas || []); setGravados(d.gravados ?? 0); setPrevia(null) } else setPrevia(d)
   }
 
   const cx: React.CSSProperties = { background:'#fff', borderRadius:20, width:'100%', maxWidth:620, maxHeight:'90vh', overflowY:'auto' }
@@ -533,7 +534,17 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
         <div style={{ padding:'20px 24px' }}>
           {feito ? (
             <>
-              <div style={{ background:'#e8f5ee', color:'#1a6b4a', padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>{feito}</div>
+              {/* Verde só quando entrou alguém E ninguém foi recusado. A versão
+                  anterior pintava de verde qualquer resposta da rota — uma
+                  importação que gravou ZERO aparecia como sucesso, e foi assim
+                  que uma falha total passou por confirmada. */}
+              <div style={{
+                background: gravados > 0 && !falhas.length ? '#e8f5ee' : gravados > 0 ? '#fff4e8' : '#fdf0f0',
+                color: gravados > 0 && !falhas.length ? '#1a6b4a' : gravados > 0 ? '#8a5a00' : '#b02020',
+                padding:'14px 16px', borderRadius:10, fontSize:14, fontWeight:600, lineHeight:1.6 }}>
+                {gravados === 0 && <div style={{ fontSize:15, fontWeight:800, marginBottom:4 }}>Nada foi importado.</div>}
+                {feito}
+              </div>
               {falhas.length > 0 && (
                 <div style={{ marginTop:12, background:'#fdf0f0', border:'1px solid #f0c8c8', borderRadius:10, padding:'12px 15px' }}>
                   <div style={{ fontSize:13, fontWeight:700, color:'#b02020', marginBottom:6 }}>Não entraram:</div>
@@ -543,6 +554,8 @@ function ImportarModal({ onPronto, onClose }: { onPronto: () => void; onClose: (
                 </div>
               )}
               <div style={{ display:'flex', justifyContent:'flex-end', marginTop:16 }}>
+                <button onClick={() => { setFeito(''); setFalhas([]); setPrevia(null) }}
+                  style={{ padding:'10px 18px', borderRadius:9, border:'1px solid #e2e8f4', background:'#f8faff', color:'#6a7a9a', cursor:'pointer', fontSize:13 }}>Tentar de novo</button>
                 <button onClick={onPronto} style={{ padding:'10px 24px', borderRadius:9, border:'none', background:'#2D3278', color:'#fff', cursor:'pointer', fontSize:14, fontWeight:700 }}>Ver a lista</button>
               </div>
             </>
