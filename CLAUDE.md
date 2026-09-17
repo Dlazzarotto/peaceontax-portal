@@ -121,6 +121,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   salvar e o motivo fica gravado. A lista de chaves está no módulo E no
   `CHECK` do SQL; a auditoria falha se divergirem.
   Migração: `sql/permissoes-por-pessoa-v1.sql`.
+- **Recebimento: cartão e Zelle sozinho, o resto com senha de gerente/sócio**
+  (`lib/recebimento-aprovacao.ts`). `FORMAS_LIVRES` é uma lista de LIVRES,
+  não de bloqueadas — forma nova nasce pedindo aprovação. Espécie é o caso
+  que originou: não existe até alguém digitar, e o sócio agora pode
+  autorizar `receber` a quem também emite. Senha certa não basta, `podeAprovar`
+  confere o nível do aprovador; quem aprovou vai para `invoice_audit`
+  (`reason` e `next.aprovadoPor`). A trava é da ROTA — a tela só antecipa.
 - **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
   `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
   controle de acesso. A tela de equipe prometia "Staff: assigned clients

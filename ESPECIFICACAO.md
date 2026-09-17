@@ -101,6 +101,22 @@ Editar fatura continua pedindo senha e motivo para todo mundo que não seja
 sócio, inclusive quem recebeu a autorização: ela diz que a pessoa **pode**,
 não que pode sem deixar rastro.
 
+**Cartão e Zelle sozinho; o resto pede senha de gerente ou sócio.**
+Quem tem `receber` registra **cartão** e **Zelle** por conta própria — os
+dois deixam rastro fora do sistema (cobrança no Stripe, crédito no extrato
+da firma). **Dinheiro em espécie, cheque, wire, Venmo, débito em conta,
+financiamento e "outro"** só entram com o e-mail e a senha de um gerente ou
+sócio, e quem aprovou fica na trilha da fatura (`invoice_audit`).
+
+A lista em `lib/recebimento-aprovacao.ts` é de **livres**, não de
+bloqueadas: forma de pagamento nova nasce pedindo aprovação até alguém
+decidir o contrário. Errar para o lado da trava custa uma senha; errar para
+o outro custa dinheiro que ninguém reconstitui.
+
+Senha certa não basta — o sistema confere que quem aprovou é mesmo gerente
+ou sócio. E a trava é da **rota**, não da tela: esconder o botão não é
+controle de acesso.
+
 ### 3.2 Duas perguntas diferentes: a porta e o poder
 
 São decisões separadas e não podem ser confundidas:

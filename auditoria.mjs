@@ -318,6 +318,21 @@ checar('Motivo e obrigatorio na autorizacao', 'app/api/account/grants/route.ts',
             `modulo: ${noModulo.join(',')} | sql: ${noSql.join(',')}`)
 }
 
+titulo('RECEBIMENTO: CARTAO E ZELLE SOZINHO, O RESTO COM APROVACAO')
+checar('A regra mora num modulo so', 'lib/recebimento-aprovacao.ts',
+       /export const FORMAS_LIVRES/, 'a lista de formas livres sumiu')
+checar('A rota de pagamento aplica a regra', 'app/api/billing/payments/route.ts',
+       /exigeAprovacao\(method\)/,
+       'sem isto o dinheiro em especie entra sem aprovacao de gerente')
+checar('Senha certa nao basta: confere o nivel', 'app/api/billing/payments/route.ts',
+       /podeAprovar\(await getStaffLevel/,
+       'qualquer login valido aprovaria — inclusive o de um cliente')
+checar('Quem aprovou fica na trilha', 'app/api/billing/payments/route.ts',
+       /aprovadoPor/, 'aprovacao sem registro nao e aprovacao')
+recusar('A trava nao vive so na tela', 'app/dashboard/billing/page.tsx',
+        /approverPassword['"]?\s*:\s*apSenha\s*\}\s*\)\s*\}\s*$/m,
+        'a conferencia tem de estar na rota, nao so no componente')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
