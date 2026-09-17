@@ -165,14 +165,32 @@ export default function BillingPage() {
     setPcSenha('')
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
+
+    // "Editar" um parcelamento que nunca começou é refazer o acordo. Em vez
+    // de cancelar e deixar a pessoa remontar tudo de cabeça, o formulário
+    // volta preenchido com o que estava combinado.
+    if (d.nuncaComecou) {
+      const pl = pcCancelar
+      setPcFatura(pl.invoice_id || '')
+      setPcParcelas(String(pl.installments || 2))
+      setPcFreq(pl.frequency || 'monthly')
+      setPcEntrada(String(Number(pl.entry_amount) || 0))
+      if (pl.next_charge_date) setPcPrimeira(String(pl.next_charge_date).slice(0, 10))
+      // O formulário desta aba fica sempre visível: preencher os campos já
+      // deixa o acordo pronto para revisar e criar de novo.
+    }
+
     setPcCancelar(null); setPcMotivo('')
     loadParcelamentos(); load()
   }
 
   const loadParcelamentos = async () => {
     const d = await jsonSeguro(await fetch('/api/billing/installment-plan'))
+    // O erro vem PRIMEIRO: `d.plans` com lista vazia é verdadeiro em JS, e
+    // por isso uma consulta que falhava aparecia como "nenhum parcelamento".
+    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
     if (d?.plans) setPcDados(d)
-    else if (d?.error) setMsg(`⚠️ ${d.error}`)
+    else setMsg('⚠️ Resposta inesperada ao carregar os parcelamentos.')
   }
   useEffect(() => { if (aba === 'parcelamentos') loadParcelamentos() }, [aba])
 
@@ -209,8 +227,10 @@ export default function BillingPage() {
   // Plano que nasceu e nunca saiu do lugar: nada cobrado, nada a parar no
   // Stripe. Desfazer isso não é desfazer uma cobrança, e a tela não deve
   // falar como se fosse.
-  const nuncaComecou = (pl: any) =>
-    Number(pl?.paid_installments || 0) === 0 && !pl?.stripe_subscription_id && !pl?.stripe_schedule_id
+  // Quem decide é o servidor (a rota devolve `nuncaComecou`). A tela não
+  // recebe os ids do Stripe: pedi-los no select principal foi o que fez a
+  // lista de parcelamentos desaparecer.
+  const nuncaComecou = (pl: any) => !!pl?.nuncaComecou
 
   const criarParcelamento = async () => {
     if (!pcFatura || !pcPrimeira) { setMsg('⚠️ Escolha a fatura e a data da primeira parcela.'); return }
@@ -1101,7 +1121,10 @@ export default function BillingPage() {
                           <button onClick={() => { setPcCancelar(pl); setPcMotivo(''); setPcSenha(''); setMsg('') }}
                             style={{ background: 'none', border: 'none', color: '#B02020',
                               fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
-                            Cancelar parcelamento
+                            {/* Plano que nunca começou: refazer o acordo é o que
+                                a equipe quer, e o cancelamento devolve o
+                                formulário preenchido. */}
+                            {nuncaComecou(pl) ? 'Refazer acordo' : 'Cancelar parcelamento'}
                           </button>
                         )}
                       </td>

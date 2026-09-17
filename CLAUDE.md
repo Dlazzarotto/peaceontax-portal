@@ -288,6 +288,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   rota E a prévia da tela chamam `entradaDoPedido` — a mesma conta num lugar
   só. A recusa diz o valor máximo em dólar, não a regra abstrata. 26 casos
   em `testes/entrada-parcelamento.mts`.
+- **Consulta que falha não pode virar lista vazia.** `[]` é verdadeiro em
+  JavaScript, então `if (d?.plans)` engolia o erro e a aba de Parcelamentos
+  dizia "nenhuma fatura parcelada" quando a consulta havia falhado. O erro
+  vem PRIMEIRO, na rota (`error: errPlanos`) e na tela. É a terceira vez que
+  esse padrão custa tempo — antes foi a importação que gravou zero e pintou
+  de verde. Corolário: **coluna nova num `select` que a tela depende é
+  risco**; o detalhe cosmético (`nuncaComecou`) foi para uma consulta
+  separada e tolerante, decidido no servidor, e a tela não recebe mais os
+  ids do Stripe.
 - **Pagamento PARCIAL é aceito em qualquer forma.** O gatilho
   `atualiza_saldo_da_fatura` (agora versionado em
   `sql/gatilho-saldo-da-fatura-v1.sql`) não valida valor: recalcula
