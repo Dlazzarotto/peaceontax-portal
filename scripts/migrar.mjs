@@ -14,13 +14,24 @@
 //                          (ou SUPABASE_PROJECT_REF) → usa a API de gestão, por
 //                          HTTPS. Serve onde a porta do Postgres é bloqueada.
 //
-//   NÃO existe modo "só SUPABASE_PROJECT_REF". Já esteve escrito aqui que o
-//   proxy do Claude Code anexaria o Bearer na saída, deixando o token fora da
-//   sessão. Não anexa: o proxy daquele ambiente é só de TLS e roteamento, e o
-//   pedido saía SEM cabeçalho de autorização — a Supabase respondia 401 e a
-//   mensagem não dizia o motivo, então parecia token revogado. Sem
-//   SUPABASE_ACCESS_TOKEN ou SUPABASE_DB_URL no ambiente, não há como aplicar
-//   daqui: a migração vai à mão no SQL Editor e depois --registrar anota.
+//   NÃO existe modo "só SUPABASE_PROJECT_REF": ele diz em qual projeto mexer,
+//   não quem está mexendo.
+//
+//   DE DENTRO DO CLAUDE CODE NA NUVEM, NADA DISSO FUNCIONA — está medido:
+//     - o proxy de saída daquele ambiente MEXE no cabeçalho Authorization.
+//       Para api.github.com ele substitui pela credencial dele (um pedido sem
+//       cabeçalho e um com token errado voltam os dois autenticados). Para
+//       api.supabase.com o cabeçalho não chega: um token COMPROVADAMENTE
+//       válido — que lista os projetos da máquina do sócio — responde 401 ali.
+//     - psql também não: a porta 5432 é inalcançável, o proxy só faz
+//       HTTP CONNECT.
+//   Ou seja: pôr o token no ambiente não adianta, e criar outro token menos
+//   ainda. De lá, a migração vai à mão no SQL Editor; --registrar anota depois
+//   (de uma máquina que alcance o banco).
+//
+//   O sintoma engana: a Supabase responde o mesmo `401 {"message":
+//   "Unauthorized"}` para token ausente, inválido e revogado. Foi isso que
+//   fez procurar no token o que era do ambiente.
 //
 // Cada arquivo roda inteiro, na ordem em que foi passado. Os arquivos de sql/
 // são idempotentes por regra do projeto, então repetir não estraga — mas o
