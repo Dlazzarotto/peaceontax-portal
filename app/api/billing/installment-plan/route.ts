@@ -85,12 +85,14 @@ export async function GET() {
   const perms = await permissoesFinanceiro(auth.userId)
   const db = serviceDb()
 
-  const [{ data: planos }, { data: faturas }] = await Promise.all([
+  // CONFERIR O ERRO NÃO É OPCIONAL. Antes o erro desta consulta era
+  // ignorado e `planos` vinha null: a lista saía vazia e a tela dizia
+  // "nenhuma fatura parcelada ainda". Consulta que falha tem de gritar, não
+  // devolver lista vazia — já se perdeu tempo procurando parcelamento que
+  // existia e não aparecia.
+  const [{ data: planos, error: errPlanos }, { data: faturas, error: errFaturas }] = await Promise.all([
     db.from('payment_plans')
-      // stripe_subscription_id/schedule_id: a tela precisa saber se o plano
-      // chegou a virar cobrança de verdade, para o cancelamento dizer a
-      // verdade em vez de falar de um débito que nunca existiu.
-      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, stripe_subscription_id, stripe_schedule_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
+      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
       .eq('kind', 'installment')
       .not('invoice_id', 'is', null)
       .order('created_at', { ascending: false })
@@ -105,6 +107,32 @@ export async function GET() {
       .limit(200),
   ])
 
+  if (errPlanos) {
+    return NextResponse.json({
+      error: `Não foi possível ler os parcelamentos: ${errPlanos.message}`,
+    }, { status: 500 })
+  }
+  if (errFaturas) {
+    return NextResponse.json({
+      error: `Não foi possível ler as faturas: ${errFaturas.message}`,
+    }, { status: 500 })
+  }
+
+  // Se o plano chegou a virar cobrança de verdade no Stripe. Consulta
+  // SEPARADA e tolerante de propósito: é um detalhe de texto do modal
+  // ("encerrar proposta" x "cancelar parcelamento"), e não pode ser o motivo
+  // de a lista inteira desaparecer — foi o que aconteceu quando estas duas
+  // colunas entraram no select principal.
+  const comCobranca = new Set<string>()
+  if ((planos || []).length) {
+    const { data: stripeIds } = await db.from('payment_plans')
+      .select('id, stripe_subscription_id, stripe_schedule_id')
+      .in('id', (planos || []).map((p: any) => p.id))
+    for (const p of (stripeIds || []) as any[]) {
+      if (p.stripe_subscription_id || p.stripe_schedule_id) comCobranca.add(p.id)
+    }
+  }
+
   // Fatura que já tem parcelamento vivo sai da lista de elegíveis
   const VIVOS = ['draft', 'awaiting_entry', 'awaiting_setup', 'active', 'payment_failed']
   const ocupadas = new Set(
@@ -117,6 +145,10 @@ export async function GET() {
       ...p,
       cliente: p.clients?.business_name || p.clients?.name || '—',
       numero: p.invoices?.number || '—',
+      // Decidido no servidor: a tela não precisa adivinhar nem receber os
+      // ids do Stripe para saber a diferença.
+      cobrandoNoStripe: comCobranca.has(p.id),
+      nuncaComecou: Number(p.paid_installments || 0) === 0 && !comCobranca.has(p.id),
     })),
     invoices: (faturas || [])
       .map((i: any) => ({

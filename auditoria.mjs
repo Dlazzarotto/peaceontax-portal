@@ -422,9 +422,14 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
          'mandar procurar o botao em outra aba e onde a equipe travava')
   checar('A tela abre o cancelamento na propria recusa', 'app/dashboard/billing/page.tsx',
          /d\?\.planoExistente/, 'a recusa tem de oferecer o caminho, nao so o texto')
-  checar('A tela sabe se o plano chegou a cobrar', 'app/dashboard/billing/page.tsx',
-         /!pl\?\.stripe_subscription_id && !pl\?\.stripe_schedule_id/,
+  // Quem decide e o SERVIDOR: a rota devolve `nuncaComecou` e a tela obedece.
+  // Este invariante pedia o contrario (a tela lendo os ids do Stripe) e foi
+  // justamente esse select que fez a lista de parcelamentos desaparecer.
+  checar('A rota decide se o plano chegou a cobrar', arq,
+         /nuncaComecou: Number\(p\.paid_installments/,
          'sem isso o modal fala de um debito que nunca existiu')
+  checar('A tela obedece o servidor', 'app/dashboard/billing/page.tsx',
+         /!!pl\?\.nuncaComecou/, 'a tela voltou a decidir por conta propria')
 }
 
 
@@ -437,6 +442,20 @@ checar('O gatilho do saldo esta versionado', 'sql/gatilho-saldo-da-fatura-v1.sql
 recusar('Ninguem afirma que o banco recusa parcial', 'app/api/billing/payments/route.ts',
         /banco recusa valor parcial/,
         'o gatilho nao valida nada; pagamento parcial e aceito em qualquer forma')
+
+
+titulo('CONSULTA QUE FALHA NAO PODE VIRAR LISTA VAZIA')
+// Duas vezes o mesmo padrao custou tempo: a importacao que gravou zero e
+// pintou de verde, e a aba de parcelamentos que dizia "nenhum" quando a
+// consulta tinha falhado. `[]` e verdadeiro em JS; erro tem de vir primeiro.
+checar('O GET dos parcelamentos confere o erro', 'app/api/billing/installment-plan/route.ts',
+       /error: errPlanos/, 'erro ignorado devolve lista vazia e a tela diz "nenhum"')
+checar('A tela trata o erro ANTES da lista', 'app/dashboard/billing/page.tsx',
+       /if \(d\?\.error\) \{ setMsg\(`⚠️ \$\{d\.error\}`\); return \}/,
+       'checar d.plans primeiro engole o erro, porque lista vazia e truthy')
+recusar('A tela nao pede os ids do Stripe na lista', 'app/dashboard/billing/page.tsx',
+        /pl\?\.stripe_subscription_id/,
+        'pedir essas colunas no select principal foi o que fez a lista desaparecer')
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
