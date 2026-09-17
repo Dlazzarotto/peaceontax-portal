@@ -206,6 +206,12 @@ export default function BillingPage() {
     return { saldo: f.saldo, entrada, pct: e.pct, restante, linhas }
   })()
 
+  // Plano que nasceu e nunca saiu do lugar: nada cobrado, nada a parar no
+  // Stripe. Desfazer isso não é desfazer uma cobrança, e a tela não deve
+  // falar como se fosse.
+  const nuncaComecou = (pl: any) =>
+    Number(pl?.paid_installments || 0) === 0 && !pl?.stripe_subscription_id && !pl?.stripe_schedule_id
+
   const criarParcelamento = async () => {
     if (!pcFatura || !pcPrimeira) { setMsg('⚠️ Escolha a fatura e a data da primeira parcela.'); return }
     setBusy(true)
@@ -235,7 +241,16 @@ export default function BillingPage() {
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
-    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    if (!d?.ok) {
+      setMsg(`⚠️ ${d?.error}`)
+      // A fatura já tem plano: em vez de mandar procurar o botão em outra
+      // aba, abre o cancelamento aqui. Era aqui que a equipe travava.
+      if (d?.planoExistente) {
+        const pl = (pcDados.plans || []).find((x: any) => x.id === d.planoExistente.id)
+        if (pl) { setPcCancelar(pl); setPcMotivo(''); setPcSenha('') }
+      }
+      return
+    }
     setMsg(`✓ ${d.message}`); setCDesc(''); setCValor(''); loadPlanos()
   }
 
@@ -1109,13 +1124,20 @@ export default function BillingPage() {
           <div onClick={e => e.stopPropagation()}
             style={{ background: '#fff', borderRadius: 16, width: '100%', maxWidth: 460, padding: '20px 22px' }}>
             <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
-              Cancelar parcelamento de {pcCancelar.numero}
+              {nuncaComecou(pcCancelar) ? 'Encerrar proposta de' : 'Cancelar parcelamento de'} {pcCancelar.numero}
             </h3>
             <p style={{ fontSize: 13, color: '#4A5A70', margin: '0 0 14px', lineHeight: 1.6 }}>
-              O débito automático para de cobrar e as parcelas que faltam são
-              canceladas. <strong>A fatura continua em aberto com o saldo</strong> —
-              o que o cliente já pagou fica pago. Para devolver dinheiro ao
-              cliente, o caminho é o estorno, não este.
+              {nuncaComecou(pcCancelar) ? (
+                <>O cliente nunca cadastrou o débito: <strong>nada foi cobrado</strong> e
+                não há nada a parar no Stripe. O link que ele recebeu deixa de
+                valer e a fatura segue em aberto — depois disso você pode
+                criar o acordo novo.</>
+              ) : (
+                <>O débito automático para de cobrar e as parcelas que faltam são
+                canceladas. <strong>A fatura continua em aberto com o saldo</strong> —
+                o que o cliente já pagou fica pago. Para devolver dinheiro ao
+                cliente, o caminho é o estorno, não este.</>
+              )}
             </p>
             <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F4', borderRadius: 10,
               padding: '10px 12px', marginBottom: 14, fontSize: 13, color: '#4A5A70' }}>
@@ -1142,7 +1164,8 @@ export default function BillingPage() {
               <button onClick={cancelarParcelamento}
                 disabled={busy || pcMotivo.trim().length < 5 || !pcSenha}
                 style={btn('#B02020', busy || pcMotivo.trim().length < 5 || !pcSenha)}>
-                {busy ? 'Cancelando…' : 'Cancelar parcelamento'}
+                  {busy ? 'Cancelando…'
+                  : nuncaComecou(pcCancelar) ? 'Encerrar proposta' : 'Cancelar parcelamento'}
               </button>
             </div>
           </div>

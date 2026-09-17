@@ -40,6 +40,29 @@ const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100
 
 // avancarData (lib/plans.ts) trata mês curto: ver comentário lá.
 
+const STATUS_TEXTO: Record<string, string> = {
+  draft: 'rascunho', awaiting_entry: 'aguardando a entrada',
+  awaiting_setup: 'aguardando o cliente cadastrar o débito',
+  active: 'em cobrança', payment_failed: 'com parcela recusada',
+  paused: 'pausado',
+}
+
+/**
+ * Plano que nasceu e nunca saiu do lugar: o cliente não cadastrou o débito,
+ * não há assinatura no Stripe e nenhuma parcela foi paga.
+ *
+ * Importa porque desfazer isso NÃO é desfazer uma cobrança: não há nada para
+ * parar no Stripe nem dinheiro a acertar. Tratar os dois casos como o mesmo
+ * fazia a equipe encarar um cancelamento formal para corrigir um acordo que
+ * ainda era só uma proposta — e o cliente receber um aviso de que algo foi
+ * "cancelado" quando nada tinha começado.
+ */
+function planoNuncaComecou(p: any): boolean {
+  return Number(p?.paid_installments || 0) === 0
+    && !p?.stripe_subscription_id
+    && !p?.stripe_schedule_id
+}
+
 /** Cronograma: base para todas, última absorve o centavo da divisão. */
 function montarCronograma(restante: number, n: number, primeira: string, freq: Frequency) {
   const base = Math.floor((restante / n) * 100) / 100
@@ -64,7 +87,10 @@ export async function GET() {
 
   const [{ data: planos }, { data: faturas }] = await Promise.all([
     db.from('payment_plans')
-      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
+      // stripe_subscription_id/schedule_id: a tela precisa saber se o plano
+      // chegou a virar cobrança de verdade, para o cancelamento dizer a
+      // verdade em vez de falar de um débito que nunca existiu.
+      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, stripe_subscription_id, stripe_schedule_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
       .eq('kind', 'installment')
       .not('invoice_id', 'is', null)
       .order('created_at', { ascending: false })
@@ -144,14 +170,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `${inv.number} já está quitada.` }, { status: 409 })
   }
 
-  // Um parcelamento vivo por fatura
+  // Um parcelamento vivo por fatura. A recusa LEVA O PLANO: mandar procurar
+  // o botão em outra aba é o que fazia a equipe travar aqui.
   const { data: existente } = await db.from('payment_plans')
-    .select('id, status').eq('invoice_id', inv.id)
+    .select('id, status, paid_installments, stripe_subscription_id, stripe_schedule_id')
+    .eq('invoice_id', inv.id)
     .in('status', ['draft', 'awaiting_entry', 'awaiting_setup', 'active', 'payment_failed'])
     .limit(1)
   if (existente && existente.length > 0) {
+    const ja = existente[0]
+    const parado = planoNuncaComecou(ja)
     return NextResponse.json({
-      error: `${inv.number} já tem um parcelamento em andamento (${existente[0].status}). Cancele-o antes de criar outro.`,
+      error: parado
+        ? `${inv.number} já tem um parcelamento criado que o cliente ainda não cadastrou. ` +
+          `Cancele-o para refazer o acordo — nada foi cobrado.`
+        : `${inv.number} já tem um parcelamento em andamento (${STATUS_TEXTO[ja.status] || ja.status}). ` +
+          `Cancele-o antes de criar outro.`,
+      planoExistente: { id: ja.id, status: ja.status, nuncaComecou: parado },
     }, { status: 409 })
   }
 
@@ -311,6 +346,10 @@ export async function PATCH(req: NextRequest) {
     .eq('id', plano.invoice_id).maybeSingle()
   if (!inv) return NextResponse.json({ error: 'Fatura do parcelamento não encontrada.' }, { status: 404 })
 
+  // Lido ANTES de encerrar: é o estado em que o plano estava quando a
+  // decisão foi tomada, e é isso que a trilha tem de guardar.
+  const nuncaComecou = planoNuncaComecou(plano)
+
   const r = await encerrarParcelamento(db, stripeClient(), plano, plano.invoice_id, {
     motivo: 'plano_cancelado', performedBy: auth.userId, razao: motivo,
   })
@@ -320,18 +359,29 @@ export async function PATCH(req: NextRequest) {
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'installment_plan_cancelled', performed_by: auth.userId,
     staff_level: perms.nivel, reason: motivo,
-    next: { planId: plano.id, saldoEmAberto: saldo, stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas },
+    next: { planId: plano.id, saldoEmAberto: saldo, nuncaComecou,
+            stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas },
   }).then(() => null, () => null)
 
   // O cliente tinha um acordo e o débito automático dele. Se o acordo acabou,
   // ele precisa saber ANTES de estranhar o débito que não veio.
   const client = (inv as any).clients || {}
   const lang = (client.language || 'en').toLowerCase()
-  const texto = lang === 'pt'
-    ? `📆 O parcelamento da fatura ${inv.number} foi encerrado e o débito automático não será mais cobrado. Saldo em aberto: $${saldo.toFixed(2)}. Fale com a nossa equipe para combinar o pagamento.`
-    : lang === 'es'
-    ? `📆 El plan de cuotas de la factura ${inv.number} fue cancelado y el débito automático ya no se cobrará. Saldo pendiente: $${saldo.toFixed(2)}. Hable con nuestro equipo para acordar el pago.`
-    : `📆 The installment plan for invoice ${inv.number} was ended and automatic debit will no longer be charged. Outstanding balance: $${saldo.toFixed(2)}. Please contact our team to arrange payment.`
+  // Quem nunca cadastrou o débito não teve nada cobrado: dizer que "o débito
+  // automático não será mais cobrado" assusta sem motivo e faz o cliente
+  // procurar uma cobrança que nunca existiu. O aviso é outro, e o essencial
+  // é o link antigo não servir mais.
+  const texto = nuncaComecou
+    ? (lang === 'pt'
+      ? `📆 A proposta de parcelamento da fatura ${inv.number} foi encerrada — o link para cadastrar o débito não vale mais, e nada foi cobrado. Saldo em aberto: $${saldo.toFixed(2)}. Fale com a nossa equipe para combinar o pagamento.`
+      : lang === 'es'
+      ? `📆 La propuesta de cuotas de la factura ${inv.number} fue cancelada — el enlace para registrar el débito ya no es válido y no se cobró nada. Saldo pendiente: $${saldo.toFixed(2)}. Hable con nuestro equipo para acordar el pago.`
+      : `📆 The installment proposal for invoice ${inv.number} was withdrawn — the link to set up automatic debit no longer works, and nothing was charged. Outstanding balance: $${saldo.toFixed(2)}. Please contact our team to arrange payment.`)
+    : (lang === 'pt'
+      ? `📆 O parcelamento da fatura ${inv.number} foi encerrado e o débito automático não será mais cobrado. Saldo em aberto: $${saldo.toFixed(2)}. Fale com a nossa equipe para combinar o pagamento.`
+      : lang === 'es'
+      ? `📆 El plan de cuotas de la factura ${inv.number} fue cancelado y el débito automático ya no se cobrará. Saldo pendiente: $${saldo.toFixed(2)}. Hable con nuestro equipo para acordar el pago.`
+      : `📆 The installment plan for invoice ${inv.number} was ended and automatic debit will no longer be charged. Outstanding balance: $${saldo.toFixed(2)}. Please contact our team to arrange payment.`)
   await avisarNoPortal(db, plano.client_id, texto)
   if (client.email) {
     await enviarEmail(client.email,
@@ -346,6 +396,10 @@ export async function PATCH(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     saldo,
-    message: `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
+    nuncaComecou,
+    message: nuncaComecou
+      ? `Proposta de parcelamento de ${inv.number} encerrada — nada havia sido cobrado. ` +
+        `Saldo em aberto: $${saldo.toFixed(2)}. Pode criar o novo acordo.`
+      : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
   })
 }

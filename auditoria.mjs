@@ -416,6 +416,15 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
   exige('Fica na trilha da fatura', /installment_plan_cancelled/, 'sem rastro na fatura')
   exige('Plano ja encerrado nao cancela de novo', /'cancelled', 'completed'/,
         'rodaria de novo e tentaria cancelar no Stripe algo que nao existe')
+  exige('O aviso ao cliente separa proposta de cobranca', /nuncaComecou\s*$/m,
+        'dizer que o debito "nao sera mais cobrado" a quem nunca foi cobrado assusta sem motivo')
+  checar('A recusa do POST leva o plano existente', arq, /planoExistente: \{ id: ja\.id/,
+         'mandar procurar o botao em outra aba e onde a equipe travava')
+  checar('A tela abre o cancelamento na propria recusa', 'app/dashboard/billing/page.tsx',
+         /d\?\.planoExistente/, 'a recusa tem de oferecer o caminho, nao so o texto')
+  checar('A tela sabe se o plano chegou a cobrar', 'app/dashboard/billing/page.tsx',
+         /!pl\?\.stripe_subscription_id && !pl\?\.stripe_schedule_id/,
+         'sem isso o modal fala de um debito que nunca existiu')
 }
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')

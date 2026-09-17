@@ -193,7 +193,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   débito, anula as invoices de parcela abertas e DEIXA A FATURA EM ABERTO com
   o saldo. O que já foi pago fica pago — cancelar nunca desfaz recebimento,
   isso é estorno. Pede `cancelar` + senha + motivo, e o cliente é avisado:
-  ele tinha um acordo e um débito automático.
+  ele tinha um acordo e um débito automático. **Proposta × cobrança são
+  casos diferentes**: plano em `awaiting_*` sem parcela paga e sem assinatura
+  no Stripe nunca saiu do lugar — nada a parar, nada cobrado. O aviso ao
+  cliente é outro (o link deixou de valer), senão ele procura uma cobrança
+  que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
+  abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
 - **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
   `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
   no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
