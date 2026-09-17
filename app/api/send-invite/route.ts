@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
+import { getAuth } from '@/lib/api-auth'
 
 const PORTAL_URL  = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME   = 'Peace on Tax'
@@ -38,12 +39,22 @@ function buildEmailHTML(vars: { clientEmail: string; assignee: string; inviteUrl
 
 export async function POST(req: NextRequest) {
   try {
+    // Convite sai em nome da firma: só a equipe manda. O middleware garantia
+    // apenas que havia sessão — um cliente logado no portal podia convidar
+    // quem quisesse como se fosse a Peace on Tax.
+    const auth = await getAuth()
+    if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
     const body = await req.json()
-    const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy } = body
+    const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy, clientId } = body
     if (!clientEmail) return NextResponse.json({ error: 'Email is required' }, { status: 400 })
 
     const db = supabaseAdmin()
     const { data: invite, error } = await db.from('client_invitations').insert({
+      // De quem é este convite. Sem isto, aceitar criava um cadastro NOVO em
+      // vez de completar o que já existe — e quem foi importado ficava com
+      // dois cadastros, um sem login e outro com, e o histórico partido.
+      client_id:    clientId || null,
       client_name:  clientName || clientEmail.split('@')[0],
       client_email: clientEmail,
       client_type:  clientType || 'individual',

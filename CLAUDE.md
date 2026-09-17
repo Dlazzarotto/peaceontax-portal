@@ -173,6 +173,31 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cadastros concluídos criavam duas assinaturas e a primeira cobrava para
   sempre, invisível. Cobrar de novo (`billing/recharge`) leva
   `idempotencyKey`: `invoices.pay` não é idempotente sozinho.
+- **Cadastro de cliente é `lib/novo-cliente.ts`.** O corpo do pedido nunca vai
+  direto para o insert — só os campos da lista (antes `user_id` entrava, e ele
+  amarra o cadastro a um login). Cliente com e-mail recebe o **convite do
+  portal ao ser criado**; dispensar é explícito. Cadastrar cabe dentro da
+  emissão da fatura (botão no Financeiro), e e-mail repetido é recusado
+  apontando o cadastro existente.
+- **Clientes entram por TIPO, não num quadro só.** `/clients` mostra dois
+  cartões (Empresas · Pessoa física) e o quadro abre em `?tipo=…`. As seis
+  etapas viram três situações em `lib/clientes-grupos.ts` (esperando o
+  cliente · com a equipe · concluído), e etapa desconhecida conta como
+  pendente. A contagem dos cartões é feita no banco (`?resumo=1`): com quase
+  mil cadastros, contar no navegador transfere a carteira inteira.
+- **Aceitar convite COMPLETA o cadastro existente.** `client_invitations.client_id`
+  diz de quem é o convite; o aceite atualiza aquele cliente e só insere quando
+  não há nenhum. Antes inseria sempre — convidar quem veio da importação
+  criava a mesma pessoa duas vezes, uma com login e outra sem.
+- **Cliente repetido é NOME igual, não e-mail igual.** Na carteira real, 56
+  e-mails servem a mais de um cadastro e só um é duplicata: o resto é o dono e
+  a empresa dele no mesmo endereço. Recusar por e-mail barrava 55 cadastros
+  legítimos. A chave é `chaveDoNome` (`lib/import-clientes.ts`), que ignora
+  maiúscula, acento e pontuação e olha também a razão social; e-mail
+  compartilhado passa com aviso, porque o portal atende um cadastro só.
+- **Importar a carteira (`/api/clients/import`) mostra o plano antes de
+  gravar e NUNCA envia convite** — quase mil e-mails de uma vez. Gerente ou
+  sócio.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
