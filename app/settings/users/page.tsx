@@ -1,14 +1,29 @@
 'use client'
 import { useState, useEffect } from 'react'
 
+// O texto de cada nível descreve O QUE O SISTEMA FAZ, conferido contra a
+// matriz da seção 3 da ESPECIFICACAO e contra lib/api-auth.ts.
+//
+// O que estava escrito aqui antes não era verdade:
+//  - "Staff — view and edit ASSIGNED clients only": a coluna `assignee` é só
+//    rótulo (lista, ficha, e-mail de convite). Nenhuma verificação de acesso
+//    a lê — canAccessClient faz `if (auth.isStaff) return true`. Assistente
+//    enxerga a carteira inteira. Prometer restrição que não existe é pior do
+//    que não prometer: é com esta tela que se documenta controle de acesso.
+//  - "Manager — cannot manage users": verdade, mas o limite que pesa é não
+//    ver faturamento consolidado, e isso não estava escrito.
+//  - Admin e Owner são o MESMO nível (nivelDoPapel manda os dois para
+//    'owner'). Ficam os dois porque há convites antigos com 'admin', mas a
+//    tela agora diz que são iguais em vez de fingir uma hierarquia.
 const ROLES = [
-  { value:'admin',   label:'Admin',   color:'#b02020', bg:'#fdf0f0', desc:'Full access — manage users, settings, all clients' },
-  { value:'manager', label:'Manager', color:'#5a1a8a', bg:'#f0e8ff', desc:'Manage clients, documents, invitations. Cannot manage users.' },
-  { value:'staff',   label:'Staff',   color:'#1a3560', bg:'#e8f0ff', desc:'View and edit assigned clients only' },
-  { value:'firm',    label:'Owner',   color:'#2D3278', bg:'#e8eaff', desc:'Firm owner — same as Admin' },
+  { value:'firm',    label:'Owner',   color:'#2D3278', bg:'#e8eaff', desc:'Everything: team, settings, all clients, payments, revenue reports' },
+  { value:'admin',   label:'Admin',   color:'#b02020', bg:'#fdf0f0', desc:'Identical to Owner — same powers, different title' },
+  { value:'manager', label:'Manager', color:'#5a1a8a', bg:'#f0e8ff', desc:'All clients; records payments and refunds. No team management, no revenue reports' },
+  { value:'staff',   label:'Staff',   color:'#1a3560', bg:'#e8f0ff', desc:'All clients; issues invoices. Cannot record payments, refund, or see reports' },
 ]
 
-const getRoleStyle = (role: string) => ROLES.find(r => r.value === role) || ROLES[2]
+// Papel desconhecido mostra o nivel mais restrito, nao o mais alto.
+const getRoleStyle = (role: string) => ROLES.find(r => r.value === role) || ROLES.find(r => r.value === 'staff')!
 
 export default function UsersPage() {
   const [users,       setUsers]       = useState<any[]>([])

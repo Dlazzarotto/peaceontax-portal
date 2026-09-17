@@ -109,6 +109,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
   `manager`, `junior`. Quem não está na tabela é `junior`. São duas
   perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
+- **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
+  `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
+  controle de acesso. A tela de equipe prometia "Staff: assigned clients
+  only" — nunca foi verdade, o texto foi corrigido. Restringir de fato é
+  decisão do sócio, pendente. O texto de cada nível em
+  `app/settings/users/page.tsx` descreve o que o sistema FAZ (matriz da
+  seção 3): mudou a matriz, muda o texto.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).

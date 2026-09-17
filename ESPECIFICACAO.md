@@ -53,6 +53,15 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 
 O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
 
+**Dentro da firma, todo mundo vê todos os clientes.** `canAccessClient` faz
+`if (auth.isStaff) return true`. A coluna `clients.assignee` é rótulo de
+CRM — aparece na lista, na ficha e no e-mail de convite —, **não** é
+controle de acesso. A tela de equipe chegou a prometer "Staff: view and
+edit assigned clients only", o que nunca foi verdade; o texto foi
+corrigido para descrever o que o sistema faz. Restringir assistente aos
+clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
+temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
+
 ### 3.1 Duas perguntas diferentes: a porta e o poder
 
 São decisões separadas e não podem ser confundidas:
