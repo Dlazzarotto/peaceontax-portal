@@ -26,6 +26,8 @@ import { permissoesDe } from '@/lib/permissoes'
 export interface PermissoesFinanceiro {
   nivel: StaffLevel
   criar: boolean          // emitir estimate/invoice
+  enviar: boolean         // tirar do rascunho e mandar ao cliente
+  verTodasFaturas: boolean // sem isto, só as próprias faturas do dia
   receber: boolean        // dar baixa em pagamento
   duplicar: boolean       // copiar uma fatura já emitida
   editar: boolean         // alterar uma fatura já criada
@@ -34,6 +36,7 @@ export interface PermissoesFinanceiro {
   cancelar: boolean
   apagar: boolean
   darDesconto: boolean
+  editarCliente: boolean  // nome, e-mail, telefone, endereço, EIN
   verRelatorios: boolean  // relatórios de faturamento
   verTotais: boolean      // números consolidados do negócio
 }
@@ -58,6 +61,7 @@ export const RECUSA = {
   totais: 'Os totais de faturamento exigem autorização do sócio.',
   relatorios: 'Relatórios de faturamento exigem autorização do sócio.',
   receber: 'Dar baixa em pagamento exige autorização — fale com o sócio.',
+  enviar: 'Enviar a fatura ao cliente exige autorização. O rascunho ficou salvo — peça a um gerente para enviar.',
   duplicar: 'Duplicar fatura emitida exige autorização.',
   cancelar: 'Cancelar fatura exige autorização.',
   editar: 'Editar fatura exige autorização.',

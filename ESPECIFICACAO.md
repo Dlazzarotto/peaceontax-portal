@@ -77,9 +77,44 @@ pura e testada):
 3. o **sócio é imune** — concessão negativa não o alcança. Tirar poder de
    sócio se faz mudando o nível, à vista, não por uma chave solta.
 
-As dez chaves: `criar · receber · editar · duplicar · cancelar ·
-darDesconto · estornar · apagar · verRelatorios · verTotais`. A mesma lista
-está no `CHECK` da migração, e a auditoria falha se as duas divergirem.
+As treze chaves: `criar · enviar · verTodasFaturas · receber · editar ·
+duplicar · cancelar · darDesconto · estornar · apagar · editarCliente ·
+verRelatorios · verTotais`. A mesma lista está no `CHECK` da migração mais
+recente, e a auditoria falha se as duas divergirem.
+
+**Documento nasce rascunho; enviar é outra decisão.** Preencher e mandar ao
+cliente são passos separados de propósito: o assistente preenche, alguém
+confere e envia. Mas quem já pode enviar não precisa criar, procurar na
+lista e clicar Enviar — o botão **Criar e enviar** faz os dois num clique,
+com a mesma conferência de permissão no servidor. Quem não pode enviar vê
+apenas **Salvar rascunho**, e o rascunho fica salvo para um gerente enviar.
+
+Enviar tem chave própria (`enviar`). Estava preso a `cancelar` no código:
+enquanto tudo era decidido por nível dava no mesmo, mas com autorização
+individual soltar `cancelar` passaria a soltar o envio junto, calado, e
+retirar `cancelar` tiraria o envio sem ninguém entender por quê.
+
+**A lista de faturas é do dia, e é de quem emitiu.** Sem `verTodasFaturas`,
+a pessoa vê apenas as faturas que ela mesma emitiu **hoje**; amanhã a lista
+recomeça. Quem emite não precisa da carteira inteira à vista para
+trabalhar. O corte do dia é o do **escritório** (`lib/dia-da-firma.ts`,
+`America/New_York`), nunca o do servidor: às 20h de Malden já é o dia
+seguinte em UTC, e a lista zeraria no meio do expediente da temporada — com
+o horário de verão mudando o ponto de corte duas vezes por ano. O `?id=` da
+fatura respeita o mesmo escopo: filtrar a lista e deixar o id aberto seria
+fechar a porta e esquecer a janela.
+
+**Dado de cliente tem uma porta só.** Nome, e-mail, telefone, endereço e
+EIN mudam apenas por `/api/clients/profile`, que exige `editarCliente`,
+**senha da própria pessoa** e motivo, e grava `previous_state`/`new_state`
+em `client_audit`. A ficha (`/api/clients/[id]` PATCH) move só o **fluxo** —
+etapa, responsável, anotação —, que é trabalho do dia e não pede senha,
+mas fica registrado. Antes as duas rotas aceitavam os mesmos campos e só
+uma tinha guarda: dava para trocar o e-mail de um cliente — e com ele o
+acesso ao portal dele — sem senha, sem motivo e sem rastro.
+
+Aqui era PIN de gerente e virou **senha**, como manda o princípio 3. Dois
+mecanismos para a mesma coisa é como se perde a conta de quem pode o quê.
 
 **A trilha é a tabela.** `staff_grants` é *append-only*: cada decisão grava
 uma linha com quem autorizou, quando, o motivo (obrigatório) e o conflito

@@ -19,6 +19,9 @@ const eq = (n: string, a: any, b: any) => {
 // ── A base de cada nível, sem concessão nenhuma ──
 const j = padraoDoNivel('junior')
 eq('assistente emite',           j.criar, true)
+eq('assistente NAO envia ao cliente',         j.enviar, false)
+eq('assistente NAO ve as faturas dos outros', j.verTodasFaturas, false)
+eq('assistente NAO edita cadastro',           j.editarCliente, false)
 eq('assistente NAO recebe',      j.receber, false)
 eq('assistente NAO estorna',     j.estornar, false)
 eq('assistente NAO ve totais',   j.verTotais, false)
@@ -26,6 +29,9 @@ eq('assistente NAO ve totais',   j.verTotais, false)
 const m = padraoDoNivel('manager')
 eq('gerente recebe',             m.receber, true)
 eq('gerente estorna',            m.estornar, true)
+eq('gerente envia ao cliente',    m.enviar, true)
+eq('gerente ve todas as faturas', m.verTodasFaturas, true)
+eq('gerente edita cadastro',      m.editarCliente, true)
 eq('gerente NAO ve relatorios',  m.verRelatorios, false)
 eq('gerente NAO ve totais',      m.verTotais, false)
 
@@ -44,7 +50,42 @@ eq('socio ve relatorios',        o.verRelatorios, true)
   eq('balcao: NAO cancela',           c.cancelar, false)
   eq('balcao: NAO apaga',             c.apagar, false)
   eq('balcao: NAO da desconto',       c.darDesconto, false)
+  eq('balcao: ve so as proprias faturas do dia', c.verTodasFaturas, false)
+  eq('balcao: NAO edita cadastro',    c.editarCliente, false)
 }
+
+// ── Enviar nao pega mais carona em cancelar ──
+// Eram a mesma trava no codigo: soltar uma soltava a outra, calada.
+{
+  const so = permissoesDe('junior', { enviar: true })
+  eq('autorizado a enviar: envia',        so.enviar, true)
+  eq('autorizado a enviar: NAO cancela',  so.cancelar, false)
+  eq('autorizado a enviar: NAO apaga',    so.apagar, false)
+  const semCancelar = permissoesDe('manager', { cancelar: false })
+  eq('gerente sem cancelar CONTINUA enviando', semCancelar.enviar, true)
+  const semEnviar = permissoesDe('manager', { enviar: false })
+  eq('gerente sem enviar CONTINUA cancelando', semEnviar.cancelar, true)
+}
+
+// ── Soltar a lista de faturas sem soltar mais nada ──
+{
+  const c = permissoesDe('junior', { verTodasFaturas: true })
+  eq('lista solta: ve todas',        c.verTodasFaturas, true)
+  eq('lista solta: NAO recebe',      c.receber, false)
+  eq('lista solta: NAO ve totais',   c.verTotais, false)
+  eq('lista solta: NAO edita cadastro', c.editarCliente, false)
+}
+
+// ── Editar cadastro do cliente, isolado ──
+{
+  const c = permissoesDe('junior', { editarCliente: true })
+  eq('cadastro solto: edita',        c.editarCliente, true)
+  eq('cadastro solto: NAO recebe',   c.receber, false)
+  eq('cadastro solto: nao ganha lista', c.verTodasFaturas, false)
+}
+// Retirar de um gerente tambem funciona
+eq('gerente sem editar cadastro',
+   permissoesDe('manager', { editarCliente: false }).editarCliente, false)
 
 // ── Retirar a autorizacao depois ──
 eq('autorizacao retirada volta ao nivel',
@@ -117,8 +158,8 @@ eq('os dois lados',
 // ── A lista de chaves nao pode divergir do banco em silencio ──
 // O check do SQL (staff_grants_chave_ck) lista exatamente estas.
 eq('as chaves sao estas', [...CHAVES], [
-  'criar','receber','editar','duplicar','cancelar',
-  'darDesconto','estornar','apagar','verRelatorios','verTotais',
+  'criar','enviar','verTodasFaturas','receber','editar','duplicar','cancelar',
+  'darDesconto','estornar','apagar','editarCliente','verRelatorios','verTotais',
 ])
 eq('toda chave tem titulo e descricao',
    PERMISSOES.every(p => p.titulo.length > 3 && p.descricao.length > 5), true)

@@ -2,6 +2,11 @@
 // ProfileEditor — edição de dados de contato do cliente pela equipe
 // Campos sensíveis (SSN/ITIN, nascimento) NÃO aparecem aqui — só o próprio cliente edita.
 // Ativar/desativar e reenvio de acesso sempre exigem motivo.
+//
+// SALVAR PEDE MOTIVO E SENHA. Dado de cliente é o que a firma usa para
+// alcançar a pessoa — trocar o e-mail aqui troca o acesso ao portal dela.
+// Quem pode editar é decidido no servidor (autorização `editarCliente`);
+// aqui só se antecipa o pedido para o erro não vir depois de preencher tudo.
 
 import { useState } from 'react'
 
@@ -30,6 +35,10 @@ export default function ProfileEditor({ client, onSaved }: Props) {
 
   const [saving, setSaving]   = useState(false)
   const [msg, setMsg]         = useState('')
+  // Motivo e senha da própria pessoa, exigidos pela rota a cada gravação.
+  // Não sobram em tela depois de salvar.
+  const [motivoEdicao, setMotivoEdicao] = useState('')
+  const [senhaEdicao, setSenhaEdicao]   = useState('')
 
   // Modais
   const [statusModal, setStatusModal] = useState(false)   // ativar/desativar
@@ -51,25 +60,36 @@ export default function ProfileEditor({ client, onSaved }: Props) {
       body: JSON.stringify({
         clientId: client.id,
         fields: { ...f, sms_phone: smsPhone },
+        reason: motivoEdicao,
+        password: senhaEdicao,
         // Só manda o consentimento quando mudou — evita reescrever a trilha à toa
-        ...(smsConsent !== consentOriginal ? { smsConsent, reason: smsMotivo } : {}),
+        // O consentimento tem justificativa PRÓPRIA: é ela que vai para o
+        // log permanente que sustenta a autorização numa disputa.
+        ...(smsConsent !== consentOriginal ? { smsConsent, consentReason: smsMotivo } : {}),
       }),
     })
     const d = await r.json()
     setMsg(d.ok ? `✓ Dados atualizados.${d.aviso ? ' ' + d.aviso : ''}` : `Erro: ${d.error}`)
-    if (d.ok) onSaved()
+    // A senha não fica na tela em nenhum dos dois casos.
+    setSenhaEdicao('')
+    if (d.ok) { setMotivoEdicao(''); onSaved() }
     setSaving(false)
   }
 
   const toggleStatus = async () => {
     if (!reason.trim()) { setMsg('Motivo é obrigatório.'); return }
+    if (!senhaEdicao) { setMsg('Confirme com a sua senha.'); return }
     setProcessing(true); setMsg('')
     const r = await fetch('/api/clients/profile', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ clientId: client.id, fields: { active: !client.active }, reason }),
+      body: JSON.stringify({
+        clientId: client.id, fields: { active: !client.active },
+        reason, password: senhaEdicao,
+      }),
     })
     const d = await r.json()
     setMsg(d.ok ? `✓ Cliente ${client.active ? 'desativado' : 'reativado'}.` : `Erro: ${d.error}`)
+    setSenhaEdicao('')
     if (d.ok) { setStatusModal(false); setReason(''); onSaved() }
     setProcessing(false)
   }
@@ -321,9 +341,32 @@ export default function ProfileEditor({ client, onSaved }: Props) {
           🔒 Dados sensíveis (SSN/ITIN, data de nascimento) são editados somente pelo próprio cliente no portal dele.
         </p>
 
+        <div style={{ background:'#FFF8E8', border:'1.5px solid #F0D8A0', borderRadius:11,
+          padding:'13px 15px', marginBottom:14 }}>
+          <div style={{ fontSize:12.5, fontWeight:800, color:'#7A5A10', marginBottom:4 }}>
+            🔐 Alterar cadastro pede motivo e senha
+          </div>
+          <p style={{ fontSize:12, color:'#7A5A10', margin:'0 0 10px', lineHeight:1.55 }}>
+            O motivo fica na ficha do cliente, junto com o que mudou e quem mudou.
+            Trocar o e-mail aqui troca o acesso do cliente ao portal.
+          </p>
+          <input value={motivoEdicao} onChange={e => setMotivoEdicao(e.target.value)}
+            placeholder="Motivo (ex.: cliente informou novo telefone por telefone)"
+            style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #E0C880', borderRadius:8,
+              fontSize:13, boxSizing:'border-box' as const, outline:'none', marginBottom:8 }} />
+          <input type="password" value={senhaEdicao} onChange={e => setSenhaEdicao(e.target.value)}
+            placeholder="Sua senha" autoComplete="new-password"
+            style={{ width:'100%', padding:'9px 12px', border:'1.5px solid #E0C880', borderRadius:8,
+              fontSize:13, boxSizing:'border-box' as const, outline:'none' }} />
+        </div>
+
         <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
-          <button onClick={save} disabled={saving} style={btn('#2D3278', saving)}>
-            {saving ? 'Salvando…' : '💾 Salvar alterações'}
+          <button onClick={save}
+            disabled={saving || motivoEdicao.trim().length < 5 || !senhaEdicao}
+            style={btn('#2D3278', saving || motivoEdicao.trim().length < 5 || !senhaEdicao)}>
+            {saving ? 'Salvando…'
+              : (motivoEdicao.trim().length < 5 || !senhaEdicao) ? 'Preencha motivo e senha'
+              : '💾 Salvar alterações'}
           </button>
           <button onClick={() => { setAccessModal(true); setNewEmail(f.email); setReason(''); setMsg('') }}
             style={{ ...btn('#fff'), color:'#F47B20', border:'1.5px solid #F47B20' }}>
@@ -344,6 +387,7 @@ export default function ProfileEditor({ client, onSaved }: Props) {
             ? 'Cliente inativo some das listas, mas dados e documentos ficam preservados (retenção fiscal).'
             : 'O cliente volta a aparecer nas listas e a receber comunicações.'}
           reason={reason} setReason={setReason}
+          senha={senhaEdicao} setSenha={setSenhaEdicao}
           onCancel={() => setStatusModal(false)} onConfirm={toggleStatus}
           processing={processing} confirmColor={client.active ? '#b02020' : '#1a6b4a'} />
       )}
@@ -367,7 +411,9 @@ export default function ProfileEditor({ client, onSaved }: Props) {
   )
 }
 
-function Modal({ title, subtitle, reason, setReason, onCancel, onConfirm, processing, confirmColor, extra }: any) {
+// `senha`/`setSenha` são opcionais: só as telas que gravam no cadastro do
+// cliente as passam. Sem elas o modal continua sendo o de sempre.
+function Modal({ title, subtitle, reason, setReason, senha, setSenha, onCancel, onConfirm, processing, confirmColor, extra }: any) {
   const input = { width:'100%', padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:14, outline:'none' }
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(15,35,64,0.5)', display:'flex',
@@ -381,15 +427,30 @@ function Modal({ title, subtitle, reason, setReason, onCancel, onConfirm, proces
         </label>
         <textarea value={reason} onChange={(e: any) => setReason(e.target.value)} rows={2}
           style={{ ...input, resize:'vertical', marginBottom:14 }} />
+        {setSenha && (
+          <>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', textTransform:'uppercase', letterSpacing:0.5, marginBottom:4 }}>
+              Sua senha *
+            </label>
+            <input type="password" value={senha || ''} autoComplete="new-password"
+              onChange={(e: any) => setSenha(e.target.value)}
+              style={{ ...input, marginBottom:14 }} />
+          </>
+        )}
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
           <button onClick={onCancel}
             style={{ padding:'9px 16px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:13, fontWeight:700, cursor:'pointer' }}>
             Voltar
           </button>
-          <button onClick={onConfirm} disabled={processing}
-            style={{ padding:'9px 16px', background: processing ? '#e2e8f4' : confirmColor, color: processing ? '#9aaab0' : '#fff', border:'none', borderRadius:9, fontSize:13, fontWeight:700, cursor: processing ? 'wait' : 'pointer' }}>
-            {processing ? 'Processando…' : 'Confirmar'}
-          </button>
+          {(() => {
+            const travado = processing || !reason?.trim() || (!!setSenha && !senha)
+            return (
+              <button onClick={onConfirm} disabled={travado}
+                style={{ padding:'9px 16px', background: travado ? '#e2e8f4' : confirmColor, color: travado ? '#9aaab0' : '#fff', border:'none', borderRadius:9, fontSize:13, fontWeight:700, cursor: processing ? 'wait' : travado ? 'not-allowed' : 'pointer' }}>
+                {processing ? 'Processando…' : 'Confirmar'}
+              </button>
+            )
+          })()}
         </div>
       </div>
     </div>
