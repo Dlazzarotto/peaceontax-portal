@@ -6,8 +6,43 @@ import { createSign } from 'crypto'
 const INTEGRATION_KEY = process.env.DOCUSIGN_INTEGRATION_KEY!
 const USER_ID    = process.env.DOCUSIGN_USER_ID!
 const ACCOUNT_ID = process.env.DOCUSIGN_ACCOUNT_ID!
+// ATENÇÃO: o padrão é o SANDBOX (demo). Sem DOCUSIGN_BASE_PATH e
+// DOCUSIGN_OAUTH_BASE definidos no ambiente, tudo o que é assinado sai com
+// a tarja vermelha "This email is for demonstration purposes only" e NÃO
+// TEM VALIDADE LEGAL — nem o contrato, nem o 8879 que autoriza o e-file
+// perante o IRS. O padrão fica no sandbox de propósito (errar para o lado de
+// não assinar de verdade), mas quem decide é `exigirProducao()`, que RECUSA
+// o envio em demo em vez de produzir assinatura que não vale.
 const BASE_PATH  = process.env.DOCUSIGN_BASE_PATH || 'https://demo.docusign.net/restapi'
 const OAUTH_BASE = process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com'
+
+const PADRAO_DEMO = /(^|\/\/|\.)(account-d\.docusign\.com|demo\.docusign\.net)/
+
+/** 'demo' (sandbox, sem valor legal) ou 'producao'. */
+export function ambienteDocusign(): 'demo' | 'producao' {
+  return PADRAO_DEMO.test(BASE_PATH) || PADRAO_DEMO.test(OAUTH_BASE) ? 'demo' : 'producao'
+}
+
+export const MOTIVO_DEMO =
+  'O DocuSign está no ambiente de TESTE (sandbox): o que for assinado sai com a tarja ' +
+  '"for demonstration purposes only" e não tem validade legal — nem o contrato, nem o ' +
+  'Form 8879 perante o IRS. No Vercel, defina DOCUSIGN_BASE_PATH = https://na3.docusign.net/restapi ' +
+  '(o servidor da sua conta, veja em Settings → Apps and Keys) e ' +
+  'DOCUSIGN_OAUTH_BASE = account.docusign.com, e refaça o deploy. ' +
+  'Para testar de propósito, defina DOCUSIGN_PERMITIR_DEMO=1.'
+
+/**
+ * Recusa o envio quando o DocuSign está no sandbox.
+ *
+ * Coletar assinatura em demo é pior que não coletar: fica parecendo que a
+ * firma tem a autorização do cliente e do contribuinte, e não tem. Quem
+ * precisa testar liga DOCUSIGN_PERMITIR_DEMO=1 e assume o que está fazendo.
+ */
+export function exigirProducao(): { erro: string } | null {
+  if (ambienteDocusign() === 'producao') return null
+  if (process.env.DOCUSIGN_PERMITIR_DEMO === '1') return null
+  return { erro: MOTIVO_DEMO }
+}
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')

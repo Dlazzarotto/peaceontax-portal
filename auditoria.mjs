@@ -507,6 +507,23 @@ checar('A trilha diz se foi codigo ou senha', 'app/api/billing/payments/route.ts
        /aprovadoVia: aprovador\.via/,
        '"aprovado por X" nao diz se X estava presente ou emprestou a senha')
 
+
+titulo('DOCUSIGN: SANDBOX NAO ASSINA DE VERDADE')
+// A tarja vermelha "for demonstration purposes only" no e-mail do cliente
+// mostrou que as variaveis de producao nunca foram definidas: o codigo cai no
+// sandbox por padrao. Assinatura de sandbox nao vale — nem o contrato, nem o
+// 8879 que autoriza o e-file perante o IRS.
+checar('O codigo sabe em que ambiente esta', 'lib/docusign.ts',
+       /export function ambienteDocusign/, 'sem isso ninguem descobre que esta no sandbox')
+checar('E recusa assinar no sandbox', 'lib/docusign.ts',
+       /export function exigirProducao/, 'coletar assinatura sem valor e pior que nao coletar')
+for (const r of ['app/api/signatures/contract/route.ts', 'app/api/signatures/form8879/route.ts'])
+  checar(`${r.split('/')[3]} exige producao`, r, /exigirProducao\(\)/,
+         'a rota voltaria a enviar envelope de sandbox')
+checar('As variaveis do DocuSign estao no .env.example', '.env.example',
+       /DOCUSIGN_BASE_PATH/,
+       'nao estavam documentadas — foi por isso que ninguem definiu e caiu no sandbox')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

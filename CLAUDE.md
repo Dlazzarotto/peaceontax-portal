@@ -346,6 +346,20 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `type_changed`. O tipo muda o portal que o cliente vê, o que o contrato
   exige e — com o assistente restrito a pessoa física — quem na firma vê a
   ficha.
+- **DocuSign em sandbox não assina de verdade.** `DOCUSIGN_BASE_PATH` e
+  `DOCUSIGN_OAUTH_BASE` têm padrão de SANDBOX no código
+  (`demo.docusign.net` / `account-d.docusign.com`). Sem as variáveis de
+  produção no Vercel, todo contrato e todo Form 8879 sai com a tarja
+  "This email is for demonstration purposes only" e **não tem validade
+  legal** — inclusive a autorização de e-file perante o IRS. Aconteceu de
+  verdade: as variáveis não estavam no `.env.example`, então ninguém sabia
+  que existiam. Agora `exigirProducao()` **recusa o envio** em sandbox
+  (`DOCUSIGN_PERMITIR_DEMO=1` libera para teste, de propósito) — coletar
+  assinatura sem valor é pior que não coletar, porque parece que a
+  autorização existe. `app/api/signatures/diag` diz em qual ambiente está.
+  O contrato vai como **HTML** (`fileExtension: 'html'`) e o DocuSign
+  converte; a 8879 vai como PDF. O nome `.html` aparece ao cliente e o
+  conversor não garante o CSS — trocar o contrato por PDF é dívida aberta.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
