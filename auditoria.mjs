@@ -524,6 +524,32 @@ checar('As variaveis do DocuSign estao no .env.example', '.env.example',
        /DOCUSIGN_BASE_PATH/,
        'nao estavam documentadas — foi por isso que ninguem definiu e caiu no sandbox')
 
+
+titulo('ASSISTENTE FICA EM PESSOA FISICA, SEM BAIXAR ARQUIVO')
+// Era `if (auth.isStaff) return true`: toda a equipe via os quase mil
+// cadastros. O socio decidiu que quem atende o balcao fica em pessoa fisica.
+checar('canAccessClient olha o TIPO do cliente', 'lib/api-auth.ts',
+       /data\.type !== "business"/,
+       'sem isso toda a equipe volta a ver a carteira de empresas')
+checar('E consulta a autorizacao verEmpresas', 'lib/api-auth.ts',
+       /verEmpresas/, 'o funil de ~40 rotas precisa decidir isto aqui')
+recusar('canAccessClient nao libera staff de saida', 'lib/api-auth.ts',
+        /if \(auth\.isStaff\) return true;/,
+        'era esta linha que dava a carteira inteira a todo mundo')
+checar('serviceDb mora fora do api-auth', 'lib/service-db.ts',
+       /export function serviceDb/,
+       'api-auth -> staff-perms -> api-auth e ciclo; controle de acesso nao pode depender de ordem de carga')
+checar('A lista de clientes filtra por tipo', 'app/api/clients/route.ts',
+       /TIPOS_VISIVEIS/, 'a lista voltaria a trazer empresas para quem nao pode abri-las')
+checar('Pedir empresas sem autorizacao RECUSA', 'app/api/clients/route.ts',
+       /tipoPedido === 'business' && !perms\.verEmpresas/,
+       'trocar em silencio por pessoa fisica devolve uma lista que nao e a pedida')
+checar('Baixar arquivo exige autorizacao', 'app/api/documents/[id]/route.ts',
+       /baixarArquivo/, 'ver que o documento existe nao e tirar copia do W-2')
+checar('O cartao Empresas segue o servidor', 'app/clients/page.tsx',
+       /tiposVisiveis\.includes\('business'\)/,
+       'a tela nao deve adivinhar o escopo — o servidor e quem conta')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

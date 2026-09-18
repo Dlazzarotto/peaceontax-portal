@@ -22,6 +22,8 @@ eq('assistente emite',           j.criar, true)
 eq('assistente NAO envia ao cliente',         j.enviar, false)
 eq('assistente NAO ve as faturas dos outros', j.verTodasFaturas, false)
 eq('assistente NAO edita cadastro',           j.editarCliente, false)
+eq('assistente NAO atende empresa',           j.verEmpresas, false)
+eq('assistente NAO baixa arquivo',            j.baixarArquivo, false)
 eq('assistente NAO recebe',      j.receber, false)
 eq('assistente NAO estorna',     j.estornar, false)
 eq('assistente NAO ve totais',   j.verTotais, false)
@@ -32,6 +34,8 @@ eq('gerente estorna',            m.estornar, true)
 eq('gerente envia ao cliente',    m.enviar, true)
 eq('gerente ve todas as faturas', m.verTodasFaturas, true)
 eq('gerente edita cadastro',      m.editarCliente, true)
+eq('gerente atende empresa',      m.verEmpresas, true)
+eq('gerente baixa arquivo',       m.baixarArquivo, true)
 eq('gerente NAO ve relatorios',  m.verRelatorios, false)
 eq('gerente NAO ve totais',      m.verTotais, false)
 
@@ -75,6 +79,31 @@ eq('socio ve relatorios',        o.verRelatorios, true)
   eq('lista solta: NAO ve totais',   c.verTotais, false)
   eq('lista solta: NAO edita cadastro', c.editarCliente, false)
 }
+
+// ── O balcao do socio: pessoa fisica, sem baixar arquivo ──
+// O assistente atende a temporada. Empresa e a carteira do ano todo, e o
+// arquivo do cliente e o que sai do predio.
+{
+  const c = permissoesDe('junior', { receber: true })
+  eq('balcao: NAO atende empresa',  c.verEmpresas, false)
+  eq('balcao: NAO baixa arquivo',   c.baixarArquivo, false)
+  eq('balcao: emite e recebe',      [c.criar, c.receber], [true, true])
+}
+// Soltar empresa sem soltar o arquivo, e vice-versa
+{
+  const so = permissoesDe('junior', { verEmpresas: true })
+  eq('empresa solta: atende empresa',   so.verEmpresas, true)
+  eq('empresa solta: ainda nao baixa',  so.baixarArquivo, false)
+  eq('empresa solta: ainda nao edita',  so.editarCliente, false)
+}
+{
+  const so = permissoesDe('junior', { baixarArquivo: true })
+  eq('arquivo solto: baixa',            so.baixarArquivo, true)
+  eq('arquivo solto: ainda so pessoa fisica', so.verEmpresas, false)
+}
+// Retirar de um gerente tambem funciona
+eq('gerente sem empresas', permissoesDe('manager', { verEmpresas: false }).verEmpresas, false)
+eq('gerente sem baixar',   permissoesDe('manager', { baixarArquivo: false }).baixarArquivo, false)
 
 // ── Editar cadastro do cliente, isolado ──
 {
@@ -159,7 +188,9 @@ eq('os dois lados',
 // O check do SQL (staff_grants_chave_ck) lista exatamente estas.
 eq('as chaves sao estas', [...CHAVES], [
   'criar','enviar','verTodasFaturas','receber','editar','duplicar','cancelar',
-  'darDesconto','estornar','apagar','editarCliente','verRelatorios','verTotais',
+  'darDesconto','estornar','apagar',
+  'verEmpresas','baixarArquivo','editarCliente',
+  'verRelatorios','verTotais',
 ])
 eq('toda chave tem titulo e descricao',
    PERMISSOES.every(p => p.titulo.length > 3 && p.descricao.length > 5), true)

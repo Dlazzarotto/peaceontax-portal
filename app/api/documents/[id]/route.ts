@@ -3,9 +3,15 @@
 // CORREÇÃO DE SEGURANÇA: sem conferência de quem chamava. Qualquer pessoa
 // logada pedia o link assinado de QUALQUER documento — declaração, W-2,
 // extrato — bastando o id. E apagava.
+//
+// BAIXAR NÃO É VER. Ver que o documento existe na lista é uma coisa; tirar
+// uma cópia do W-2 do cliente é outra — o arquivo é o que sai do prédio. O
+// GET exige a autorização `baixarArquivo` (gerente e sócio a têm por nível).
+// O cliente segue baixando os PRÓPRIOS documentos: a restrição é da equipe.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { permissoesFinanceiro } from '@/lib/billing-perms'
 
 async function documento(id: string) {
   const { data } = await serviceDb().from('documents')
@@ -22,6 +28,13 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
     if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     if (!(await canAccessClient(auth, doc.client_id)))
       return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+
+    if (auth.isStaff && !(await permissoesFinanceiro(auth.userId)).baixarArquivo) {
+      return NextResponse.json({
+        error: 'Baixar arquivo do cliente exige autorização — fale com o sócio. ' +
+               'Ver a lista de documentos continua liberado.',
+      }, { status: 403 })
+    }
 
     const { data } = await serviceDb().storage
       .from('client-documents').createSignedUrl(doc.storage_path, 3600)

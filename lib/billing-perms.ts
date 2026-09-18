@@ -36,7 +36,9 @@ export interface PermissoesFinanceiro {
   cancelar: boolean
   apagar: boolean
   darDesconto: boolean
+  verEmpresas: boolean    // sem isto, só Pessoa física
   editarCliente: boolean  // nome, e-mail, telefone, endereço, EIN
+  baixarArquivo: boolean  // abrir/salvar documento do cliente
   verRelatorios: boolean  // relatórios de faturamento
   verTotais: boolean      // números consolidados do negócio
 }

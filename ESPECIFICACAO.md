@@ -53,14 +53,30 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 
 O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
 
-**Dentro da firma, todo mundo vê todos os clientes.** `canAccessClient` faz
-`if (auth.isStaff) return true`. A coluna `clients.assignee` é rótulo de
-CRM — aparece na lista, na ficha e no e-mail de convite —, **não** é
-controle de acesso. A tela de equipe chegou a prometer "Staff: view and
-edit assigned clients only", o que nunca foi verdade; o texto foi
-corrigido para descrever o que o sistema faz. Restringir assistente aos
-clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
-temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
+**O assistente fica em Pessoa física, e não baixa arquivo.**
+`canAccessClient` — o funil por onde ~40 rotas passam — era
+`if (auth.isStaff) return true`, e toda a equipe via os quase mil cadastros.
+Agora ele lê o **tipo** do cliente:
+
+- **Empresa** exige a autorização `verEmpresas`. É a carteira que a firma
+  atende o ano todo: bookkeeping, payroll, EIN. Gerente e sócio têm por nível.
+- **Pessoa física** é a temporada e o balcão, e o assistente atende.
+- **`baixarArquivo`** separa ver da lista de tirar cópia. Ver que existe uma
+  declaração é uma coisa; salvar o W-2 do cliente é outra — o arquivo é o que
+  sai do prédio. O cliente continua baixando os próprios documentos: a
+  restrição é da equipe.
+
+O escopo é por TIPO, não por responsável: `clients.assignee` segue sendo
+rótulo de CRM. Foi a decisão do sócio, e é mais simples de sustentar — não
+depende de alguém lembrar de atribuir cada cadastro. Em troca, **trocar o
+tipo de um cliente virou uma decisão de acesso**, e por isso pede senha,
+motivo e sai na trilha como `type_changed`.
+
+A lista e as **contagens** são filtradas: contar empresas para quem não pode
+abri-las vazaria o tamanho da carteira e desenharia um cartão que não leva a
+nada. E pedir `?type=business` sem autorização **recusa** — devolver pessoa
+física em silêncio faria quem abriu o link concluir que a carteira de
+empresas está vazia.
 
 ### 3.0 Status da fatura: vencimento vence a entrada
 

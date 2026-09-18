@@ -14,7 +14,7 @@
 // travado por um passo esquecido.
 
 import { createHash } from 'crypto'
-import { serviceDb } from '@/lib/api-auth'
+import { serviceDb } from '@/lib/service-db'
 import type { Concessoes, ChavePermissao } from '@/lib/permissoes'
 
 export type StaffLevel = 'owner' | 'manager' | 'junior'

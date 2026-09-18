@@ -120,8 +120,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
   salvar e o motivo fica gravado. A lista de chaves está no módulo E no
   `CHECK` do SQL; a auditoria falha se divergirem.
-  Migrações: `sql/permissoes-por-pessoa-v1.sql` (tabela) e `-v3.sql`, que
-  troca o `CHECK` inteiro e por isso CONTÉM a `-v2.sql` — rodar só a v3 basta.
+  Migrações: `sql/permissoes-por-pessoa-v1.sql` (a tabela) e `-v4.sql`, que
+  troca o `CHECK` inteiro e por isso contém a v2 e a v3 — rodar a v1 e a v4
+  basta. As quinze chaves.
 - **Documento nasce rascunho; enviar é outra decisão, com chave própria.**
   `enviar` estava pendurado em `perms.cancelar`: com autorização individual,
   soltar cancelar soltaria o envio junto. Quem pode enviar tem o botão
@@ -165,13 +166,27 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Gerar um código novo encerra o anterior não usado (um gerente, um código
   vivo). O alfabeto não tem `O·0·I·1·L·S·5·Z·2`: o número é DITADO. O nível
   de quem emitiu é conferido **no uso**, não só na emissão.
-- **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
-  `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
-  controle de acesso. A tela de equipe prometia "Staff: assigned clients
-  only" — nunca foi verdade, o texto foi corrigido. Restringir de fato é
-  decisão do sócio, pendente. O texto de cada nível em
-  `app/settings/users/page.tsx` descreve o que o sistema FAZ (matriz da
-  seção 3): mudou a matriz, muda o texto.
+- **O assistente fica em PESSOA FÍSICA, e não baixa arquivo.**
+  `canAccessClient` (o funil de ~40 rotas) era `if (auth.isStaff) return true`
+  — toda a equipe via os quase mil cadastros. Agora ele lê o **tipo** do
+  cliente: Empresa exige `verEmpresas` (gerente e sócio têm por nível).
+  Empresa é a carteira do ano todo (bookkeeping, payroll, EIN); pessoa física
+  é a temporada e o balcão. `baixarArquivo` separa **ver da lista** de **tirar
+  cópia**: o arquivo é o que sai do prédio. `clients.assignee` continua sendo
+  rótulo de CRM, não controle de acesso — o escopo é por TIPO, e por isso
+  trocar o tipo na ficha pede senha e motivo.
+  `/api/clients` filtra a lista E as contagens do `?resumo=1` (contar empresas
+  para quem não pode abri-las vaza o tamanho da carteira), e pedir
+  `?type=business` sem autorização **recusa** em vez de devolver pessoa física
+  em silêncio. A tela obedece `tipos` do servidor: o cartão Empresas não
+  existe porque o dado não chega, não porque a tela esconde.
+  `serviceDb` mudou para `lib/service-db.ts`: `canAccessClient` passou a
+  precisar do nível, e `api-auth → staff-perms → api-auth` é ciclo. Em ESM
+  às vezes funciona — "às vezes funciona" não sustenta controle de acesso.
+  `api-auth` reexporta `serviceDb` para as ~40 rotas que já o importam de lá.
+  Migração: `sql/permissoes-por-pessoa-v4.sql` (substitui o `CHECK` da v3).
+  O texto de cada nível em `app/settings/users/page.tsx` descreve o que o
+  sistema FAZ (matriz da seção 3): mudou a matriz, muda o texto.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
