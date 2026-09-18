@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import AcertarTipoModal from '@/components/AcertarTipoModal'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { ROTULO_SITUACAO, type ResumoTipo, ZERADO } from '@/lib/clientes-grupos'
@@ -41,6 +42,7 @@ export default function ClientsPage() {
   const [filter,   setFilter]   = useState('all')
   const [showNew,  setShowNew]  = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [showTipos, setShowTipos] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
 
   const [resumo, setResumo] = useState<Record<string, ResumoTipo> | null>(null)
@@ -114,6 +116,7 @@ export default function ClientsPage() {
     return (
       <div>
         {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
+        {showTipos && <AcertarTipoModal onPronto={() => setRecarga(n => n + 1)} onClose={() => setShowTipos(false)} />}
         {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:12 }}>
@@ -130,6 +133,14 @@ export default function ClientsPage() {
               style={{ background:'#fff', color:'#2D3278', border:'1.5px solid #2D3278', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
               ⬆ Importar do QuickBooks
             </button>
+            {/* Só aparece para quem vê empresas: quem não vê não tem o que
+                acertar, e o botão levaria a uma lista vazia. */}
+            {veEmpresas && (
+              <button onClick={() => setShowTipos(true)}
+                style={{ background:'#fff', color:'#C06010', border:'1.5px solid #C06010', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
+                ⇄ Acertar Empresa × Pessoa física
+              </button>
+            )}
             <button onClick={() => setShowNew(true)}
               style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', border:'none', padding:'10px 20px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
               + Novo cliente

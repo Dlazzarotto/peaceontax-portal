@@ -550,6 +550,40 @@ checar('O cartao Empresas segue o servidor', 'app/clients/page.tsx',
        /tiposVisiveis\.includes\('business'\)/,
        'a tela nao deve adivinhar o escopo — o servidor e quem conta')
 
+
+titulo('ACERTAR EMPRESA x PESSOA FISICA EM LOTE')
+// A importacao le `Client type` do QuickBooks: ORGANIZATION vira empresa, e
+// na carteira real muita PESSOA esta assim. Desde que o tipo virou fronteira
+// de acesso, esses cadastros desapareceram de quem atende o balcao.
+checar('O criterio vive num modulo puro', 'lib/tipo-do-cliente.ts',
+       /export function propostaParaEmpresa/, 'o criterio do tipo sumiu')
+checar('Sinal FORTE e FRACO sao separados', 'lib/tipo-do-cliente.ts',
+       /fortes: string\[\][\s\S]{0,80}fracos: string\[\]/,
+       'palavra de ramo nao pode decidir: "Market" e "Auto" tambem sao sobrenome')
+checar('Sem sinal nenhum e que vira pessoa', 'lib/tipo-do-cliente.ts',
+       /if \(fracos\.length\) return \{ decisao: 'revisar'/,
+       'empresa marcada como pessoa fisica abre a carteira a quem nao deveria ver')
+checar('A previa nao grava nada', 'app/api/clients/reclassify/route.ts',
+       /export async function GET/, 'o plano tem de vir antes da gravacao')
+// Contar caracteres entre dois trechos e fragil — ja errei isso duas vezes
+// hoje. Duas conferencias, uma por peca.
+checar('Gravar pede motivo', 'app/api/clients/reclassify/route.ts',
+       /motivo\.length < 5/, 'sem motivo a ficha nao explica a mudanca')
+checar('Gravar pede senha', 'app/api/clients/reclassify/route.ts',
+       /signInWithPassword/, 'mudar tipo em lote muda quem ve a carteira')
+checar('So grava o que AINDA e empresa', 'app/api/clients/reclassify/route.ts',
+       /\.in\('id', ids\)\.eq\('type', 'business'\)/,
+       'entre a previa e o clique alguem pode ter mexido')
+checar('Bloco com recuo por linha', 'app/api/clients/reclassify/route.ts',
+       /for \(const c of parte\)/,
+       'update do Postgres e tudo ou nada: um cadastro ruim derrubaria 199')
+checar('A trilha e POR CLIENTE', 'app/api/clients/reclassify/route.ts',
+       /action: 'type_changed'/, 'uma linha de resumo nao aparece na ficha do cliente')
+checar('O login do cliente e sincronizado', 'app/api/clients/reclassify/route.ts',
+       /client_type: 'individual'/, 'a copia no user_metadata ficaria divergente')
+checar('A resposta diz o que NAO foi feito', 'app/api/clients/reclassify/route.ts',
+       /jaNaoEramEmpresa/, 'devolver so o numero bonito esconde o problema')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

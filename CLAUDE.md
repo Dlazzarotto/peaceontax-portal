@@ -353,6 +353,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   status sempre lê `sent`/`partial`/`overdue` juntos como "em aberto", então
   nenhuma tela mudou; o aging já calculava pelo `due_date`. A migração acerta
   o histórico.
+- **Acertar Empresa × Pessoa física em LOTE** (`lib/tipo-do-cliente.ts`,
+  `/api/clients/reclassify`). A importação lê `Client type` do QuickBooks
+  (`ORGANIZATION` → empresa) e na carteira real muita PESSOA está assim —
+  desde que o tipo virou fronteira de acesso, esses cadastros desapareceram
+  de quem atende o balcão, e ficha por ficha não se faz com centenas.
+  **O erro não é simétrico, e é isso que desenha o critério:** pessoa marcada
+  como empresa some do assistente (incômodo); empresa marcada como pessoa
+  abre a carteira dela a quem não deveria ver (falha de acesso). Então
+  `propostaParaEmpresa` só propõe pessoa física quando **não há NENHUM**
+  sinal de empresa (EIN de 9 dígitos, tipo de entidade, razão social
+  diferente do nome, sufixo jurídico no nome). Sinal fraco — palavra de ramo,
+  `&` — vai para **revisar**, desmarcado: "Market" e "Auto" também são
+  sobrenome. O ponto é REMOVIDO e não trocado por espaço, senão `L.L.C.` se
+  desfaz em três letras. O GET mostra o plano e não grava; o POST grava só os
+  ids marcados, com senha e motivo, em blocos com recuo por linha, trilha
+  `type_changed` POR CLIENTE e sincronização do `client_type` no login. A
+  resposta diz quantos já não eram empresa e quantos falharam. 41 casos em
+  `testes/tipo-do-cliente.mts`.
 - **Empresa × pessoa física se edita na ficha** (`type` em `EDITABLE` de
   `/api/clients/profile`). Não é campo comum: valida a lista, faz empresa sem
   razão social herdar o nome, **sincroniza a cópia em

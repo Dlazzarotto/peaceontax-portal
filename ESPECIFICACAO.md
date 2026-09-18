@@ -66,6 +66,21 @@ Agora ele lê o **tipo** do cliente:
   sai do prédio. O cliente continua baixando os próprios documentos: a
   restrição é da equipe.
 
+**O tipo herdado do QuickBooks estava errado em massa, e há como acertar.**
+A importação lê `Client type`: `ORGANIZATION` vira Empresa. Na carteira real
+muita pessoa física está cadastrada no QuickBooks como organização — e com o
+tipo virando fronteira de acesso, esses cadastros saíram justamente da vista
+de quem atende o balcão. Em *Clientes → Acertar Empresa × Pessoa física* a
+equipe vê o plano e confirma, como na importação.
+
+O critério erra para o lado seguro, porque **o erro não é simétrico**: pessoa
+marcada como empresa apenas desaparece do assistente; empresa marcada como
+pessoa abre a carteira dela a quem não deveria ver. Só se propõe Pessoa física
+quando não há **nenhum** sinal de empresa — sem EIN, sem tipo de entidade, sem
+razão social própria e sem sufixo jurídico no nome. Sinal fraco (palavra de
+ramo, `&`) vai para uma lista à parte, desmarcada: "Market" e "Auto" também
+são sobrenome, e ninguém decide centenas de fichas por uma palavra.
+
 O escopo é por TIPO, não por responsável: `clients.assignee` segue sendo
 rótulo de CRM. Foi a decisão do sócio, e é mais simples de sustentar — não
 depende de alguém lembrar de atribuir cada cadastro. Em troca, **trocar o
