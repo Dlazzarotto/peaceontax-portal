@@ -53,14 +53,62 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 
 O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
 
-**Dentro da firma, todo mundo vê todos os clientes.** `canAccessClient` faz
-`if (auth.isStaff) return true`. A coluna `clients.assignee` é rótulo de
-CRM — aparece na lista, na ficha e no e-mail de convite —, **não** é
-controle de acesso. A tela de equipe chegou a prometer "Staff: view and
-edit assigned clients only", o que nunca foi verdade; o texto foi
-corrigido para descrever o que o sistema faz. Restringir assistente aos
-clientes atribuídos é **decisão do sócio pendente**, não defeito: numa
-temporada com 40 atendimentos por dia, travar o balcão tem custo próprio.
+**O assistente fica em Pessoa física, e não baixa arquivo.**
+`canAccessClient` — o funil por onde ~40 rotas passam — era
+`if (auth.isStaff) return true`, e toda a equipe via os quase mil cadastros.
+Agora ele lê o **tipo** do cliente:
+
+- **Empresa** exige a autorização `verEmpresas`. É a carteira que a firma
+  atende o ano todo: bookkeeping, payroll, EIN. Gerente e sócio têm por nível.
+- **Pessoa física** é a temporada e o balcão, e o assistente atende.
+- **`baixarArquivo`** separa ver da lista de tirar cópia. Ver que existe uma
+  declaração é uma coisa; salvar o W-2 do cliente é outra — o arquivo é o que
+  sai do prédio. O cliente continua baixando os próprios documentos: a
+  restrição é da equipe.
+
+**O tipo herdado do QuickBooks estava errado em massa, e há como acertar.**
+A importação lê `Client type`: `ORGANIZATION` vira Empresa. Na carteira real
+muita pessoa física está cadastrada no QuickBooks como organização — e com o
+tipo virando fronteira de acesso, esses cadastros saíram justamente da vista
+de quem atende o balcão. Em *Clientes → Acertar Empresa × Pessoa física* a
+equipe vê o plano e confirma, como na importação.
+
+O critério erra para o lado seguro, porque **o erro não é simétrico**: pessoa
+marcada como empresa apenas desaparece do assistente; empresa marcada como
+pessoa abre a carteira dela a quem não deveria ver. Só se propõe Pessoa física
+quando não há **nenhum** sinal de empresa — sem EIN, sem tipo de entidade, sem
+razão social própria e sem sufixo jurídico no nome. Sinal fraco (palavra de
+ramo, `&`) vai para uma lista à parte, desmarcada: "Market" e "Auto" também
+são sobrenome, e ninguém decide centenas de fichas por uma palavra.
+
+O escopo é por TIPO, não por responsável: `clients.assignee` segue sendo
+rótulo de CRM. Foi a decisão do sócio, e é mais simples de sustentar — não
+depende de alguém lembrar de atribuir cada cadastro. Em troca, **trocar o
+tipo de um cliente virou uma decisão de acesso**, e por isso pede senha,
+motivo e sai na trilha como `type_changed`.
+
+A lista e as **contagens** são filtradas: contar empresas para quem não pode
+abri-las vazaria o tamanho da carteira e desenharia um cartão que não leva a
+nada. E pedir `?type=business` sem autorização **recusa** — devolver pessoa
+física em silêncio faria quem abriu o link concluir que a carteira de
+empresas está vazia.
+
+### 3.0 Status da fatura: vencimento vence a entrada
+
+`sent` · `partial` · `overdue` · `paid` · `void` saem de **uma** função no
+banco (`recalcular_status_da_fatura`), chamada pelo gatilho de
+`invoice_payments` e pelo estorno. A ordem importa: cancelada continua
+cancelada, quitada é quitada, **depois** vem o atraso, e só então "parcial".
+
+Uma fatura vencida com entrada paga é **vencida**. A ordem anterior punha
+`partial` antes de `overdue`: quem pagou $10 de $1.000 e estava três meses
+atrasado aparecia como "parcial" e saía da lista de vencidas — exatamente o
+cliente que deu entrada e parou de pagar. Quanto entrou continua legível em
+`paid_total`.
+
+O dia é o do **escritório** (`America/New_York`), não o do servidor: com
+`current_date` em UTC a fatura passava a vencida às 20h de Malden, no meio do
+expediente.
 
 ### 3.1 Autorizações por pessoa, em cima do nível
 
@@ -151,6 +199,24 @@ o outro custa dinheiro que ninguém reconstitui.
 Senha certa não basta — o sistema confere que quem aprovou é mesmo gerente
 ou sócio. E a trava é da **rota**, não da tela: esconder o botão não é
 controle de acesso.
+
+**A autorização é um código, e vale uma cobrança.** O gerente abre
+**Financeiro → Autorização** no próprio login, um número aparece e ele dita a
+quem está atendendo. Dez minutos de vida, **um uso**. O primeiro uso o
+queima, e o que ele liberou — fatura, valor, forma, quem usou — fica gravado.
+A própria aba mostra ao gerente o que os códigos dele autorizaram.
+
+Isso substituiu pedir a senha do gerente no computador do balcão, que tinha
+três defeitos: senha de terceiro digitada em máquina alheia (quem está ao
+lado vê, o navegador oferece salvar, e a senha serve para tudo); o limite de
+tentativas de login do Supabase por IP, que na temporada faz a aprovação
+falhar sem nada de errado ter acontecido; e uma senha liberando infinitas
+cobranças, sem ninguém saber quantas. A senha continua como **reserva**, para
+quando quem aprova é quem está operando — e a trilha diz qual dos dois
+caminhos foi usado.
+
+Gerar um código novo encerra o anterior: um gerente, um código vivo. Três
+cliques não podem virar três autorizações.
 
 ### 3.2 Duas perguntas diferentes: a porta e o poder
 

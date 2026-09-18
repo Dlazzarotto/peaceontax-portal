@@ -120,8 +120,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   princípio 1 — `conflitoDeSeparacao` diz o quê, a tela avisa antes de
   salvar e o motivo fica gravado. A lista de chaves está no módulo E no
   `CHECK` do SQL; a auditoria falha se divergirem.
-  Migrações: `sql/permissoes-por-pessoa-v1.sql` (tabela) e `-v3.sql`, que
-  troca o `CHECK` inteiro e por isso CONTÉM a `-v2.sql` — rodar só a v3 basta.
+  Migrações: `sql/permissoes-por-pessoa-v1.sql` (a tabela) e `-v4.sql`, que
+  troca o `CHECK` inteiro e por isso contém a v2 e a v3 — rodar a v1 e a v4
+  basta. As quinze chaves.
 - **Documento nasce rascunho; enviar é outra decisão, com chave própria.**
   `enviar` estava pendurado em `perms.cancelar`: com autorização individual,
   soltar cancelar soltaria o envio junto. Quem pode enviar tem o botão
@@ -148,13 +149,44 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   autorizar `receber` a quem também emite. Senha certa não basta, `podeAprovar`
   confere o nível do aprovador; quem aprovou vai para `invoice_audit`
   (`reason` e `next.aprovadoPor`). A trava é da ROTA — a tela só antecipa.
-- **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
-  `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
-  controle de acesso. A tela de equipe prometia "Staff: assigned clients
-  only" — nunca foi verdade, o texto foi corrigido. Restringir de fato é
-  decisão do sócio, pendente. O texto de cada nível em
-  `app/settings/users/page.tsx` descreve o que o sistema FAZ (matriz da
-  seção 3): mudou a matriz, muda o texto.
+- **A autorização é um CÓDIGO, um por cobrança** (`lib/codigo-autorizacao.ts`,
+  tabela `approval_codes`, migração `sql/codigo-de-autorizacao-v1.sql`). O
+  gerente abre **Financeiro → Autorização** no PRÓPRIO login, aparece um
+  número e ele dita; vale 10 minutos e **uma** cobrança. Substituiu pedir a
+  senha do gerente na máquina do balcão, que tinha três defeitos: senha de
+  terceiro em máquina alheia, o limite de tentativas de login do Supabase por
+  IP (40 atendimentos/dia do mesmo escritório na temporada) e uma senha
+  liberando infinitas cobranças. A senha fica como **reserva** para quando
+  quem aprova é quem opera, e a trilha grava `aprovadoVia: 'codigo' | 'senha'`
+  — sem isso "aprovado por X" não diz se X estava presente.
+  **O consumo é atômico**: um `UPDATE ... where usado_em is null and
+  expira_em > now() RETURNING` na função `consumir_codigo_de_autorizacao`.
+  Conferir antes e gravar depois deixaria dois atendentes liberarem duas
+  cobranças com o mesmo número — testado com duas sessões simultâneas.
+  Gerar um código novo encerra o anterior não usado (um gerente, um código
+  vivo). O alfabeto não tem `O·0·I·1·L·S·5·Z·2`: o número é DITADO. O nível
+  de quem emitiu é conferido **no uso**, não só na emissão.
+- **O assistente fica em PESSOA FÍSICA, e não baixa arquivo.**
+  `canAccessClient` (o funil de ~40 rotas) era `if (auth.isStaff) return true`
+  — toda a equipe via os quase mil cadastros. Agora ele lê o **tipo** do
+  cliente: Empresa exige `verEmpresas` (gerente e sócio têm por nível).
+  Empresa é a carteira do ano todo (bookkeeping, payroll, EIN); pessoa física
+  é a temporada e o balcão. `baixarArquivo` separa **ver da lista** de **tirar
+  cópia**: o arquivo é o que sai do prédio. `clients.assignee` continua sendo
+  rótulo de CRM, não controle de acesso — o escopo é por TIPO, e por isso
+  trocar o tipo na ficha pede senha e motivo.
+  `/api/clients` filtra a lista E as contagens do `?resumo=1` (contar empresas
+  para quem não pode abri-las vaza o tamanho da carteira), e pedir
+  `?type=business` sem autorização **recusa** em vez de devolver pessoa física
+  em silêncio. A tela obedece `tipos` do servidor: o cartão Empresas não
+  existe porque o dado não chega, não porque a tela esconde.
+  `serviceDb` mudou para `lib/service-db.ts`: `canAccessClient` passou a
+  precisar do nível, e `api-auth → staff-perms → api-auth` é ciclo. Em ESM
+  às vezes funciona — "às vezes funciona" não sustenta controle de acesso.
+  `api-auth` reexporta `serviceDb` para as ~40 rotas que já o importam de lá.
+  Migração: `sql/permissoes-por-pessoa-v4.sql` (substitui o `CHECK` da v3).
+  O texto de cada nível em `app/settings/users/page.tsx` descreve o que o
+  sistema FAZ (matriz da seção 3): mudou a matriz, muda o texto.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
@@ -309,9 +341,58 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   só como `create or replace` do que já está lá. A regra de "à vista" que
   EXISTE é outra: parcelamento exige cartão ou ACH como forma esperada,
   porque o Stripe não debita dinheiro automaticamente.
-  Duas decisões pendentes no gatilho, anotadas no arquivo: fatura vencida com
-  pagamento parcial aparece como `partial` e nunca como `overdue`; e
-  `current_date` é UTC, então o vencimento vira `overdue` às 20h de Malden.
+- **O status da fatura tem UMA definição, no banco**
+  (`recalcular_status_da_fatura`, em `sql/status-da-fatura-v2.sql`). O gatilho
+  chama; `lib/estorno-stripe.ts` chama por RPC. Antes o estorno escrevia
+  `'partial'`/`'sent'` na mão, sem olhar o vencimento — segunda definição, com
+  o mesmo defeito. Duas corrigidas ali: **vencimento vence a entrada** (a
+  ordem punha `partial` antes de `overdue`, e quem pagou $10 de $1.000 três
+  meses atrasado saía da lista de vencidas — justamente o parcelamento que
+  desanda), e o dia é o do **escritório** (`data_da_firma()`), não
+  `current_date` em UTC, que fazia a fatura vencer às 20h de Malden. Quem lê
+  status sempre lê `sent`/`partial`/`overdue` juntos como "em aberto", então
+  nenhuma tela mudou; o aging já calculava pelo `due_date`. A migração acerta
+  o histórico.
+- **Acertar Empresa × Pessoa física em LOTE** (`lib/tipo-do-cliente.ts`,
+  `/api/clients/reclassify`). A importação lê `Client type` do QuickBooks
+  (`ORGANIZATION` → empresa) e na carteira real muita PESSOA está assim —
+  desde que o tipo virou fronteira de acesso, esses cadastros desapareceram
+  de quem atende o balcão, e ficha por ficha não se faz com centenas.
+  **O erro não é simétrico, e é isso que desenha o critério:** pessoa marcada
+  como empresa some do assistente (incômodo); empresa marcada como pessoa
+  abre a carteira dela a quem não deveria ver (falha de acesso). Então
+  `propostaParaEmpresa` só propõe pessoa física quando **não há NENHUM**
+  sinal de empresa (EIN de 9 dígitos, tipo de entidade, razão social
+  diferente do nome, sufixo jurídico no nome). Sinal fraco — palavra de ramo,
+  `&` — vai para **revisar**, desmarcado: "Market" e "Auto" também são
+  sobrenome. O ponto é REMOVIDO e não trocado por espaço, senão `L.L.C.` se
+  desfaz em três letras. O GET mostra o plano e não grava; o POST grava só os
+  ids marcados, com senha e motivo, em blocos com recuo por linha, trilha
+  `type_changed` POR CLIENTE e sincronização do `client_type` no login. A
+  resposta diz quantos já não eram empresa e quantos falharam. 41 casos em
+  `testes/tipo-do-cliente.mts`.
+- **Empresa × pessoa física se edita na ficha** (`type` em `EDITABLE` de
+  `/api/clients/profile`). Não é campo comum: valida a lista, faz empresa sem
+  razão social herdar o nome, **sincroniza a cópia em
+  `user_metadata.client_type`** do login (gravada no convite e na senha
+  provisória — divergir é questão de tempo) e grava a trilha como
+  `type_changed`. O tipo muda o portal que o cliente vê, o que o contrato
+  exige e — com o assistente restrito a pessoa física — quem na firma vê a
+  ficha.
+- **DocuSign em sandbox não assina de verdade.** `DOCUSIGN_BASE_PATH` e
+  `DOCUSIGN_OAUTH_BASE` têm padrão de SANDBOX no código
+  (`demo.docusign.net` / `account-d.docusign.com`). Sem as variáveis de
+  produção no Vercel, todo contrato e todo Form 8879 sai com a tarja
+  "This email is for demonstration purposes only" e **não tem validade
+  legal** — inclusive a autorização de e-file perante o IRS. Aconteceu de
+  verdade: as variáveis não estavam no `.env.example`, então ninguém sabia
+  que existiam. Agora `exigirProducao()` **recusa o envio** em sandbox
+  (`DOCUSIGN_PERMITIR_DEMO=1` libera para teste, de propósito) — coletar
+  assinatura sem valor é pior que não coletar, porque parece que a
+  autorização existe. `app/api/signatures/diag` diz em qual ambiente está.
+  O contrato vai como **HTML** (`fileExtension: 'html'`) e o DocuSign
+  converte; a 8879 vai como PDF. O nome `.html` aparece ao cliente e o
+  conversor não garante o CSS — trocar o contrato por PDF é dívida aberta.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

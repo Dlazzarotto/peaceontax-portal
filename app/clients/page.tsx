@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import AcertarTipoModal from '@/components/AcertarTipoModal'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { ROTULO_SITUACAO, type ResumoTipo, ZERADO } from '@/lib/clientes-grupos'
@@ -41,9 +42,13 @@ export default function ClientsPage() {
   const [filter,   setFilter]   = useState('all')
   const [showNew,  setShowNew]  = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [showTipos, setShowTipos] = useState(false)
   const [dragging, setDragging] = useState<string | null>(null)
 
   const [resumo, setResumo] = useState<Record<string, ResumoTipo> | null>(null)
+  // Quais tipos esta pessoa pode ver. Vem do SERVIDOR: sem `verEmpresas`, a
+  // rota não conta nem devolve empresas, então o cartão não tem o que mostrar.
+  const [tiposVisiveis, setTiposVisiveis] = useState<string[]>(['business', 'individual'])
   const [enviando, setEnviando] = useState<string | null>(null)
   // Contador de recarga. router.refresh() atualiza o componente de servidor,
   // e os dados desta tela vêm de um fetch no cliente: sem mexer nas
@@ -66,7 +71,11 @@ export default function ClientsPage() {
     // Cartões de entrada: só as contagens, feitas no banco
     setLoading(true)
     fetch('/api/clients?resumo=1').then(r => r.json())
-      .then(d => { setResumo(d.resumo || null); setLoading(false) })
+      .then(d => {
+        setResumo(d.resumo || null)
+        if (Array.isArray(d.tipos)) setTiposVisiveis(d.tipos)
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
   }, [search, filter, tipo, recarga])
 
@@ -103,16 +112,20 @@ export default function ClientsPage() {
   if (!tipo) {
     const emp = resumo?.business || ZERADO
     const pf  = resumo?.individual || ZERADO
+    const veEmpresas = tiposVisiveis.includes('business')
     return (
       <div>
         {showImport && <ImportarModal onPronto={() => { setShowImport(false); setRecarga(n => n + 1) }} onClose={() => setShowImport(false)} />}
+        {showTipos && <AcertarTipoModal onPronto={() => setRecarga(n => n + 1)} onClose={() => setShowTipos(false)} />}
         {showNew && <NewClientModal onSave={() => { setShowNew(false); setRecarga(n => n + 1) }} onClose={() => setShowNew(false)} />}
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, flexWrap:'wrap', gap:12 }}>
           <div>
             <h1 style={{ fontFamily:'Georgia,serif', fontSize:26, color:'#0f2340', margin:'0 0 4px', fontWeight:400 }}>Clientes</h1>
             <p style={{ color:'#6a7a9a', fontSize:14, margin:0 }}>
-              {loading ? 'Carregando…' : `${emp.total + pf.total} cadastros`}
+              {loading ? 'Carregando…'
+                : veEmpresas ? `${emp.total + pf.total} cadastros`
+                : `${pf.total} cadastros de pessoa física`}
             </p>
           </div>
           <div style={{ display:'flex', gap:10 }}>
@@ -120,6 +133,14 @@ export default function ClientsPage() {
               style={{ background:'#fff', color:'#2D3278', border:'1.5px solid #2D3278', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
               ⬆ Importar do QuickBooks
             </button>
+            {/* Só aparece para quem vê empresas: quem não vê não tem o que
+                acertar, e o botão levaria a uma lista vazia. */}
+            {veEmpresas && (
+              <button onClick={() => setShowTipos(true)}
+                style={{ background:'#fff', color:'#C06010', border:'1.5px solid #C06010', padding:'10px 16px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
+                ⇄ Acertar Empresa × Pessoa física
+              </button>
+            )}
             <button onClick={() => setShowNew(true)}
               style={{ background:'linear-gradient(135deg,#2D3278,#1a1f5e)', color:'#fff', border:'none', padding:'10px 20px', borderRadius:10, fontSize:14, fontFamily:'Georgia,serif', fontWeight:700, cursor:'pointer' }}>
               + Novo cliente
@@ -127,8 +148,11 @@ export default function ClientsPage() {
           </div>
         </div>
 
-        <div className="cli-cartoes">
-          {/* EMPRESAS: atendidas o ano todo, então a situação do trabalho importa */}
+        <div className="cli-cartoes" style={veEmpresas ? undefined : { gridTemplateColumns:'minmax(0,1fr)' }}>
+          {/* EMPRESAS: atendidas o ano todo, então a situação do trabalho
+              importa. Quem não tem `verEmpresas` não vê o cartão — e não vê
+              porque o dado não chega, não porque a tela esconde. */}
+          {veEmpresas && (
           <button onClick={() => router.push('/clients?tipo=business')} className="cli-cartao" style={{ borderTop:'4px solid #2D3278' }}>
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
               <span style={{ fontSize:30 }}>🏢</span>
@@ -154,6 +178,7 @@ export default function ClientsPage() {
             </div>
             <div style={{ marginTop:14, fontSize:13, fontWeight:700, color:'#2D3278' }}>Abrir o quadro →</div>
           </button>
+          )}
 
           {/* PESSOA FÍSICA: aparece na temporada. Sem trabalho em aberto o ano
               todo, os mesmos números não diriam nada — fica só o total. */}

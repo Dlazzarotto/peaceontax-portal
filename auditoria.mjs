@@ -457,6 +457,133 @@ recusar('A tela nao pede os ids do Stripe na lista', 'app/dashboard/billing/page
         /pl\?\.stripe_subscription_id/,
         'pedir essas colunas no select principal foi o que fez a lista desaparecer')
 
+
+titulo('STATUS DA FATURA E TIPO DO CLIENTE')
+checar('O status tem UMA definicao no banco', 'sql/status-da-fatura-v2.sql',
+       /create or replace function public\.recalcular_status_da_fatura/,
+       'sem a funcao, gatilho e estorno voltam a calcular status separados')
+checar('Vencimento vence a entrada', 'sql/status-da-fatura-v2.sql',
+       /due_date < public\.data_da_firma\(\) then 'overdue'[\s\S]{0,120}soma > 0 then 'partial'/,
+       'se partial vier antes, vencida com entrada sai da lista de vencidas')
+checar('O vencimento usa o fuso da firma', 'sql/status-da-fatura-v2.sql',
+       /America\/New_York/, 'current_date e UTC: a fatura vencia as 20h de Malden')
+recusar('O estorno nao escreve status na mao', 'lib/estorno-stripe.ts',
+        /status: Number\(inv\.paid_total \|\| 0\) > 0 \? 'partial' : 'sent'/,
+        'era a segunda definicao de status, e com o mesmo defeito do gatilho')
+checar('O estorno chama a funcao unica', 'lib/estorno-stripe.ts',
+       /rpc\('recalcular_status_da_fatura'/, 'sem isto a fatura reaberta fica com status velho')
+checar('Tipo do cliente e editavel', 'app/api/clients/profile/route.ts',
+       /'type',/, 'a equipe erra o tipo no cadastro e nao havia como consertar')
+checar('Trocar o tipo sincroniza o login', 'app/api/clients/profile/route.ts',
+       /trocaDeTipo && current\.user_id/,
+       'user_metadata.client_type ficaria divergente do cadastro')
+checar('Trocar o tipo tem acao propria na trilha', 'app/api/clients/profile/route.ts',
+       /'type_changed'/, 'trocar tipo nao e uma edicao de perfil qualquer')
+
+
+titulo('CODIGO DE AUTORIZACAO: UM CODIGO, UMA COBRANCA')
+checar('A regra do codigo vive num modulo so', 'lib/codigo-autorizacao.ts',
+       /export const ALFABETO/, 'o modulo do codigo sumiu')
+checar('O alfabeto nao tem caractere ambiguo', 'lib/codigo-autorizacao.ts',
+       /ALFABETO = 'ACDEFGHJKMNPQRTUVWXY34679'/,
+       'o codigo e DITADO: O x 0 e I x 1 fazem a equipe errar')
+checar('O consumo e atomico no banco', 'sql/codigo-de-autorizacao-v1.sql',
+       /update public\.approval_codes[\s\S]{0,400}usado_em is null[\s\S]{0,200}returning/,
+       'conferir antes e gravar depois deixa dois atendentes usarem o mesmo codigo')
+checar('O codigo guarda O QUE autorizou', 'sql/codigo-de-autorizacao-v1.sql',
+       /invoice_id[\s\S]{0,200}valor[\s\S]{0,200}forma/,
+       'sem fatura, valor e forma nao ha rastro de o que foi autorizado')
+checar('So gerente ou socio gera', 'app/api/account/approval-code/route.ts',
+       /podeAprovar\(nivel\)/, 'qualquer um geraria a propria autorizacao')
+checar('Gerar um novo encerra o anterior', 'app/api/account/approval-code/route.ts',
+       /\.is\('usado_em', null\)[\s\S]{0,200}expira_em/,
+       'tres cliques deixariam tres autorizacoes vivas')
+checar('O recebimento consome o codigo', 'app/api/billing/payments/route.ts',
+       /rpc\('consumir_codigo_de_autorizacao'/, 'sem isto o codigo nao vale nada')
+checar('Nivel de quem emitiu e conferido no uso', 'app/api/billing/payments/route.ts',
+       /podeAprovar\(await getStaffLevel\(String\(linha\.emitido_por\)\)\)/,
+       'quem deixou de ser gerente nao pode autorizar por codigo antigo')
+checar('A trilha diz se foi codigo ou senha', 'app/api/billing/payments/route.ts',
+       /aprovadoVia: aprovador\.via/,
+       '"aprovado por X" nao diz se X estava presente ou emprestou a senha')
+
+
+titulo('DOCUSIGN: SANDBOX NAO ASSINA DE VERDADE')
+// A tarja vermelha "for demonstration purposes only" no e-mail do cliente
+// mostrou que as variaveis de producao nunca foram definidas: o codigo cai no
+// sandbox por padrao. Assinatura de sandbox nao vale — nem o contrato, nem o
+// 8879 que autoriza o e-file perante o IRS.
+checar('O codigo sabe em que ambiente esta', 'lib/docusign.ts',
+       /export function ambienteDocusign/, 'sem isso ninguem descobre que esta no sandbox')
+checar('E recusa assinar no sandbox', 'lib/docusign.ts',
+       /export function exigirProducao/, 'coletar assinatura sem valor e pior que nao coletar')
+for (const r of ['app/api/signatures/contract/route.ts', 'app/api/signatures/form8879/route.ts'])
+  checar(`${r.split('/')[3]} exige producao`, r, /exigirProducao\(\)/,
+         'a rota voltaria a enviar envelope de sandbox')
+checar('As variaveis do DocuSign estao no .env.example', '.env.example',
+       /DOCUSIGN_BASE_PATH/,
+       'nao estavam documentadas — foi por isso que ninguem definiu e caiu no sandbox')
+
+
+titulo('ASSISTENTE FICA EM PESSOA FISICA, SEM BAIXAR ARQUIVO')
+// Era `if (auth.isStaff) return true`: toda a equipe via os quase mil
+// cadastros. O socio decidiu que quem atende o balcao fica em pessoa fisica.
+checar('canAccessClient olha o TIPO do cliente', 'lib/api-auth.ts',
+       /data\.type !== "business"/,
+       'sem isso toda a equipe volta a ver a carteira de empresas')
+checar('E consulta a autorizacao verEmpresas', 'lib/api-auth.ts',
+       /verEmpresas/, 'o funil de ~40 rotas precisa decidir isto aqui')
+recusar('canAccessClient nao libera staff de saida', 'lib/api-auth.ts',
+        /if \(auth\.isStaff\) return true;/,
+        'era esta linha que dava a carteira inteira a todo mundo')
+checar('serviceDb mora fora do api-auth', 'lib/service-db.ts',
+       /export function serviceDb/,
+       'api-auth -> staff-perms -> api-auth e ciclo; controle de acesso nao pode depender de ordem de carga')
+checar('A lista de clientes filtra por tipo', 'app/api/clients/route.ts',
+       /TIPOS_VISIVEIS/, 'a lista voltaria a trazer empresas para quem nao pode abri-las')
+checar('Pedir empresas sem autorizacao RECUSA', 'app/api/clients/route.ts',
+       /tipoPedido === 'business' && !perms\.verEmpresas/,
+       'trocar em silencio por pessoa fisica devolve uma lista que nao e a pedida')
+checar('Baixar arquivo exige autorizacao', 'app/api/documents/[id]/route.ts',
+       /baixarArquivo/, 'ver que o documento existe nao e tirar copia do W-2')
+checar('O cartao Empresas segue o servidor', 'app/clients/page.tsx',
+       /tiposVisiveis\.includes\('business'\)/,
+       'a tela nao deve adivinhar o escopo — o servidor e quem conta')
+
+
+titulo('ACERTAR EMPRESA x PESSOA FISICA EM LOTE')
+// A importacao le `Client type` do QuickBooks: ORGANIZATION vira empresa, e
+// na carteira real muita PESSOA esta assim. Desde que o tipo virou fronteira
+// de acesso, esses cadastros desapareceram de quem atende o balcao.
+checar('O criterio vive num modulo puro', 'lib/tipo-do-cliente.ts',
+       /export function propostaParaEmpresa/, 'o criterio do tipo sumiu')
+checar('Sinal FORTE e FRACO sao separados', 'lib/tipo-do-cliente.ts',
+       /fortes: string\[\][\s\S]{0,80}fracos: string\[\]/,
+       'palavra de ramo nao pode decidir: "Market" e "Auto" tambem sao sobrenome')
+checar('Sem sinal nenhum e que vira pessoa', 'lib/tipo-do-cliente.ts',
+       /if \(fracos\.length\) return \{ decisao: 'revisar'/,
+       'empresa marcada como pessoa fisica abre a carteira a quem nao deveria ver')
+checar('A previa nao grava nada', 'app/api/clients/reclassify/route.ts',
+       /export async function GET/, 'o plano tem de vir antes da gravacao')
+// Contar caracteres entre dois trechos e fragil — ja errei isso duas vezes
+// hoje. Duas conferencias, uma por peca.
+checar('Gravar pede motivo', 'app/api/clients/reclassify/route.ts',
+       /motivo\.length < 5/, 'sem motivo a ficha nao explica a mudanca')
+checar('Gravar pede senha', 'app/api/clients/reclassify/route.ts',
+       /signInWithPassword/, 'mudar tipo em lote muda quem ve a carteira')
+checar('So grava o que AINDA e empresa', 'app/api/clients/reclassify/route.ts',
+       /\.in\('id', ids\)\.eq\('type', 'business'\)/,
+       'entre a previa e o clique alguem pode ter mexido')
+checar('Bloco com recuo por linha', 'app/api/clients/reclassify/route.ts',
+       /for \(const c of parte\)/,
+       'update do Postgres e tudo ou nada: um cadastro ruim derrubaria 199')
+checar('A trilha e POR CLIENTE', 'app/api/clients/reclassify/route.ts',
+       /action: 'type_changed'/, 'uma linha de resumo nao aparece na ficha do cliente')
+checar('O login do cliente e sincronizado', 'app/api/clients/reclassify/route.ts',
+       /client_type: 'individual'/, 'a copia no user_metadata ficaria divergente')
+checar('A resposta diz o que NAO foi feito', 'app/api/clients/reclassify/route.ts',
+       /jaNaoEramEmpresa/, 'devolver so o numero bonito esconde o problema')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

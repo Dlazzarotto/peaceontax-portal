@@ -48,6 +48,8 @@ import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito, avisoDeBaixaComAchEmTransito, limparAchEmTransito } from '@/lib/ach-transito'
 import { exigeAprovacao, podeAprovar, notaDaAprovacao, AVISO } from '@/lib/recebimento-aprovacao'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { normalizar as normalizarCodigo, formatoValido as codigoBemFormado,
+         RECUSA as RECUSA_CODIGO, type MotivoDaRecusa } from '@/lib/codigo-autorizacao'
 
 export const dynamic = 'force-dynamic'
 
@@ -224,8 +226,61 @@ export async function POST(req: NextRequest) {
   // ── Forma fora de cartão/Zelle: aprovação de gerente ou sócio ──
   // Fica por último de propósito: não se manda buscar um gerente para depois
   // a fatura ser recusada por outro motivo.
-  let aprovador: { email: string; userId: string } | null = null
+  // Dois caminhos provam o MESMO fato — "um gerente ou sócio autorizou isto":
+  //
+  //   CÓDIGO (preferido): o gerente abre a aba Autorização no próprio login,
+  //     dita o número, e ele vale para UMA cobrança. Senha de terceiro nunca
+  //     é digitada na máquina do balcão, e o limite de tentativas de login do
+  //     Supabase — 40 atendimentos/dia do mesmo IP na temporada — não entra
+  //     no caminho.
+  //   SENHA (reserva): serve quando quem aprova é quem está operando, e
+  //     evita travar o balcão se a aba estiver fora do ar.
+  //
+  // A trilha guarda QUAL dos dois foi usado: sem isso, "aprovado por X" não
+  // diz se X estava presente ou se emprestou a senha.
+  let aprovador: { email: string; userId: string; via: 'codigo' | 'senha' } | null = null
   if (exigeAprovacao(method)) {
+    const codigo = normalizarCodigo(b.approvalCode)
+
+    if (codigo) {
+      if (!codigoBemFormado(codigo)) {
+        return NextResponse.json({ error: RECUSA_CODIGO.formato, precisaAprovacao: true }, { status: 400 })
+      }
+      const { data: r, error: errCod } = await db.rpc('consumir_codigo_de_autorizacao', {
+        p_codigo: codigo, p_usado_por: auth.userId,
+        p_invoice_id: inv.id, p_valor: valor, p_forma: method,
+      })
+      if (errCod) {
+        const faltaFn = /consumir_codigo_de_autorizacao/.test(errCod.message)
+        return NextResponse.json({
+          error: faltaFn
+            ? 'Os códigos de autorização ainda não estão instalados — rode sql/codigo-de-autorizacao-v1.sql.'
+            : `Não foi possível validar o código: ${errCod.message}`,
+          precisaAprovacao: true,
+        }, { status: 500 })
+      }
+      const linha = Array.isArray(r) ? r[0] : r
+      if (!linha?.ok) {
+        const motivo = (linha?.motivo || 'nao_encontrado') as MotivoDaRecusa
+        return NextResponse.json({
+          error: RECUSA_CODIGO[motivo] || RECUSA_CODIGO.nao_encontrado,
+          precisaAprovacao: true,
+        }, { status: 403 })
+      }
+      // O código já foi QUEIMADO pela função. Se o nível de quem o emitiu
+      // mudou nesses minutos, o recebimento não passa — e o código não
+      // volta, de propósito: quem gerou pede outro a quem pode.
+      if (!podeAprovar(await getStaffLevel(String(linha.emitido_por)))) {
+        return NextResponse.json({ error: RECUSA_CODIGO.nivel, precisaAprovacao: true }, { status: 403 })
+      }
+      const { data: quemAprovou } = await db.auth.admin.getUserById(String(linha.emitido_por))
+      aprovador = {
+        userId: String(linha.emitido_por),
+        email: quemAprovou?.user?.email || '(sem e-mail)',
+        via: 'codigo',
+      }
+    } else {
+
     const emailAp = String(b.approverEmail || '').trim().toLowerCase()
     const senhaAp = String(b.approverPassword || '')
     if (!emailAp || !senhaAp) {
@@ -249,7 +304,8 @@ export async function POST(req: NextRequest) {
     if (!podeAprovar(await getStaffLevel(sessao.user.id))) {
       return NextResponse.json({ error: AVISO.nivel, precisaAprovacao: true }, { status: 403 })
     }
-    aprovador = { email: emailAp, userId: sessao.user.id }
+    aprovador = { email: emailAp, userId: sessao.user.id, via: 'senha' }
+    }
   }
 
   const { error } = await db.from('invoice_payments').insert({
@@ -277,7 +333,12 @@ export async function POST(req: NextRequest) {
     reason: aprovador ? notaDaAprovacao(aprovador.email, valor, method) : null,
     next: {
       amount: valor, method, comAchEmTransito: !!transito,
-      ...(aprovador ? { aprovadoPor: aprovador.userId, aprovadorEmail: aprovador.email } : {}),
+      ...(aprovador ? {
+        aprovadoPor: aprovador.userId,
+        aprovadorEmail: aprovador.email,
+        // Código ou senha: diz se quem autorizou estava presente ou não.
+        aprovadoVia: aprovador.via,
+      } : {}),
     },
   }).then(() => null, () => null)
 

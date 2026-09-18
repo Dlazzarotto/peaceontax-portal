@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
-import { sendEnvelope, type Signer } from '@/lib/docusign'
+import { sendEnvelope, type Signer, exigirProducao, ambienteDocusign } from '@/lib/docusign'
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
@@ -15,6 +15,12 @@ export async function POST(req: NextRequest) {
   if (level !== 'owner' && level !== 'manager') {
     return NextResponse.json({ error: 'Somente manager/owner enviam a 8879' }, { status: 403 })
   }
+
+  // Sandbox não assina de verdade. Recusar aqui é melhor que entregar ao
+  // cliente (e ao IRS) um documento com a tarja "for demonstration purposes
+  // only" — o pior dos dois mundos é parecer que a autorização existe.
+  const ambiente = exigirProducao()
+  if (ambiente) return NextResponse.json({ error: ambiente.erro, docusignDemo: true }, { status: 409 })
 
   const form = await req.formData()
   const file = form.get('file') as File | null

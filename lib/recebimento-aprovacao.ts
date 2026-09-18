@@ -51,8 +51,8 @@ export function nomeDaForma(method: string | null | undefined): string {
 
 export const AVISO = {
   falta: (method: string) =>
-    `${nomeDaForma(method)} só é registrado com a aprovação de um gerente ou sócio. ` +
-    `Cartão e Zelle você registra sozinho.`,
+    `${nomeDaForma(method)} só é registrado com a autorização de um gerente ou sócio: ` +
+    `peça o código da aba Autorização. Cartão e Zelle você registra sozinho.`,
   senha: (email: string) => `Senha não confere para ${email}.`,
   nivel: 'Quem aprovou não é gerente nem sócio. Chame alguém com esse nível.',
   tentativas: 'Muitas tentativas. Aguarde 1 minuto.',

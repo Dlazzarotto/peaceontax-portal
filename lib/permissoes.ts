@@ -26,7 +26,8 @@ import type { StaffLevel } from '@/lib/staff-perms'
 
 export type ChavePermissao =
   | 'criar' | 'enviar' | 'verTodasFaturas' | 'receber' | 'duplicar' | 'editar' | 'estornar'
-  | 'cancelar' | 'apagar' | 'darDesconto' | 'editarCliente'
+  | 'cancelar' | 'apagar' | 'darDesconto'
+  | 'verEmpresas' | 'editarCliente' | 'baixarArquivo'
   | 'verRelatorios' | 'verTotais'
 
 export interface Permissao {
@@ -61,6 +62,10 @@ export const PERMISSOES: Permissao[] = [
     separacao: 'quem recebe passaria a poder desfazer o próprio recebimento' },
   { chave: 'apagar',        titulo: 'Apagar fatura',
     descricao: 'Exceção. Bloqueado quando já houve pagamento.' },
+  { chave: 'verEmpresas',   titulo: 'Atender clientes Empresa',
+    descricao: 'Sem isto, a pessoa vê e atende apenas Pessoa física.' },
+  { chave: 'baixarArquivo', titulo: 'Baixar arquivo do cliente',
+    descricao: 'Abrir e salvar declaração, W-2, extrato. Ver a lista continua permitido.' },
   { chave: 'editarCliente', titulo: 'Editar cadastro do cliente',
     descricao: 'Nome, e-mail, telefone, endereço, EIN. Pede senha e motivo.' },
   { chave: 'verRelatorios', titulo: 'Ver relatórios do faturamento',
@@ -95,9 +100,16 @@ export function padraoDoNivel(nivel: StaffLevel): Conjunto {
     cancelar:      senior,
     apagar:        senior,
     darDesconto:   senior,
+    // Empresa é a carteira que a firma atende o ano todo: bookkeeping,
+    // payroll, EIN. Pessoa física é a temporada. Quem atende o balcão não
+    // precisa da carteira de empresas à vista.
+    verEmpresas:   senior,
     // Dado de cliente é cadastro, não rascunho: mexe em quem a firma
     // atende e em como ela o alcança.
     editarCliente: senior,
+    // Ver que o documento existe é uma coisa; tirar uma cópia do W-2 do
+    // cliente é outra. O arquivo é o que sai do prédio.
+    baixarArquivo: senior,
     verRelatorios: nivel === 'owner',
     verTotais:     nivel === 'owner',
   }

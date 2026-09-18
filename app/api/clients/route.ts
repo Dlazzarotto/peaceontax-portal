@@ -3,10 +3,17 @@
 //
 // O middleware só garante que existe sessão: sem a conferência abaixo, um
 // cliente logado no portal enxergava a carteira inteira da firma.
+//
+// E dentro da firma o escopo também não é livre: sem a autorização
+// `verEmpresas`, a lista e as contagens ficam em PESSOA FÍSICA. Filtrar aqui
+// é o que faz o cartão "Empresas" e o quadro delas simplesmente não
+// existirem para quem atende o balcão — a tela não precisa esconder nada,
+// porque o dado não chega.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
-import { getAuth } from '@/lib/api-auth'
+import { getAuth, SEM_ACESSO_EMPRESA } from '@/lib/api-auth'
+import { permissoesFinanceiro } from '@/lib/billing-perms'
 import { camposDoCliente, criticarCliente, deveConvidar } from '@/lib/novo-cliente'
 import { ETAPAS, resumirEtapas, buscaLiteral } from '@/lib/clientes-grupos'
 
@@ -14,11 +21,24 @@ export async function GET(req: NextRequest) {
   try {
     const auth = await getAuth()
     if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    const perms = await permissoesFinanceiro(auth.userId)
     const db = supabaseAdmin()
     const { searchParams } = new URL(req.url)
     const search = searchParams.get('search')
-    const type   = searchParams.get('type')
     const stage  = searchParams.get('stage')
+
+    const tipoPedido = searchParams.get('type')
+
+    // Pedir empresas sem autorização RECUSA. Trocar em silêncio por pessoa
+    // física devolveria uma lista que não é a pedida, e quem abriu o link ia
+    // concluir que a carteira de empresas está vazia.
+    if (tipoPedido === 'business' && !perms.verEmpresas) {
+      return NextResponse.json({ error: SEM_ACESSO_EMPRESA }, { status: 403 })
+    }
+    const type = tipoPedido
+    const TIPOS_VISIVEIS = perms.verEmpresas
+      ? ['business', 'individual']
+      : ['individual']
 
     // ?resumo=1 devolve só as CONTAGENS, por tipo e etapa. É o que os cartões
     // de entrada precisam. Com quase mil cadastros, trazer todas as linhas só
@@ -32,7 +52,10 @@ export async function GET(req: NextRequest) {
         return count ?? 0
       }
       const porTipo: Record<string, { stage: string; quantidade: number }[]> = {}
-      for (const t of ['business', 'individual']) {
+      // Só os tipos que esta pessoa pode ver. Contar empresas para quem não
+      // pode abri-las vazaria o tamanho da carteira e desenharia um cartão
+      // que não leva a nada.
+      for (const t of TIPOS_VISIVEIS) {
         porTipo[t] = await Promise.all(
           ETAPAS.map(async e => ({ stage: e, quantidade: await contar(t, e) })))
       }
@@ -43,19 +66,24 @@ export async function GET(req: NextRequest) {
         return count ?? 0
       }
       const resumo: Record<string, any> = {}
-      for (const t of ['business', 'individual']) {
+      for (const t of TIPOS_VISIVEIS) {
         const r = resumirEtapas(porTipo[t])
         const total = await totalDe(t)
         const fora = total - r.total
         resumo[t] = { ...r, total, pendente: r.pendente + Math.max(fora, 0) }
       }
-      return NextResponse.json({ resumo })
+      // A tela precisa saber que o cartão de Empresas não existe para ela —
+    // senão parece que a carteira zerou.
+    return NextResponse.json({ resumo, tipos: TIPOS_VISIVEIS })
     }
 
     let query = db.from('clients').select('*').eq('active', true).order('name')
     // Curinga do LIKE escapado: buscar "100%" casava com "1000" e "100X"
     if (search) query = query.ilike('name', `%${buscaLiteral(search)}%`)
-    if (type)   query = query.eq('type', type)
+    if (type) query = query.eq('type', type)
+    // Sem type na URL e sem `verEmpresas`, a lista sai só com pessoa física:
+    // um `GET /api/clients` sem filtro não pode devolver a carteira inteira.
+    else if (!perms.verEmpresas) query = query.in('type', TIPOS_VISIVEIS)
     if (stage)  query = query.eq('stage', stage)
 
     const { data, error } = await query.limit(2000)
@@ -85,7 +113,7 @@ export async function GET(req: NextRequest) {
         : 'sem_acesso',
       convidadoEm: c.email ? convidados.get(String(c.email).toLowerCase()) || null : null,
     }))
-    return NextResponse.json({ clients })
+    return NextResponse.json({ clients, tipos: TIPOS_VISIVEIS, perms })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }
