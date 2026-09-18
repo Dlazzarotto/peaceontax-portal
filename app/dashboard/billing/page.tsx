@@ -6,6 +6,8 @@
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
+import { formatar as formatarCodigo, formatoValido as codigoBemFormado,
+         relogio, segundosRestantes, MINUTOS_DE_VIDA } from '@/lib/codigo-autorizacao'
 
 interface Inv {
   id: string; number: string; doc_type: string; status: string; cliente: string
@@ -73,7 +75,11 @@ export default function BillingPage() {
   const [filtroStatus, setFiltroStatus] = useState('')
   const [busca, setBusca] = useState('')
   const [soAbertas, setSoAbertas] = useState(false)
-  const [aba, setAba] = useState<'docs' | 'contratos' | 'parcelamentos'>('docs')
+  const [aba, setAba] = useState<'docs' | 'contratos' | 'parcelamentos' | 'autorizacao'>('docs')
+  // Aba Autorização: só sócio e gerente. O código sai AQUI, no login de quem
+  // autoriza, e é ditado a quem está no balcão.
+  const [autz, setAutz] = useState<any>({ vivo: null, usados: [] })
+  const [autzSeg, setAutzSeg] = useState(0)
   // Relatórios do sócio (a rota recusa quem não é owner; aqui só a tela)
   const [relAberto, setRelAberto] = useState(false)
   const anoAtual = new Date().getFullYear()
@@ -127,6 +133,11 @@ export default function BillingPage() {
   const [pcCancelar, setPcCancelar] = useState<any | null>(null)
   const [pcMotivo, setPcMotivo]     = useState('')
   const [pcSenha, setPcSenha]       = useState('')
+  // Caminho preferido: o código que o gerente dita da aba Autorização, no
+  // login dele. A senha fica como reserva — senha de terceiro digitada na
+  // máquina do balcão é o que queríamos parar de pedir.
+  const [apCodigo, setApCodigo] = useState('')
+  const [apPorSenha, setApPorSenha] = useState(false)
   const [apEmail, setApEmail] = useState('')
   const [apSenha, setApSenha] = useState('')
   const [pagamentos, setPagamentos] = useState<any[]>([])
@@ -193,6 +204,30 @@ export default function BillingPage() {
     else setMsg('⚠️ Resposta inesperada ao carregar os parcelamentos.')
   }
   useEffect(() => { if (aba === 'parcelamentos') loadParcelamentos() }, [aba])
+
+  const loadAutorizacao = async () => {
+    const d = await jsonSeguro(await fetch('/api/account/approval-code'))
+    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
+    setAutz(d)
+  }
+  const gerarAutorizacao = async () => {
+    setBusy(true); setMsg('')
+    const d = await jsonSeguro(await fetch('/api/account/approval-code', { method: 'POST' }))
+    setBusy(false)
+    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
+    loadAutorizacao()
+  }
+  useEffect(() => { if (aba === 'autorizacao') loadAutorizacao() }, [aba])
+
+  // O relógio precisa andar: um código sem contagem passa por válido depois
+  // de vencido, e a equipe descobre pela recusa em vez de pela tela.
+  useEffect(() => {
+    if (aba !== 'autorizacao' || !autz?.vivo?.expira_em) { setAutzSeg(0); return }
+    const tick = () => setAutzSeg(segundosRestantes(autz.vivo.expira_em))
+    tick()
+    const t = setInterval(tick, 1000)
+    return () => clearInterval(t)
+  }, [aba, autz?.vivo?.expira_em])
 
   // Prévia local — espelha o cronograma que o servidor vai gravar
   const pcPreview = (() => {
@@ -485,7 +520,11 @@ export default function BillingPage() {
       body: JSON.stringify({
         invoiceId: receber.id, amount: Number(rValor), method: rForma, reference: rRef,
         ...(confirmarComAch ? { confirmarComAch: true } : {}),
-        ...(exigeAprovacao(rForma) ? { approverEmail: apEmail, approverPassword: apSenha } : {}),
+        ...(exigeAprovacao(rForma)
+          ? (apPorSenha
+              ? { approverEmail: apEmail, approverPassword: apSenha }
+              : { approvalCode: apCodigo })
+          : {}),
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
@@ -495,14 +534,22 @@ export default function BillingPage() {
       if (confirm(`${d.error}\n\nRegistrar assim mesmo?`)) return salvarRecebimento(true)
       return
     }
-    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); setApSenha(''); return }
+    if (!d?.ok) {
+      setMsg(`⚠️ ${d?.error}`)
+      // Código queimado ou senha errada: limpa os dois. Repetir o mesmo
+      // código não passa mais — cada um libera uma cobrança só.
+      setApSenha(''); setApCodigo('')
+      return
+    }
     setMsg(`✓ ${d.message}`)
-    setReceber(null); setRRef(''); setApEmail(''); setApSenha(''); load()
+    setReceber(null); setRRef(''); setApEmail(''); setApSenha(''); setApCodigo(''); load()
   }
 
   // Sem a aprovação preenchida o botão não sai do lugar: melhor travar aqui
   // do que mandar a senha vazia e voltar com erro.
-  const faltaAprovacao = exigeAprovacao(rForma) && (!apEmail.trim() || !apSenha)
+  const faltaAprovacao = exigeAprovacao(rForma) && (apPorSenha
+    ? (!apEmail.trim() || !apSenha)
+    : !codigoBemFormado(apCodigo))
 
   const card: React.CSSProperties = { background: '#fff', border: '1px solid #E2E8F4', borderRadius: 16, padding: '18px 20px', marginBottom: 16 }
   const inp: React.CSSProperties = { padding: '10px 12px', border: '1.5px solid #E2E8F4', borderRadius: 9, fontSize: 14.5, outline: 'none' }
@@ -622,7 +669,17 @@ export default function BillingPage() {
       )}
 
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid #E2E8F4' }}>
-        {([['docs', 'Orçamentos e faturas'], ['contratos', 'Contratos recorrentes'], ['parcelamentos', 'Parcelamentos']] as const).map(([k, r]) => (
+        {([
+          ['docs', 'Orçamentos e faturas', false],
+          ['contratos', 'Contratos recorrentes', false],
+          ['parcelamentos', 'Parcelamentos', false],
+          // `receber` é o que gerente e sócio têm por nível; assistente
+          // autorizado a receber NÃO passa a poder autorizar os outros —
+          // quem aprova é quem tem o nível, conferido de novo no servidor.
+          ['autorizacao', '🔑 Autorização', true],
+        ] as const).filter(([, , soAprovador]) =>
+          !soAprovador || perms?.nivel === 'owner' || perms?.nivel === 'manager',
+        ).map(([k, r]) => (
           <button key={k} onClick={() => setAba(k)}
             style={{ background: 'none', border: 'none', borderBottom: aba === k ? '3px solid #2D3278' : '3px solid transparent',
               padding: '10px 16px', fontSize: 14.5, fontWeight: 700, cursor: 'pointer',
@@ -1137,6 +1194,90 @@ export default function BillingPage() {
         </>
       )}
 
+      {aba === 'autorizacao' && (
+        <>
+          <section style={card}>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 17, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+              Autorizar um recebimento
+            </h3>
+            <p style={{ fontSize: 13.5, color: '#6A7A9A', margin: '0 0 16px', lineHeight: 1.6 }}>
+              Dinheiro em espécie, cheque, wire e as outras formas fora de cartão e Zelle
+              só entram com a sua autorização. Gere o número aqui e <strong>dite a quem
+              está atendendo</strong> — ele vale {autz?.minutos || MINUTOS_DE_VIDA} minutos
+              e <strong>uma cobrança só</strong>. Você nunca digita a sua senha no
+              computador de outra pessoa.
+            </p>
+
+            {autz?.vivo && autzSeg > 0 ? (
+              <div style={{ background: '#F0FBF4', border: '2px solid #1A6B4A', borderRadius: 14,
+                padding: '22px 20px', textAlign: 'center' as const }}>
+                <div style={{ fontSize: 11.5, fontWeight: 800, color: '#1A6B4A',
+                  textTransform: 'uppercase' as const, letterSpacing: 1, marginBottom: 8 }}>
+                  Dite este número
+                </div>
+                <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: 6, color: '#0F2340',
+                  fontFamily: 'monospace', lineHeight: 1.1 }}>
+                  {formatarCodigo(autz.vivo.codigo)}
+                </div>
+                <div style={{ fontSize: 14, color: autzSeg < 60 ? '#B02020' : '#1A6B4A',
+                  fontWeight: 700, marginTop: 10 }}>
+                  vence em {relogio(autzSeg)}
+                </div>
+                <button onClick={gerarAutorizacao} disabled={busy}
+                  style={{ ...btn('#6A7A9A', busy), marginTop: 14 }}>
+                  Gerar outro (este deixa de valer)
+                </button>
+              </div>
+            ) : (
+              <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F4', borderRadius: 14,
+                padding: '26px 20px', textAlign: 'center' as const }}>
+                <p style={{ fontSize: 13.5, color: '#6A7A9A', margin: '0 0 14px' }}>
+                  {autz?.vivo ? 'O seu último código venceu.' : 'Nenhum código ativo.'}
+                </p>
+                <button onClick={gerarAutorizacao} disabled={busy} style={btn('#1A6B4A', busy)}>
+                  {busy ? 'Gerando…' : 'Gerar código de autorização'}
+                </button>
+              </div>
+            )}
+          </section>
+
+          <div style={{ ...card, overflowX: 'auto' as const }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 10 }}>
+              O QUE OS SEUS CÓDIGOS AUTORIZARAM
+            </div>
+            {(autz?.usados || []).length === 0 ? (
+              <p style={{ fontSize: 14, color: '#4A5A70', margin: 0 }}>
+                Nenhum código seu foi usado ainda.
+              </p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 520 }}>
+                <thead><tr>
+                  {['Código', 'Fatura', 'Valor', 'Forma', 'Usado em'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
+                      color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4' }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {(autz.usados || []).map((u: any) => (
+                    <tr key={u.codigo} style={{ borderBottom: '1px solid #F0F4FA' }}>
+                      <td style={{ padding: '10px', fontSize: 13.5, fontFamily: 'monospace', fontWeight: 700 }}>
+                        {formatarCodigo(u.codigo)}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{u.fatura || '—'}</td>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>{money(u.valor || 0)}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5 }}>{(FORMAS.find(([v]) => v === u.forma)?.[1]) || u.forma || '—'}</td>
+                      <td style={{ padding: '10px', fontSize: 13, color: '#6A7A9A', whiteSpace: 'nowrap' as const }}>
+                        {u.usado_em ? new Date(u.usado_em).toLocaleString('en-US') : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
       {/* Cancelar parcelamento: o acordo desandou e o cliente vai pagar de
           outro jeito. O que já foi pago FICA pago — isto para a cobrança
           futura, não desfaz recebimento (isso é estorno). */}
@@ -1303,17 +1444,44 @@ export default function BillingPage() {
                   🔐 {nomeDaForma(rForma)} pede aprovação
                 </div>
                 <p style={{ fontSize: 12, color: '#7A5A10', margin: '0 0 10px', lineHeight: 1.55 }}>
-                  Um gerente ou sócio precisa autorizar este lançamento com o
-                  próprio login. Cartão e Zelle você registra sozinho.
+                  Um gerente ou sócio precisa autorizar este lançamento.
+                  Cartão e Zelle você registra sozinho.
                 </p>
-                <input value={apEmail} onChange={e => setApEmail(e.target.value)}
-                  placeholder="E-mail de quem autoriza" autoComplete="off"
-                  style={{ ...inp, width: '100%', marginBottom: 8, boxSizing: 'border-box' as const,
-                    borderColor: '#E0C880', fontSize: 13 }} />
-                <input type="password" value={apSenha} onChange={e => setApSenha(e.target.value)}
-                  placeholder="Senha de quem autoriza" autoComplete="new-password"
-                  style={{ ...inp, width: '100%', boxSizing: 'border-box' as const,
-                    borderColor: '#E0C880', fontSize: 13 }} />
+                {!apPorSenha ? (
+                  <>
+                    <input value={apCodigo} onChange={e => setApCodigo(e.target.value.toUpperCase())}
+                      placeholder="Código do gerente (ex.: ACDE-3467)" autoComplete="off"
+                      maxLength={12} spellCheck={false}
+                      style={{ ...inp, width: '100%', boxSizing: 'border-box' as const,
+                        borderColor: '#E0C880', fontSize: 18, fontWeight: 800,
+                        letterSpacing: 2, textAlign: 'center' as const, fontFamily: 'monospace' }} />
+                    <p style={{ fontSize: 11.5, color: '#7A5A10', margin: '8px 0 0', lineHeight: 1.5 }}>
+                      O gerente abre <strong>Financeiro → Autorização</strong> no computador dele e
+                      dita o número. Vale {MINUTOS_DE_VIDA} minutos e <strong>uma cobrança</strong>.
+                    </p>
+                    <button type="button" onClick={() => setApPorSenha(true)}
+                      style={{ background: 'none', border: 'none', color: '#7A5A10', fontSize: 11.5,
+                        textDecoration: 'underline', cursor: 'pointer', padding: '8px 0 0' }}>
+                      O gerente está aqui e prefere usar a senha
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <input value={apEmail} onChange={e => setApEmail(e.target.value)}
+                      placeholder="E-mail de quem autoriza" autoComplete="off"
+                      style={{ ...inp, width: '100%', marginBottom: 8, boxSizing: 'border-box' as const,
+                        borderColor: '#E0C880', fontSize: 13 }} />
+                    <input type="password" value={apSenha} onChange={e => setApSenha(e.target.value)}
+                      placeholder="Senha de quem autoriza" autoComplete="new-password"
+                      style={{ ...inp, width: '100%', boxSizing: 'border-box' as const,
+                        borderColor: '#E0C880', fontSize: 13 }} />
+                    <button type="button" onClick={() => { setApPorSenha(false); setApSenha('') }}
+                      style={{ background: 'none', border: 'none', color: '#7A5A10', fontSize: 11.5,
+                        textDecoration: 'underline', cursor: 'pointer', padding: '8px 0 0' }}>
+                      Voltar a usar o código
+                    </button>
+                  </>
+                )}
               </div>
             )}
             </>)}

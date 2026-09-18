@@ -480,6 +480,33 @@ checar('Trocar o tipo sincroniza o login', 'app/api/clients/profile/route.ts',
 checar('Trocar o tipo tem acao propria na trilha', 'app/api/clients/profile/route.ts',
        /'type_changed'/, 'trocar tipo nao e uma edicao de perfil qualquer')
 
+
+titulo('CODIGO DE AUTORIZACAO: UM CODIGO, UMA COBRANCA')
+checar('A regra do codigo vive num modulo so', 'lib/codigo-autorizacao.ts',
+       /export const ALFABETO/, 'o modulo do codigo sumiu')
+checar('O alfabeto nao tem caractere ambiguo', 'lib/codigo-autorizacao.ts',
+       /ALFABETO = 'ACDEFGHJKMNPQRTUVWXY34679'/,
+       'o codigo e DITADO: O x 0 e I x 1 fazem a equipe errar')
+checar('O consumo e atomico no banco', 'sql/codigo-de-autorizacao-v1.sql',
+       /update public\.approval_codes[\s\S]{0,400}usado_em is null[\s\S]{0,200}returning/,
+       'conferir antes e gravar depois deixa dois atendentes usarem o mesmo codigo')
+checar('O codigo guarda O QUE autorizou', 'sql/codigo-de-autorizacao-v1.sql',
+       /invoice_id[\s\S]{0,200}valor[\s\S]{0,200}forma/,
+       'sem fatura, valor e forma nao ha rastro de o que foi autorizado')
+checar('So gerente ou socio gera', 'app/api/account/approval-code/route.ts',
+       /podeAprovar\(nivel\)/, 'qualquer um geraria a propria autorizacao')
+checar('Gerar um novo encerra o anterior', 'app/api/account/approval-code/route.ts',
+       /\.is\('usado_em', null\)[\s\S]{0,200}expira_em/,
+       'tres cliques deixariam tres autorizacoes vivas')
+checar('O recebimento consome o codigo', 'app/api/billing/payments/route.ts',
+       /rpc\('consumir_codigo_de_autorizacao'/, 'sem isto o codigo nao vale nada')
+checar('Nivel de quem emitiu e conferido no uso', 'app/api/billing/payments/route.ts',
+       /podeAprovar\(await getStaffLevel\(String\(linha\.emitido_por\)\)\)/,
+       'quem deixou de ser gerente nao pode autorizar por codigo antigo')
+checar('A trilha diz se foi codigo ou senha', 'app/api/billing/payments/route.ts',
+       /aprovadoVia: aprovador\.via/,
+       '"aprovado por X" nao diz se X estava presente ou emprestou a senha')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

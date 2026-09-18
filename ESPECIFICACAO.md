@@ -169,6 +169,24 @@ Senha certa não basta — o sistema confere que quem aprovou é mesmo gerente
 ou sócio. E a trava é da **rota**, não da tela: esconder o botão não é
 controle de acesso.
 
+**A autorização é um código, e vale uma cobrança.** O gerente abre
+**Financeiro → Autorização** no próprio login, um número aparece e ele dita a
+quem está atendendo. Dez minutos de vida, **um uso**. O primeiro uso o
+queima, e o que ele liberou — fatura, valor, forma, quem usou — fica gravado.
+A própria aba mostra ao gerente o que os códigos dele autorizaram.
+
+Isso substituiu pedir a senha do gerente no computador do balcão, que tinha
+três defeitos: senha de terceiro digitada em máquina alheia (quem está ao
+lado vê, o navegador oferece salvar, e a senha serve para tudo); o limite de
+tentativas de login do Supabase por IP, que na temporada faz a aprovação
+falhar sem nada de errado ter acontecido; e uma senha liberando infinitas
+cobranças, sem ninguém saber quantas. A senha continua como **reserva**, para
+quando quem aprova é quem está operando — e a trilha diz qual dos dois
+caminhos foi usado.
+
+Gerar um código novo encerra o anterior: um gerente, um código vivo. Três
+cliques não podem virar três autorizações.
+
 ### 3.2 Duas perguntas diferentes: a porta e o poder
 
 São decisões separadas e não podem ser confundidas:

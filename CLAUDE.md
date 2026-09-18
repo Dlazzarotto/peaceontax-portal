@@ -148,6 +148,23 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   autorizar `receber` a quem também emite. Senha certa não basta, `podeAprovar`
   confere o nível do aprovador; quem aprovou vai para `invoice_audit`
   (`reason` e `next.aprovadoPor`). A trava é da ROTA — a tela só antecipa.
+- **A autorização é um CÓDIGO, um por cobrança** (`lib/codigo-autorizacao.ts`,
+  tabela `approval_codes`, migração `sql/codigo-de-autorizacao-v1.sql`). O
+  gerente abre **Financeiro → Autorização** no PRÓPRIO login, aparece um
+  número e ele dita; vale 10 minutos e **uma** cobrança. Substituiu pedir a
+  senha do gerente na máquina do balcão, que tinha três defeitos: senha de
+  terceiro em máquina alheia, o limite de tentativas de login do Supabase por
+  IP (40 atendimentos/dia do mesmo escritório na temporada) e uma senha
+  liberando infinitas cobranças. A senha fica como **reserva** para quando
+  quem aprova é quem opera, e a trilha grava `aprovadoVia: 'codigo' | 'senha'`
+  — sem isso "aprovado por X" não diz se X estava presente.
+  **O consumo é atômico**: um `UPDATE ... where usado_em is null and
+  expira_em > now() RETURNING` na função `consumir_codigo_de_autorizacao`.
+  Conferir antes e gravar depois deixaria dois atendentes liberarem duas
+  cobranças com o mesmo número — testado com duas sessões simultâneas.
+  Gerar um código novo encerra o anterior não usado (um gerente, um código
+  vivo). O alfabeto não tem `O·0·I·1·L·S·5·Z·2`: o número é DITADO. O nível
+  de quem emitiu é conferido **no uso**, não só na emissão.
 - **Dentro da firma, todos veem todos os clientes.** `canAccessClient` faz
   `if (auth.isStaff) return true`; `clients.assignee` é rótulo de CRM, não
   controle de acesso. A tela de equipe prometia "Staff: assigned clients
