@@ -294,6 +294,23 @@ A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimon
 
 ### 4.2 Bookkeeping
 
+**Escolher o payee sugere a conta; quem lança decide.** No lançamento que o
+sistema não classificou — o cheque, em que só vêm número e valor —, a equipe
+informa o payee e a conta contábil. Ao escolher o payee, o sistema mostra
+**todas as contas que esse payee já usou**, da mais recente para a mais
+antiga, com quantas vezes cada uma. Um clique aceita.
+
+Antes ele **gravava** a conta do último lançamento, sozinho. Funciona para o
+fornecedor que sempre cai na mesma conta e erra sempre para o que não cai — há
+cliente com o mesmo payee em contas diferentes (material numa, serviço noutra,
+combustível noutra). E a última, sozinha, esconde que existem outras: quem
+lança não tinha como saber que precisava pensar. Com mais de uma conta no
+histórico, a tela avisa em vez de sugerir em silêncio.
+
+O que o sistema **reconhece sozinho** na importação (regra e IA) não muda:
+continua sendo reconhecido e indo para 🔵 Reconhecidas, aguardando aprovação.
+Aceitar uma sugestão também para ali — nunca direto ao registro.
+
 O núcleo operacional. Importa movimentação bancária por **Plaid**, **PDF de extrato** ou **CSV**, classifica automaticamente e produz os relatórios.
 
 **Histórico do QuickBooks.** Para trazer o passado sem redigitar: exporta-se do QuickBooks Online o relatório *Transaction List by Date* (ou *Transaction Detail by Account*) em CSV e importa-se na aba Bookkeeping. Cada conta do relatório vira (ou aponta para) uma conta bancária do cliente; a categoria vem do *Split* e, quando o nome casa com uma categoria do sistema, o lançamento entra já aprovado (a decisão foi de uma pessoa no QuickBooks). *Split* sem correspondência pode ser mapeado na prévia ou fica pendente; "-Split-" (várias categorias) sempre fica pendente. O dedupe é o mesmo do CSV e do PDF, e a origem fica marcada como `quickbooks`.

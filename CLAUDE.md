@@ -420,6 +420,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   o painel (`/dashboard`) conta em `lib/painel.ts` e reaproveita o aging e a
   receita recorrente de `lib/relatorios-financeiro.ts`. Duas telas nunca
   devem calcular o mesmo indicador de jeitos diferentes.
+- **Escolher o payee SUGERE a conta, não grava** (`lib/payee-contas.ts`,
+  `/api/bookkeeping/payee-category`). Ao se escolher o payee numa linha sem
+  conta, o sistema pegava a conta do último lançamento dele e aplicava
+  sozinho. Funciona para o fornecedor que sempre cai na mesma conta e **erra
+  sempre** para o que não cai — há cliente com o mesmo payee em contas
+  diferentes (material numa, serviço noutra, combustível noutra). Pior: a
+  última, sozinha, **esconde** que existem outras, e quem lança não tem como
+  saber que precisa pensar. Agora a rota devolve TODAS as contas já usadas,
+  ordenadas da mais recente para a mais antiga, com quantas vezes cada uma —
+  e `variado` avisa quando é mais de uma. A tela mostra e não grava; um
+  clique aceita e vai para `auto` (🔵 Reconhecidas, aguardando aprovação),
+  nunca direto ao registro. É o caminho MANUAL, o do cheque, em que só vêm
+  número e valor: **o automático (regra e IA na importação) não passa por
+  aqui e não muda.** A rota e a tela chamam `historicoDoPayee`, a mesma
+  contagem. O `ilike` do payee escapa o curinga (um payee "100%" casaria com
+  tudo que começa em 100) e a consulta que falha vira erro, não "payee sem
+  histórico" — dizer que não há sugestão quando há faz escolher no escuro.
+  30 casos em `testes/payee-contas.mts`.
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.

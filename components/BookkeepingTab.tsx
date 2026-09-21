@@ -4,6 +4,7 @@
 // Categorização automática (regras + IA) chega no módulo 5.2.
 
 import { useState, useEffect, useRef } from 'react'
+import { historicoDoPayee, avisoDeVariacao, type HistoricoDoPayee } from '@/lib/payee-contas'
 import { sugerirTexto } from '@/lib/regra-texto'
 import ReconcileTab from '@/components/ReconcileTab'
 
@@ -123,6 +124,15 @@ const STATUS_LABEL: Record<string,string> = {
 
 export default function BookkeepingTab({ clientId }: Props) {
   const [txs, setTxs] = useState<Tx[]>([])
+  // Contas que o payee escolhido já usou, por linha. É SUGESTÃO: nada é
+  // gravado até alguém clicar. Some quando a linha ganha conta.
+  const [sugestoes, setSugestoes] = useState<Record<string, {
+    contas: { category: string; vezes: number; ultima: string | null }[]
+    sugerida: string | null
+    variado: boolean
+    origem: 'tela' | 'historico' | 'regra'
+    aviso: string | null
+  }>>({})
   const [summary, setSummary] = useState<any>(null)
   const [statements, setStatements] = useState<Doc[]>([])
   const [loading, setLoading] = useState(true)
@@ -732,60 +742,70 @@ export default function BookkeepingTab({ clientId }: Props) {
   const suggestPattern = (desc: string) => sugerirTexto(desc)
 
   // Última conta usada para este payee NESTE cliente (histórico) — ou a regra dele
-  const lastCategoryForPayee = (payee: string): string | null => {
+  /**
+   * Histórico local do payee, com a MESMA contagem do servidor
+   * (lib/payee-contas.ts). Serve para a sugestão aparecer na hora, antes da
+   * resposta da rota — que depois substitui, porque enxerga todo o histórico
+   * do cliente e não só o que está carregado na tela.
+   */
+  const historicoLocal = (payee: string): HistoricoDoPayee => {
     const key = payee.trim().toLowerCase()
-    if (!key) return null
-    const hist = txs
-      .filter(t => (t.payee || '').trim().toLowerCase() === key && t.category)
-      .sort((a, b) => String(b.tx_date).localeCompare(String(a.tx_date)))
-    if (hist.length) return hist[0].category as string
+    if (!key) return { contas: [], sugerida: null, variado: false }
+    const h = historicoDoPayee(
+      txs.filter(t => (t.payee || '').trim().toLowerCase() === key)
+         .map(t => ({ category: t.category, tx_date: t.tx_date })),
+    )
+    if (h.contas.length) return h
+    // Sem lançamento: a regra que aponta o payee vale como sugestão única.
     const rule = rules.find(r => String(r.payee || '').trim().toLowerCase() === key && r.category)
-    return rule?.category || null
+    return rule
+      ? { contas: [{ category: rule.category as string, vezes: 0, ultima: null }],
+          sugerida: rule.category as string, variado: false }
+      : { contas: [], sugerida: null, variado: false }
   }
 
+  /**
+   * Escolher o payee NÃO grava mais a conta.
+   *
+   * Gravava: pegava a conta do último lançamento do payee e aplicava sozinha.
+   * Funciona para o fornecedor que sempre cai na mesma conta, e erra sempre
+   * para o que não cai — há cliente com o mesmo payee em contas diferentes.
+   * Pior, a última sozinha ESCONDE que existem outras.
+   *
+   * Agora sugere: mostra as contas que esse payee já usou, com quantas vezes
+   * cada uma, e quem lança decide num clique. É o caminho manual — o do
+   * cheque, em que só vêm número e valor. O automático (regra e IA na
+   * importação) não passa por aqui e continua indo para 🔵 Reconhecidas.
+   */
   const setTxPayee = async (id: string, payee: string, type: 'vendor' | 'customer' = 'vendor') => {
     const clean = payee.trim()
     await fetch('/api/bookkeeping/transactions', {
       method:'PATCH', headers:{'content-type':'application/json'},
       body: JSON.stringify({ id, payee: clean }),
     })
+    setTxs(prev => prev.map(t => t.id === id ? { ...t, payee: clean } : t))
 
-    // Payee já usado antes? Traz a mesma conta do último lançamento dele.
-    // Só quando a linha ainda está SEM categoria — nunca sobrescreve o que você já definiu.
+    // Só sugere em linha SEM conta — nunca questiona o que você já definiu.
     const row = txs.find(t => t.id === id)
-    let applied: string | null = null
-    let origem = 'último lançamento deste payee'
     if (clean && row && !row.category) {
-      // 1) tela atual (instantâneo) — 2) TODO o histórico do cliente, qualquer ano/banco
-      let cat = lastCategoryForPayee(clean)
-      if (!cat) {
-        try {
-          const r = await fetch(
-            `/api/bookkeeping/payee-category?clientId=${clientId}&payee=${encodeURIComponent(clean)}`
-          ).then(x => x.json())
-          if (r?.category) {
-            cat = r.category
-            origem = r.source === 'regra'
-              ? 'regra deste payee'
-              : `último lançamento (${String(r.lastDate || '').slice(0, 10)})`
-          }
-        } catch { /* sem sugestão — segue sem categoria */ }
+      const local = historicoLocal(clean)
+      if (local.contas.length) {
+        setSugestoes(prev => ({ ...prev, [id]: { ...local, origem: 'tela', aviso: avisoDeVariacao(local) } }))
       }
-      if (cat) {
-        await fetch('/api/bookkeeping/transactions', {
-          method:'PATCH', headers:{'content-type':'application/json'},
-          // status 'auto' = fica em 🔵 Reconhecidas aguardando SUA aprovação.
-          // Sem isso o servidor marcaria 'reviewed' e o lançamento iria direto ao registro.
-          body: JSON.stringify({ id, category: cat, status: 'auto' }),
-        })
-        applied = cat
-      }
+      try {
+        const r = await fetch(
+          `/api/bookkeeping/payee-category?clientId=${clientId}&payee=${encodeURIComponent(clean)}`
+        ).then(x => x.json())
+        if (r?.error) setMsg(`⚠️ ${r.error}`)
+        else if (Array.isArray(r?.contas) && r.contas.length) {
+          setSugestoes(prev => ({ ...prev, [id]: {
+            contas: r.contas, sugerida: r.category, variado: !!r.variado,
+            origem: r.source === 'regra' ? 'regra' : 'historico', aviso: r.aviso || null,
+          } }))
+        }
+      } catch { /* sem sugestão — a pessoa escolhe na lista, como sempre */ }
     }
 
-    setTxs(prev => prev.map(t => t.id === id
-      ? { ...t, payee: clean, ...(applied ? { category: applied, categorized_by: 'staff', status: 'auto' } : {}) }
-      : t))
-    if (applied) setMsg(`✓ ${clean}: conta "${applied}" aplicada (${origem}) — o lançamento foi para 🔵 Reconhecidas, aguardando sua aprovação.`)
     // Novo nome entra no cadastro de Payees para virar sugestão nas próximas
     if (clean && !payeeRegistry.some(p2 => p2.name.toLowerCase() === clean.toLowerCase())) {
       await fetch('/api/bookkeeping/payees', {
@@ -794,6 +814,20 @@ export default function BookkeepingTab({ clientId }: Props) {
       }).catch(() => null)
       loadPayees()
     }
+  }
+
+  /** Aceitar uma das contas sugeridas: um clique, sem abrir a janela de regra. */
+  const aplicarSugestao = async (id: string, category: string) => {
+    await fetch('/api/bookkeeping/transactions', {
+      method:'PATCH', headers:{'content-type':'application/json'},
+      // status 'auto' = 🔵 Reconhecidas, aguardando aprovação. Sem isso o
+      // servidor marcaria 'reviewed' e o lançamento iria direto ao registro.
+      body: JSON.stringify({ id, category, status: 'auto' }),
+    })
+    setTxs(prev => prev.map(t => t.id === id
+      ? { ...t, category, categorized_by: 'staff', status: 'auto' } : t))
+    setSugestoes(prev => { const n = { ...prev }; delete n[id]; return n })
+    setMsg(`✓ Conta "${category}" aplicada — o lançamento foi para 🔵 Reconhecidas, aguardando sua aprovação.`)
   }
 
   const setTxCategory = (tx: Tx, category: string) => {
@@ -1985,6 +2019,8 @@ export default function BookkeepingTab({ clientId }: Props) {
                         if (e.target.value.startsWith('__acct__:')) {
                           transferirPara(t, e.target.value.slice(9)); return
                         }
+                        // Escolheu na lista: a sugestão cumpriu o papel.
+                        setSugestoes(prev => { const n = { ...prev }; delete n[t.id]; return n })
                         setTxCategory(t, e.target.value)
                       }}
                       style={{ padding:'4px 8px', border:'1.5px solid #e2e8f4', borderRadius:7, fontSize:11.5,
@@ -2010,6 +2046,44 @@ export default function BookkeepingTab({ clientId }: Props) {
                       )}
                       <option value="__new__">➕ Criar nova categoria…</option>
                     </select>
+
+                    {/* Sugestão do payee: as contas que ele já usou. NADA foi
+                        gravado — antes a última era aplicada sozinha, e para o
+                        payee com contas variadas isso errava sempre. Um clique
+                        aceita; escolher na lista acima também resolve. */}
+                    {!t.category && sugestoes[t.id]?.contas?.length > 0 && (
+                      <div style={{ marginTop:6, padding:'8px 10px', borderRadius:9,
+                        background: sugestoes[t.id].variado ? '#fff8e8' : '#f3f8ff',
+                        border: `1.5px solid ${sugestoes[t.id].variado ? '#f0d8a0' : '#c8d4f0'}`,
+                        maxWidth:250 }}>
+                        <div style={{ fontSize:10.5, fontWeight:800, letterSpacing:0.3,
+                          color: sugestoes[t.id].variado ? '#7a5a10' : '#2D3278', marginBottom:5 }}>
+                          {sugestoes[t.id].variado
+                            ? `⚠️ ${sugestoes[t.id].contas.length} contas já usadas`
+                            : sugestoes[t.id].origem === 'regra' ? 'REGRA DESTE PAYEE' : 'JÁ USADA ANTES'}
+                        </div>
+                        {sugestoes[t.id].variado && sugestoes[t.id].aviso && (
+                          <div style={{ fontSize:10.5, color:'#7a5a10', lineHeight:1.45, marginBottom:6 }}>
+                            {sugestoes[t.id].aviso}
+                          </div>
+                        )}
+                        <div style={{ display:'flex', flexDirection:'column' as const, gap:4 }}>
+                          {sugestoes[t.id].contas.slice(0, 5).map(c => (
+                            <button key={c.category} onClick={() => aplicarSugestao(t.id, c.category)}
+                              style={{ textAlign:'left' as const, background:'#fff', cursor:'pointer',
+                                border:'1px solid #d8e0ee', borderRadius:7, padding:'5px 8px', width:'100%' }}>
+                              <div style={{ fontSize:11.5, fontWeight:700, color:'#0f2340' }}>{c.category}</div>
+                              <div style={{ fontSize:10, color:'#6a7a9a' }}>
+                                {c.vezes > 0
+                                  ? `${c.vezes}×${c.ultima ? ` · última ${fmtDate(c.ultima)}` : ''}`
+                                  : 'pela regra do payee'}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {newCatRow === t.id && (
                       <div style={{ marginTop:6, padding:'10px 11px', background:'#f8fafc',
                         border:'1.5px solid #2D327840', borderRadius:10, minWidth:250 }}>

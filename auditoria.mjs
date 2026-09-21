@@ -584,6 +584,36 @@ checar('O login do cliente e sincronizado', 'app/api/clients/reclassify/route.ts
 checar('A resposta diz o que NAO foi feito', 'app/api/clients/reclassify/route.ts',
        /jaNaoEramEmpresa/, 'devolver so o numero bonito esconde o problema')
 
+
+titulo('PAYEE SUGERE A CONTA, NAO GRAVA')
+// Escolher o payee gravava a conta do ultimo lancamento dele. Funciona para o
+// fornecedor que sempre cai na mesma conta e erra sempre para o que nao cai —
+// ha cliente com o mesmo payee em contas diferentes. E a ultima, sozinha,
+// ESCONDE que existem outras.
+checar('A contagem vive num modulo puro', 'lib/payee-contas.ts',
+       /export function historicoDoPayee/, 'o historico do payee sumiu')
+checar('A rota devolve TODAS as contas', 'app/api/bookkeeping/payee-category/route.ts',
+       /contas: h\.contas/, 'so a ultima esconde que o payee usa varias')
+checar('E avisa quando ha mais de uma', 'app/api/bookkeeping/payee-category/route.ts',
+       /variado: h\.variado/, 'sem o aviso quem lanca nao sabe que precisa pensar')
+checar('A tela usa o MESMO modulo da rota', 'components/BookkeepingTab.tsx',
+       /historicoDoPayee\(/,
+       'tela e servidor contando diferente mostram numeros diferentes')
+recusar('Escolher o payee nao grava a conta', 'components/BookkeepingTab.tsx',
+        /body: JSON\.stringify\(\{ id, category: cat, status: 'auto' \}\)/,
+        'era isto que aplicava a conta sozinha ao escolher o payee')
+checar('Aplicar a sugestao e um clique', 'components/BookkeepingTab.tsx',
+       /const aplicarSugestao = async/, 'sugerir sem um jeito rapido de aceitar so atrasa')
+checar('O aceite vai para Reconhecidas, nao ao registro', 'components/BookkeepingTab.tsx',
+       /id, category, status: 'auto'/,
+       "sem status 'auto' o servidor marca 'reviewed' e pula a aprovacao")
+checar('O curinga do LIKE no payee e escapado', 'app/api/bookkeeping/payee-category/route.ts',
+       /ilike\('payee', buscaLiteral\(payee\)\)/,
+       'um payee chamado "100%" casaria com qualquer coisa comecando em 100')
+checar('Consulta que falha nao vira payee sem historico',
+       'app/api/bookkeeping/payee-category/route.ts', /errHist/,
+       'diria que nao ha sugestao quando ha, e o lancador escolheria no escuro')
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
