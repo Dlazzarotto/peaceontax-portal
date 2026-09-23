@@ -56,6 +56,18 @@ begin
   end if;
 end $$;
 
+-- ── Quem enxerga a tabela ───────────────────────────────────
+-- RLS ligada e SEM policy e proposital, igual a wa_* : nenhum navegador le
+-- nem escreve aqui. Quem trabalha nesta tabela e o servidor, com a service
+-- role key, que passa por cima da RLS.
+--
+-- Sem isto a tabela nasce EXPOSTA no PostgREST para quem tem a anon key --
+-- que esta no navegador de todo mundo que entra no portal. Daria para ler um
+-- codigo vivo antes de o gerente ditar, e daria para INSERIR um codigo
+-- proprio e autorizar a si mesmo. O controle inteiro cairia.
+alter table public.approval_codes enable row level security;
+revoke all on public.approval_codes from anon, authenticated;
+
 -- ── O consumo ────────────────────────────────────────────────────────────
 create or replace function public.consumir_codigo_de_autorizacao(
   p_codigo     text,
@@ -68,7 +80,6 @@ returns table (ok boolean, motivo text, emitido_por uuid)
 language plpgsql
 as $function$
 declare
-  achado record;
   emissor uuid;
 begin
   -- Primeiro TENTA consumir. A condicao esta no proprio UPDATE, entao dois
@@ -90,22 +101,30 @@ begin
   end if;
 
   -- Nao consumiu: agora sim vale explicar por que.
-  select * into achado from public.approval_codes
-   where codigo = upper(btrim(p_codigo));
+  --
+  -- Aqui NAO se usa `select ... into <variavel>`: o editor de SQL do Supabase
+  -- le essa linha como o `SELECT ... INTO <tabela>` do SQL puro, conclui que
+  -- a migracao criou uma tabela com o nome da VARIAVEL e reescreve o script
+  -- para acrescentar `alter table <variavel> enable row level security` --
+  -- cortando o corpo da funcao no meio. O erro que aparece e
+  -- "unterminated dollar-quoted string", que nao tem nada a ver com a causa.
+  -- RETURN QUERY preenche FOUND, entao da para decidir sem variavel nenhuma.
+  return query
+  select false,
+         (case when ac.usado_em is not null then 'ja_usado' else 'expirado' end)::text,
+         ac.emitido_por
+    from public.approval_codes ac
+   where ac.codigo = upper(btrim(p_codigo));
 
-  if achado is null then
+  if not found then
     return query select false, 'nao_encontrado'::text, null::uuid;
-  elsif achado.usado_em is not null then
-    return query select false, 'ja_usado'::text, achado.emitido_por;
-  else
-    return query select false, 'expirado'::text, achado.emitido_por;
   end if;
 end $function$;
 
 -- ── Conferencia ───────────────────────────────────────────────────────────
 do $$
 declare
-  t integer; i integer; c integer; f integer;
+  t integer; i integer; c integer; f integer; r boolean;
 begin
   select count(*) into t from information_schema.tables
    where table_schema = 'public' and table_name = 'approval_codes';
@@ -115,8 +134,9 @@ begin
   select count(*) into c from pg_constraint where conname = 'approval_codes_codigo_ck';
   select count(*) into f from pg_proc
    where pronamespace = 'public'::regnamespace and proname = 'consumir_codigo_de_autorizacao';
-  raise notice 'tabela: % | indices (esperado 3): % | check: % | funcao: %', t, i, c, f;
-  if t <> 1 or i <> 3 or c <> 1 or f <> 1 then
+  select relrowsecurity into r from pg_class where oid = 'public.approval_codes'::regclass;
+  raise notice 'tabela: % | indices (esperado 3): % | check: % | funcao: % | RLS: %', t, i, c, f, r;
+  if t <> 1 or i <> 3 or c <> 1 or f <> 1 or r is not true then
     raise exception 'Migracao incompleta -- confira os avisos acima';
   end if;
 end $$;

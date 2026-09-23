@@ -614,6 +614,34 @@ checar('Consulta que falha nao vira payee sem historico',
        'app/api/bookkeeping/payee-category/route.ts', /errHist/,
        'diria que nao ha sugestao quando ha, e o lancador escolheria no escuro')
 
+titulo('TABELA NOVA NASCE FECHADA PARA O NAVEGADOR')
+// No Supabase, tabela nova no schema public ja vem com privilegio para anon e
+// authenticated -- a RLS e que segura. Sem `enable row level security`, a
+// tabela responde pelo PostgREST a qualquer um com a anon key, que esta no
+// navegador de todo mundo que entra no portal. Foi o que aconteceu com
+// staff_grants: uma linha inserida de fora concedia qualquer autorizacao.
+{
+  const sqls = []
+  for (const d of ['.', 'sql']) {
+    const dir = join(raiz, d)
+    if (!existsSync(dir)) continue
+    for (const nome of readdirSync(dir)) if (nome.endsWith('.sql')) sqls.push(join(dir, nome))
+  }
+  const tudo = sqls.map(f => readFileSync(f, 'utf8')).join('\n').toLowerCase()
+  const criadas = new Map()
+  for (const f of sqls) {
+    const txt = readFileSync(f, 'utf8')
+    for (const m of txt.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?"?([a-z_][a-z0-9_]*)"?/gi))
+      if (!criadas.has(m[1].toLowerCase())) criadas.set(m[1].toLowerCase(), rel(f))
+  }
+  let abertas = 0
+  for (const [tabela, arq] of [...criadas].sort()) {
+    const temRls = new RegExp(`alter\\s+table\\s+(?:public\\.)?${tabela}\\s+enable\\s+row\\s+level\\s+security`).test(tudo)
+    if (!temRls) { abertas++; falta(`${tabela} sem RLS (${arq})`, 'tabela em public sem RLS responde ao PostgREST com a anon key') }
+  }
+  if (!abertas) ok(`as ${criadas.size} tabelas ligam RLS na propria migracao`)
+}
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

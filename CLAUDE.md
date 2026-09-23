@@ -187,6 +187,20 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Migração: `sql/permissoes-por-pessoa-v4.sql` (substitui o `CHECK` da v3).
   O texto de cada nível em `app/settings/users/page.tsx` descreve o que o
   sistema FAZ (matriz da seção 3): mudou a matriz, muda o texto.
+- **Tabela nova nasce FECHADA para o navegador.** No Supabase, tabela criada
+  no schema `public` já vem com privilégio para `anon` e `authenticated` — a
+  RLS é que segura. Toda migração que cria tabela faz
+  `alter table … enable row level security` e
+  `revoke all … from anon, authenticated`, **sem policy**: quem trabalha nelas
+  é o servidor, com a service role key, que passa por cima da RLS. A view
+  também leva `revoke` próprio — view roda com o dono, não com quem chama,
+  então RLS na tabela não protege quem lê pela view. Das 18 tabelas, 16 já
+  nasciam assim; as duas que faltavam eram `staff_grants` e `approval_codes`,
+  e em `staff_grants` isso não era vazamento e sim **escalada**: a tabela é
+  append-only e o estado é a última linha, então uma linha inserida de fora
+  (`concedido = true`, chave `receber`) valia em `permissoesDe` sem sócio, sem
+  senha e sem motivo. Migração: `sql/rls-tabelas-expostas-v1.sql`. A auditoria
+  falha se alguma tabela criada em `.sql` não ligar RLS.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
@@ -510,3 +524,13 @@ middleware.ts        controle de acesso por rota
   feito com o nome curto vira uma linha que ninguém encontra, e `--pendentes`
   segue dizendo PENDENTE — alguém roda a migração de novo.
   A entrega sempre diz qual migração precisa rodar.
+  **O SQL Editor do Supabase reescreve o script.** Quando detecta criação de
+  tabela, ele acrescenta `enable row level security` — e o detector dele é de
+  SQL puro: uma linha `select ... into <variável>` DENTRO de uma função
+  plpgsql é lida como o `SELECT … INTO <tabela>` do SQL puro, e ele conclui
+  que a migração criou uma tabela com o nome da variável. Ao reescrever, corta
+  o corpo da função no meio e o erro que aparece é `unterminated dollar-quoted
+  string` numa linha que não tem defeito nenhum. Em função plpgsql, portanto:
+  **nada de `select … into`** — `RETURN QUERY` preenche `FOUND` e resolve sem
+  variável (conferido no PG 16). E ligar a RLS no próprio arquivo tira do
+  editor o motivo de mexer.
