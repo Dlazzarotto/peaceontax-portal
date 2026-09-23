@@ -87,6 +87,19 @@ begin
   end loop;
 end $$;
 
+-- schema_migrations e o livro das migracoes. A consulta do fim desta
+-- migracao mostrou que e a UNICA tabela do schema public ainda sem RLS --
+-- e sem privilegio direto para anon/authenticated, entao nao e alcancavel
+-- hoje. Fica fechada assim mesmo: e uma linha, e o proximo privilegio
+-- concedido por engano nao encontraria a porta aberta.
+do $$
+begin
+  if to_regclass('public.schema_migrations') is not null then
+    execute 'alter table public.schema_migrations enable row level security';
+    execute 'revoke all on public.schema_migrations from anon, authenticated';
+  end if;
+end $$;
+
 -- == Conferencia ===========================================================
 do $$
 declare

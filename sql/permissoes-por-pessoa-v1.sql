@@ -62,24 +62,41 @@ create or replace view public.staff_grants_atual as
   from public.staff_grants
   order by user_id, chave, created_at desc;
 
--- ── Conferencia ───────────────────────────────────────────────────────────
+-- ── Conferencia ──────────────────────────────────────────
+-- Este bloco foi reescrito DEPOIS de a migracao ja ter sido aplicada. Nada
+-- do que ela FAZ mudou -- so a conferencia, que nao mexe em schema.
+--
+-- Motivo: o SQL Editor do Supabase le uma consulta que atribui a variavel de
+-- plpgsql como o `SELECT ... INTO <tabela>` do SQL puro, conclui que a
+-- migracao criou tabelas com o nome das variaveis e reescreve o script para
+-- ligar RLS nelas -- cortando o bloco no meio. Como este arquivo cria tabela
+-- E o guia manda roda-lo, a armadilha ficaria de pe para a proxima pessoa.
+-- Subconsulta no lugar de variavel: nao ha atribuicao nenhuma.
 do $$
-declare
-  t integer; c integer; i integer; v integer;
 begin
-  select count(*) into t from information_schema.tables
-   where table_schema = 'public' and table_name = 'staff_grants';
-  select count(*) into c from pg_constraint
-   where conname in ('staff_grants_chave_ck', 'staff_grants_motivo_ck');
-  select count(*) into i from pg_indexes
-   where schemaname = 'public' and indexname = 'staff_grants_atual_idx';
-  select count(*) into v from information_schema.views
-   where table_schema = 'public' and table_name = 'staff_grants_atual';
-  raise notice 'tabela staff_grants: %', t;
-  raise notice 'restricoes (esperado 2): %', c;
-  raise notice 'indice staff_grants_atual_idx: %', i;
-  raise notice 'view staff_grants_atual: %', v;
-  if t = 0 or c <> 2 or i = 0 or v = 0 then
-    raise exception 'Migracao incompleta -- confira os avisos acima';
+  if (select count(*) from information_schema.tables
+       where table_schema = 'public' and table_name = 'staff_grants') = 0
+  then
+    raise exception 'staff_grants nao existe';
   end if;
+
+  if (select count(*) from pg_constraint
+       where conname in ('staff_grants_chave_ck', 'staff_grants_motivo_ck')) <> 2
+  then
+    raise exception 'faltam restricoes em staff_grants (esperado 2)';
+  end if;
+
+  if (select count(*) from pg_indexes
+       where schemaname = 'public' and indexname = 'staff_grants_atual_idx') = 0
+  then
+    raise exception 'falta o indice staff_grants_atual_idx';
+  end if;
+
+  if (select count(*) from information_schema.views
+       where table_schema = 'public' and table_name = 'staff_grants_atual') = 0
+  then
+    raise exception 'falta a view staff_grants_atual';
+  end if;
+
+  raise notice 'staff_grants: tabela, 2 restricoes, indice e view conferidos';
 end $$;

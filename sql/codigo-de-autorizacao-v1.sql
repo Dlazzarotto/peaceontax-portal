@@ -19,20 +19,33 @@
 -- gravar depois, em dois passos, deixaria a janela aberta.
 --
 --
--- POR QUE A FUNCAO ESTA EM OUTRO ARQUIVO
--- O SQL Editor do Supabase, quando ve `create table`, REESCREVE o script
--- para oferecer o `enable row level security`. O separador de comandos
--- dessa reescrita entende `$$` mas NAO entende tag nomeada (uma tag NOMEADA):
--- ele parte o corpo da funcao no primeiro `;` e o erro que aparece e
--- `unterminated dollar-quoted string`, numa linha sem defeito nenhum.
+-- O QUE O SQL EDITOR DO SUPABASE FAZ COM ESTE ARQUIVO
+-- Ele tem um detector de "tabela criada sem RLS" e, quando acha uma,
+-- REESCREVE o script para acrescentar o `enable row level security`. Esse
+-- detector e de SQL puro: uma consulta que atribui a uma VARIAVEL de plpgsql
+-- e lida como o `SELECT ... INTO <tabela>` do SQL puro, e ele conclui que a
+-- migracao criou uma tabela com o nome da variavel. Ao reescrever, corta um
+-- bloco no meio e o erro que sai e `unterminated dollar-quoted string`, numa
+-- linha sem defeito nenhum.
 --
--- A prova esta no proprio projeto: sql/gatilho-saldo-da-fatura-v1.sql usa
--- tag nomeada e rodou (nao cria tabela); sql/permissoes-por-pessoa-v1.sql
--- cria tabela e rodou (so usa $$). Quebra so quando as duas coisas estao
--- no mesmo arquivo. Por isso: arquivo que cria tabela nao define funcao.
+-- Aconteceu duas vezes aqui, e as duas vezes ele mostrou o que inventou:
+--   1a: ALTER TABLE achado  (variavel da funcao do consumo)
+--   2a: ALTER TABLE t, i, c, r  (variaveis do bloco de conferencia)
 --
--- A funcao do consumo esta em sql/codigo-de-autorizacao-funcao-v1.sql.
--- Rode este primeiro e aquele depois.
+-- Regra que sai disso, e que esta obedecida abaixo:
+--   * a RLS vem escrita no proprio arquivo, para o detector nao ter o que
+--     acrescentar;
+--   * nenhuma consulta atribui a variavel -- subconsulta no lugar;
+--   * a funcao do consumo fica em OUTRO arquivo
+--     (sql/codigo-de-autorizacao-funcao-v1.sql), que nao cria tabela e por
+--     isso nem chega a ser reescrito.
+--
+-- Honestidade sobre o que NAO se sabe: sql/permissoes-por-pessoa-v1.sql cria
+-- tabela E atribui a variavel, e rodou. Provavelmente porque o aviso de RLS
+-- daquela vez nao foi aceito -- a reescrita depende de um clique. Como o
+-- clique nao esta na nossa mao, o arquivo e que nao pode dar margem.
+--
+-- Rode este primeiro e o da funcao depois.
 --
 -- Idempotente.
 
@@ -84,21 +97,46 @@ end $$;
 alter table public.approval_codes enable row level security;
 revoke all on public.approval_codes from anon, authenticated;
 
--- ── Conferencia ─────────────────────────────────────────
+-- ── Conferencia ───────────────────────────────────────
+-- SEM atribuicao de variavel por consulta -- nem aqui dentro.
+-- O SQL Editor do Supabase le uma consulta que atribui a variavel como o
+-- `SELECT ... INTO <tabela>` do SQL puro e conclui que a migracao criou uma
+-- tabela chamada `t`. Ao acrescentar o `enable row level security` dessas
+-- tabelas que nao existem, ele reescreve o script e corta o bloco no meio --
+-- o erro que sai e `unterminated dollar-quoted string`. Aconteceu duas
+-- vezes: primeiro com uma variavel `achado` na funcao, depois com as
+-- variaveis t, i, c e r DESTE bloco (ele mandou
+-- `ALTER TABLE t ENABLE ROW LEVEL SECURITY`).
+-- Subconsulta no lugar de variavel resolve: nao ha `into` nenhum.
 do $$
-declare
-  t integer; i integer; c integer; r boolean;
 begin
-  select count(*) into t from information_schema.tables
-   where table_schema = 'public' and table_name = 'approval_codes';
-  select count(*) into i from pg_indexes
-   where schemaname = 'public'
-     and indexname in ('approval_codes_codigo_uk','approval_codes_vivos_idx','approval_codes_por_emissor_idx');
-  select count(*) into c from pg_constraint where conname = 'approval_codes_codigo_ck';
-  select relrowsecurity into r from pg_class where oid = 'public.approval_codes'::regclass;
-  raise notice 'tabela: % | indices (esperado 3): % | check: % | RLS: %', t, i, c, r;
-  if t <> 1 or i <> 3 or c <> 1 or r is not true then
-    raise exception 'Migracao incompleta -- confira os avisos acima';
+  if (select count(*) from information_schema.tables
+       where table_schema = 'public' and table_name = 'approval_codes') <> 1
+  then
+    raise exception 'approval_codes nao existe';
   end if;
+
+  if (select count(*) from pg_indexes
+       where schemaname = 'public'
+         and indexname in ('approval_codes_codigo_uk',
+                           'approval_codes_vivos_idx',
+                           'approval_codes_por_emissor_idx')) <> 3
+  then
+    raise exception 'faltam indices em approval_codes (esperado 3)';
+  end if;
+
+  if (select count(*) from pg_constraint
+       where conname = 'approval_codes_codigo_ck') <> 1
+  then
+    raise exception 'falta o CHECK do formato do codigo';
+  end if;
+
+  if (select relrowsecurity from pg_class
+       where oid = 'public.approval_codes'::regclass) is not true
+  then
+    raise exception 'approval_codes sem RLS -- a tabela responderia ao navegador';
+  end if;
+
+  raise notice 'approval_codes: tabela, 3 indices, CHECK e RLS conferidos';
   raise notice 'Agora rode sql/codigo-de-autorizacao-funcao-v1.sql';
 end $$;

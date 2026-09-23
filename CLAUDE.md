@@ -560,19 +560,29 @@ middleware.ts        controle de acesso por rota
   feito com o nome curto vira uma linha que ninguém encontra, e `--pendentes`
   segue dizendo PENDENTE — alguém roda a migração de novo.
   A entrega sempre diz qual migração precisa rodar.
-  **O SQL Editor do Supabase reescreve o script.** Quando detecta criação de
-  tabela, ele acrescenta `enable row level security` — e o detector dele é de
-  SQL puro: uma linha `select ... into <variável>` DENTRO de uma função
-  plpgsql é lida como o `SELECT … INTO <tabela>` do SQL puro, e ele conclui
-  que a migração criou uma tabela com o nome da variável. Ao reescrever, corta
-  o corpo da função no meio e o erro que aparece é `unterminated dollar-quoted
-  string` numa linha que não tem defeito nenhum. Em função plpgsql, portanto:
-  **nada de `select … into`** — `RETURN QUERY` preenche `FOUND` e resolve sem
-  variável (conferido no PG 16). Mais forte que isso: **arquivo que cria
-  tabela não define função.** A quebra só acontece quando as duas coisas
-  estão no mesmo script — `sql/gatilho-saldo-da-fatura-v1.sql` usa tag
-  nomeada e rodou (não cria tabela); `sql/permissoes-por-pessoa-v1.sql` cria
-  tabela e rodou (só usa `$$`). Por isso `sql/codigo-de-autorizacao-v1.sql`
-  (a tabela) e `sql/codigo-de-autorizacao-funcao-v1.sql` (o consumo) são dois
-  arquivos, nessa ordem, e a auditoria recusa `create or replace function`
-  num arquivo que cria tabela.
+  **O SQL Editor do Supabase reescreve o script — e a causa não é a que
+  parecia.** Ele tem um detector de "tabela criada sem RLS" e, quando acha
+  uma, reescreve o script para acrescentar `enable row level security`. Esse
+  detector é de SQL puro: **uma consulta que atribui a uma variável de
+  plpgsql (`select … into <var>`) é lida como o `SELECT … INTO <tabela>`**, e
+  ele conclui que a migração criou uma tabela com o nome da VARIÁVEL. Ao
+  reescrever, corta um bloco no meio e o erro que sai é `unterminated
+  dollar-quoted string` numa linha sem defeito nenhum. Ele mostra o que
+  inventou: `ALTER TABLE achado`, `ALTER TABLE t`, `ALTER TABLE i`… — os
+  nomes das variáveis. Por isso, **arquivo que cria tabela: (a) liga a RLS
+  ele mesmo, para o detector não ter o que acrescentar; (b) não atribui
+  variável por consulta — subconsulta dentro do `if` resolve; (c) não define
+  função, que vai para arquivo próprio.** É o caso de
+  `sql/codigo-de-autorizacao-v1.sql` (a tabela) e
+  `sql/codigo-de-autorizacao-funcao-v1.sql` (o consumo), nessa ordem. A
+  auditoria recusa as três coisas.
+  A teoria anterior — de que o problema era a tag nomeada (`$function$`) —
+  **estava errada**: o arquivo quebrou de novo usando só `$$`. E fica um
+  ponto sem explicação: `sql/permissoes-por-pessoa-v1.sql` e
+  `sql/whatsapp-atendimento-v1.sql` têm as duas coisas e rodaram. O mais
+  provável é que o aviso de RLS daquelas vezes não tenha sido aceito — a
+  reescrita depende de um clique. Como o clique não está na nossa mão, é o
+  arquivo que não pode dar margem: a conferência da `permissoes-v1` foi
+  reescrita sem atribuição (a migração já aplicada não mudou o que FAZ), e a
+  `whatsapp-v1` é exceção nomeada na auditoria porque ali a variável é
+  necessária — ela monta SQL dinâmico.

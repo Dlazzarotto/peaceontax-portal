@@ -562,6 +562,36 @@ checar('O consumo e atomico no banco', 'sql/codigo-de-autorizacao-funcao-v1.sql'
 recusar('Arquivo que cria tabela nao define funcao', 'sql/codigo-de-autorizacao-v1.sql',
         /create or replace function/i,
         'o SQL Editor do Supabase quebra o corpo da funcao quando o script cria tabela')
+{
+  // O SQL Editor do Supabase reescreve todo script em que ele acha "tabela
+  // criada sem RLS" -- e ele conta como tabela a VARIAVEL de um
+  // `select ... into <var>` de plpgsql. Ao reescrever, corta um bloco no
+  // meio. Arquivo que cria tabela, portanto, nao atribui variavel por
+  // consulta: subconsulta no lugar.
+  let arriscados = []
+  for (const d of ['.', 'sql']) {
+    const dir = join(raiz, d)
+    if (!existsSync(dir)) continue
+    for (const nome of readdirSync(dir)) {
+      if (!nome.endsWith('.sql')) continue
+      const arq = join(dir, nome)
+      const txt = readFileSync(arq, 'utf8')
+      const codigo = txt.split('\n').filter(l => !/^\s*--/.test(l)).join('\n')
+      // Excecao unica e nomeada: em whatsapp-atendimento-v1 a variavel e
+      // NECESSARIA -- ela descobre qual e a coluna de telefone de clients
+      // para montar SQL dinamico. Reescrever seria mudar o que a migracao
+      // FAZ, e ela ja foi aplicada. Se um dia precisar rodar de novo, o
+      // aviso de RLS do editor tem de ser RECUSADO.
+      if (rel(arq) === 'sql/whatsapp-atendimento-v1.sql') continue
+      if (!/^\s*create\s+table/im.test(codigo)) continue
+      if (/\bselect\b[^;]*\binto\b/is.test(codigo)) arriscados.push(rel(arq))
+    }
+  }
+  arriscados.length
+    ? falta('Arquivo que cria tabela nao atribui variavel por consulta',
+            `o editor do Supabase inventa tabela com o nome da variavel: ${arriscados.join(', ')}`)
+    : ok('Arquivo que cria tabela nao atribui variavel por consulta')
+}
 checar('O codigo guarda O QUE autorizou', 'sql/codigo-de-autorizacao-v1.sql',
        /invoice_id[\s\S]{0,200}valor[\s\S]{0,200}forma/,
        'sem fatura, valor e forma nao ha rastro de o que foi autorizado')
