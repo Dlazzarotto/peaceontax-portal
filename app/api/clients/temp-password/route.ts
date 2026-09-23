@@ -52,9 +52,11 @@ export async function POST(req: NextRequest) {
     const { data: existing } = await db.auth.admin.getUserById(client.user_id)
     const { error } = await db.auth.admin.updateUserById(client.user_id, {
       password: tempPassword,
+      // Papel em app_metadata: user_metadata e gravavel pelo dono do login
+      app_metadata: { ...(existing?.user?.app_metadata || {}), role: 'client' },
       user_metadata: {
         ...(existing?.user?.user_metadata || {}),
-        role: 'client',
+        role: undefined,
         client_type: client.type,        // definido pela equipe no convite
         name: client.name,
         language: client.language || 'pt',
@@ -68,8 +70,8 @@ export async function POST(req: NextRequest) {
       email: client.email,
       password: tempPassword,
       email_confirm: true,
+      app_metadata: { role: 'client' },
       user_metadata: {
-        role: 'client',
         client_type: client.type,        // definido pela equipe no convite
         name: client.name,
         language: client.language || 'pt',

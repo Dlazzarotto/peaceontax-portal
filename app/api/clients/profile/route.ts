@@ -17,7 +17,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth';
 import { getStaffLevel } from '@/lib/staff-perms'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
 import { registrarConsentimento, normalizarTelefone } from '@/lib/sms'
@@ -45,6 +45,12 @@ export async function POST(req: NextRequest) {
   if (!clientId || !fields || typeof fields !== 'object') {
     return NextResponse.json({ error: 'clientId e fields obrigatórios' }, { status: 400 })
   }
+  // Escopo por TIPO de cliente: o assistente fica em pessoa fisica.
+  // canAccessClient e o funil das outras ~40 rotas -- estas nove ficaram de
+  // fora quando o escopo foi criado, e sem ele bastava passar o id de uma
+  // empresa para alcancar a ficha dela.
+  if (!(await canAccessClient(auth, clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
 
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(fields)) {

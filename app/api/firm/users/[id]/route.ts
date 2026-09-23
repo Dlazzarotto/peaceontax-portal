@@ -64,14 +64,21 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return NextResponse.json({ error: 'Usuário não encontrado' }, { status: 404 })
     }
     const metaAtual = (atual.user.user_metadata || {}) as Record<string, unknown>
+    const appAtual  = (atual.user.app_metadata  || {}) as Record<string, unknown>
 
     // Papel só muda para um da lista. Omitido ou inválido: fica o que era.
-    const papel = PAPEIS.includes(String(role)) ? String(role) : String(metaAtual.role || 'staff')
+    //
+    // O papel é lido de app_metadata, e é lá que ele é gravado: user_metadata
+    // é gravável pelo próprio dono do login (ver lib/papeis.ts). O papel
+    // deixa de ir para user_metadata — ter a mesma informação nos dois
+    // lugares é ter duas versões dela, e a de baixo é a forjável.
+    const papel = PAPEIS.includes(String(role)) ? String(role) : String(appAtual.role || 'staff')
 
     const updates: any = {
+      app_metadata: { ...appAtual, role: papel },
       user_metadata: {
         ...metaAtual,
-        role:      papel,
+        role:      undefined,
         full_name: name  !== undefined ? name  : metaAtual.full_name,
         title:     title !== undefined ? title : (metaAtual.title || ''),
         phone:     phone !== undefined ? phone : (metaAtual.phone || ''),

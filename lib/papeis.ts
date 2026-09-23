@@ -33,7 +33,38 @@ export function ehDaFirma(papel: unknown): boolean {
   return (PAPEIS_DA_FIRMA as readonly string[]).includes(papel.trim().toLowerCase())
 }
 
+/**
+ * ONDE O PAPEL MORA — e por que não é onde morava.
+ *
+ * O papel ficava em `user_metadata`. No Supabase, `user_metadata` é do
+ * PRÓPRIO USUÁRIO: qualquer pessoa com uma sessão do portal podia chamar,
+ * do navegador dela,
+ *
+ *     supabase.auth.updateUser({ data: { role: 'owner' } })
+ *
+ * e virar firma. E como `getStaffLevel`, sem linha em `staff_roles`, caía
+ * no mesmo campo, o papel forjado não parava em "firma": virava OWNER —
+ * imune a concessão negativa, com verTotais, estornar e apagar.
+ *
+ * `app_metadata` é o campo que SÓ a service role escreve. O usuário não
+ * alcança. É por isso que o papel mora aqui, e é por isso que este módulo
+ * não olha mais para `user_metadata` — nem como reserva: uma reserva que
+ * aceita o campo forjado é o mesmo buraco com mais linhas.
+ *
+ * Migração: `sql/papel-no-app-metadata-v1.sql` copia o papel de todo mundo
+ * e PRECISA rodar antes deste código subir — senão a firma inteira entra
+ * como cliente.
+ */
+export function papelGravado(
+  user: { app_metadata?: any } | null | undefined,
+): string | undefined {
+  const papel = (user?.app_metadata as Record<string, unknown> | undefined)?.role
+  return typeof papel === 'string' ? papel : undefined
+}
+
 /** Porta de entrada: firma ou cliente. Desconhecido é cliente. */
-export function papelDoLogin(user: { user_metadata?: any } | null | undefined): PapelDeAcesso {
-  return ehDaFirma(user?.user_metadata?.role) ? 'firm' : 'client'
+export function papelDoLogin(
+  user: { app_metadata?: any } | null | undefined,
+): PapelDeAcesso {
+  return ehDaFirma(papelGravado(user)) ? 'firm' : 'client'
 }

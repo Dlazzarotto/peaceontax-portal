@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
-import { getAuth } from '@/lib/api-auth'
+import { getAuth, canAccessClient } from '@/lib/api-auth';
 
 const PORTAL_URL  = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME   = 'Peace on Tax'
@@ -47,6 +47,13 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json()
     const { clientName, clientEmail, clientType, language, assignee, customNote, channels, createdBy, clientId } = body
+    // Escopo por TIPO: o assistente fica em pessoa fisica. canAccessClient
+    // e o funil das outras ~40 rotas -- esta ficou de fora quando o escopo
+    // foi criado, e sem ele bastava passar o id de uma empresa.
+    // clientId e opcional aqui (convite pode nascer sem cadastro):
+    // quando vem, o escopo vale.
+    if (clientId && !(await canAccessClient(auth, clientId)))
+      return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
     if (!clientEmail) return NextResponse.json({ error: 'Email is required' }, { status: 400 })
 
     const db = supabaseAdmin()

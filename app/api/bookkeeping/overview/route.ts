@@ -3,7 +3,7 @@
 // contadores de transações, contrato ativo e contador anual vs limite.
 
 import { NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, empresasVedadas } from '@/lib/api-auth'
 
 export async function GET() {
   const auth = await getAuth()
@@ -35,6 +35,11 @@ export async function GET() {
   for (const p of plans || []) clientIds.add(p.client_id)
   for (const t of txs || []) clientIds.add(t.client_id)
   for (const s of statements || []) clientIds.add(s.client_id)
+
+  // Escopo por TIPO: quem nao pode ver empresa nao ve nem o nome dela aqui.
+  // A central de bookkeeping e, em boa parte, carteira de empresa.
+  const vedadas = await empresasVedadas(auth)
+  for (const id of Array.from(clientIds)) if (vedadas.has(id)) clientIds.delete(id)
 
   // Nomes dos clientes sem contrato
   const missingNames = Array.from(clientIds).filter(id =>

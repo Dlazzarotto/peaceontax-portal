@@ -8,7 +8,7 @@
 // paga todo mês. Cobrança automática exige cartão/ACH salvo (trava no banco).
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
 
 export const dynamic = 'force-dynamic'
@@ -62,6 +62,10 @@ export async function POST(req: NextRequest) {
   const inicio = b.startDate || new Date().toISOString().slice(0, 10)
 
   if (!b.clientId) return NextResponse.json({ error: 'Escolha o cliente.' }, { status: 400 })
+  // Escopo por TIPO: o assistente fica em pessoa fisica. Esta rota ficou
+  // fora do funil canAccessClient quando o escopo foi criado.
+  if (!(await canAccessClient(auth, b.clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
   if (!String(b.description || '').trim()) return NextResponse.json({ error: 'Descreva o serviço do contrato.' }, { status: 400 })
   if (valor <= 0) return NextResponse.json({ error: 'Informe o valor mensal.' }, { status: 400 })
   const interval = INTERVALOS.includes(b.interval) ? b.interval : 'monthly'

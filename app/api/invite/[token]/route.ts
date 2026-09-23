@@ -31,7 +31,10 @@ export async function POST(req: NextRequest, { params }: { params: { token: stri
 
     const { data: auth, error: authErr } = await db.auth.admin.createUser({
       email: invite.client_email, password, email_confirm: true,
-      user_metadata: { role: 'client', full_name: name, client_type: type || 'individual' },
+      // O papel vai em app_metadata (so a service role escreve la). Em
+      // user_metadata o proprio dono do login reescreveria -- ver lib/papeis.ts.
+      app_metadata: { role: 'client' },
+      user_metadata: { full_name: name, client_type: type || 'individual' },
     })
     if (authErr) {
       if (authErr.message.includes('already been registered')) {

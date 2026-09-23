@@ -4,7 +4,7 @@
 // portal do cliente. Não é dinheiro, mas decide quem vê a carteira inteira
 // — e errou em produção porque a comparação estava escrita em três lugares.
 
-import { ehDaFirma, papelDoLogin, PAPEIS_DA_FIRMA } from '../lib/papeis.ts'
+import { ehDaFirma, papelDoLogin, papelGravado, PAPEIS_DA_FIRMA } from '../lib/papeis.ts'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -17,13 +17,13 @@ const eq = (n: string, a: any, b: any) => {
 for (const papel of ['firm', 'admin', 'manager', 'staff']) {
   eq(`convite como ${papel} entra na firma`, ehDaFirma(papel), true)
   eq(`convite como ${papel} nao cai no portal`,
-     papelDoLogin({ user_metadata: { role: papel } }), 'firm')
+     papelDoLogin({ app_metadata: { role: papel } }), 'firm')
 }
 eq('owner (sinonimo de firm) entra', ehDaFirma('owner'), true)
 
 // ── Cliente é cliente ──
 eq('cliente', ehDaFirma('client'), false)
-eq('cliente no login', papelDoLogin({ user_metadata: { role: 'client' } }), 'client')
+eq('cliente no login', papelDoLogin({ app_metadata: { role: 'client' } }), 'client')
 
 // ── A lista é fechada: desconhecido é CLIENTE, nunca firma ──
 // Errar para o lado restritivo tranca um funcionário; para o outro,
@@ -45,13 +45,34 @@ eq('maiuscula com espaco', ehDaFirma('Firm '), true)
 // ── Login sem metadata nenhum ──
 eq('login sem metadata', papelDoLogin({}), 'client')
 eq('login nulo', papelDoLogin(null), 'client')
-eq('metadata vazio', papelDoLogin({ user_metadata: {} }), 'client')
+eq('metadata vazio', papelDoLogin({ app_metadata: {} }), 'client')
 
 // ── A lista não pode crescer sem alguém notar ──
 eq('a lista e exatamente esta',
    [...PAPEIS_DA_FIRMA], ['firm', 'owner', 'admin', 'manager', 'staff'])
 eq('client jamais entra na lista',
    (PAPEIS_DA_FIRMA as readonly string[]).includes('client'), false)
+
+// ── O BURACO QUE FECHOU: user_metadata e gravavel pelo proprio usuario ──
+// Com a sessao dele e a anon key do navegador, qualquer cliente do portal
+// podia chamar auth.updateUser({ data: { role: 'owner' } }). O papel nao
+// pode sair dali -- nem como reserva, porque a reserva e o buraco.
+for (const forjado of ['firm', 'owner', 'admin', 'manager', 'staff']) {
+  eq(`user_metadata "${forjado}" NAO entra na firma`,
+     papelDoLogin({ user_metadata: { role: forjado } } as any), 'client')
+  eq(`user_metadata "${forjado}" nem e lido`,
+     papelGravado({ user_metadata: { role: forjado } } as any), undefined)
+}
+eq('app_metadata vence a tentativa em user_metadata',
+   papelDoLogin({ app_metadata: { role: 'client' }, user_metadata: { role: 'owner' } } as any), 'client')
+eq('quem e da firma continua entrando com app_metadata',
+   papelDoLogin({ app_metadata: { role: 'manager' }, user_metadata: { role: 'client' } } as any), 'firm')
+
+// ── papelGravado devolve string ou nada, nunca objeto ──
+eq('papel gravado normal', papelGravado({ app_metadata: { role: 'staff' } }), 'staff')
+eq('papel nao-string e ignorado', papelGravado({ app_metadata: { role: { a: 1 } } } as any), undefined)
+eq('sem app_metadata', papelGravado({}), undefined)
+eq('login nulo em papelGravado', papelGravado(null), undefined)
 
 console.log(`papeis: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)

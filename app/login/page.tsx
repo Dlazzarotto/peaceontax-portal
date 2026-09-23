@@ -30,7 +30,7 @@ export default function LoginPage() {
       return
     }
     // Quem manda e o papel gravado no login, nao o botao escolhido aqui.
-    const daFirma = ehDaFirma(data.user?.user_metadata?.role)
+    const daFirma = ehDaFirma(data.user?.app_metadata?.role)
     router.push(daFirma ? '/dashboard' : '/portal')
     router.refresh()
   }

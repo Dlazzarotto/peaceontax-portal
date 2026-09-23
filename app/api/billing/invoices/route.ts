@@ -22,7 +22,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 import { fmtUS, money } from '@/lib/format'
@@ -109,6 +109,10 @@ export async function POST(req: NextRequest) {
   const b = await req.json()
   const itens = Array.isArray(b.items) ? b.items.filter((i: any) => String(i.description || '').trim()) : []
   if (!b.clientId) return NextResponse.json({ error: 'Escolha o cliente.' }, { status: 400 })
+  // Escopo por TIPO: o assistente fica em pessoa fisica. Esta rota ficou
+  // fora do funil canAccessClient quando o escopo foi criado.
+  if (!(await canAccessClient(auth, b.clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
   if (itens.length === 0) return NextResponse.json({ error: 'Inclua ao menos um item.' }, { status: 400 })
 
   const docType = b.docType === 'estimate' ? 'estimate' : 'invoice'

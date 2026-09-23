@@ -5,7 +5,7 @@
 // conversa de qualquer cliente. Escrever em nome da firma é da firma.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
@@ -15,6 +15,11 @@ export async function POST(req: NextRequest) {
     const { clientId, text } = await req.json()
     if (!clientId || !text?.trim())
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+    // Escopo por TIPO: o assistente fica em pessoa fisica. canAccessClient
+    // e o funil das outras ~40 rotas -- esta ficou de fora quando o escopo
+    // foi criado, e sem ele bastava passar o id de uma empresa.
+    if (!(await canAccessClient(auth, clientId)))
+      return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
 
     const { data, error } = await serviceDb().from('messages')
       .insert({ client_id: clientId, sender: 'firm', text: text.trim() })

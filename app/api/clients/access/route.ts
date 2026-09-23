@@ -6,7 +6,7 @@
 // - Motivo SEMPRE obrigatório. Junior: PIN de manager.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth';
 import { getStaffLevel, validateManagerPin } from '@/lib/staff-perms'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
@@ -31,6 +31,12 @@ export async function POST(req: NextRequest) {
 
   const { clientId, newEmail, reason, managerPin } = await req.json()
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
+  // Escopo por TIPO de cliente: o assistente fica em pessoa fisica.
+  // canAccessClient e o funil das outras ~40 rotas -- estas nove ficaram de
+  // fora quando o escopo foi criado, e sem ele bastava passar o id de uma
+  // empresa para alcancar a ficha dela.
+  if (!(await canAccessClient(auth, clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
   if (!reason?.trim()) return NextResponse.json({ error: 'Motivo é obrigatório para reenvio de acesso' }, { status: 400 })
   if (newEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(newEmail)) {
     return NextResponse.json({ error: 'Novo e-mail inválido' }, { status: 400 })
