@@ -106,6 +106,22 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   (o padrão do formulário), manager ou admin virava CLIENTE ao entrar: caía
   no `/portal`, sem linha em `clients`, com 403 em toda rota. A auditoria
   recusa quem voltar a comparar `user_metadata.role` com `'firm'`.
+  **E o papel mora em `app_metadata`, não em `user_metadata`.** No Supabase,
+  `user_metadata` é do PRÓPRIO usuário: com a sessão dele e a anon key do
+  navegador, `auth.updateUser({ data: { role: 'owner' } })` fazia qualquer
+  cliente do portal virar firma — e OWNER, porque `getStaffLevel`, sem linha
+  em `staff_roles`, caía no mesmo campo. `app_metadata` só a service role
+  escreve. Não há reserva lendo `user_metadata`: a reserva seria o buraco de
+  volta. Migração: `sql/papel-no-app-metadata-v1.sql`, que **precisa rodar
+  antes de o código subir** — ela copia o papel de quem `staff_roles`
+  confirma, rebaixa a cliente quem alegava firma sem confirmação (copiar cego
+  daria alvará a quem já tivesse forjado `owner`) e lista os rebaixados com a
+  linha de SQL pronta para promover quem for de casa. Decide pelo estado de
+  DESTINO, não pelo de origem: a primeira versão olhava `user_metadata` e, na
+  segunda rodada, rebaixava a firma inteira. A auditoria recusa leitura ou
+  escrita do papel em `user_metadata`, e recusa qualquer menção a
+  `user_metadata` em `papeis.ts`, `api-auth.ts`, `staff-perms.ts` e
+  `middleware.ts`.
 - **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
   `manager`, `junior`. Quem não está na tabela é `junior`. São duas
   perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
@@ -187,6 +203,19 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Migração: `sql/permissoes-por-pessoa-v4.sql` (substitui o `CHECK` da v3).
   O texto de cada nível em `app/settings/users/page.tsx` descreve o que o
   sistema FAZ (matriz da seção 3): mudou a matriz, muda o texto.
+- **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
+  pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
+  ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas
+  `/api/clients/profile` (a porta do cadastro) e `/api/clients/access` (o
+  acesso ao portal): bastava passar o id de uma empresa. Também
+  `bookkeeping/rules` (que diz o plano de contas e os fornecedores da
+  empresa), `billing/invoices`, `billing/recurring`, `firm/messages`,
+  `send-invite` e `fase1/apply-template`. Resumo que AGREGA a carteira não
+  pergunta por um cliente: `bookkeeping/overview` e `bookkeeping/alerts` usam
+  `empresasVedadas` (`lib/api-auth.ts`), senão o nome e o volume das empresas
+  apareciam no painel de quem não pode abri-las — o mesmo vazamento já
+  corrigido em `/api/clients?resumo=1`. A auditoria recusa rota de equipe com
+  `clientId` sem um dos dois, e procura a CHAMADA, não o import.
 - **Tabela nova nasce FECHADA para o navegador.** No Supabase, tabela criada
   no schema `public` já vem com privilégio para `anon` e `authenticated` — a
   RLS é que segura. Toda migração que cria tabela faz
@@ -199,8 +228,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   e em `staff_grants` isso não era vazamento e sim **escalada**: a tabela é
   append-only e o estado é a última linha, então uma linha inserida de fora
   (`concedido = true`, chave `receber`) valia em `permissoesDe` sem sócio, sem
-  senha e sem motivo. Migração: `sql/rls-tabelas-expostas-v1.sql`. A auditoria
-  falha se alguma tabela criada em `.sql` não ligar RLS.
+  senha e sem motivo. Migração: `sql/rls-tabelas-expostas-v1.sql`, que fecha
+  também `staff_roles` (que não está em nenhum `.sql` — nasceu no painel) e a
+  view `wa_relatorio_atendimento`, que não tinha `revoke`: as tabelas de
+  baixo estavam fechadas, a view não, e ela entregava o histórico de
+  atendimento (telefone, canal, contagens) a quem tivesse a anon key. A
+  auditoria falha se alguma tabela **ou view** criada em `.sql` ficar aberta.
+  A migração termina listando o que ainda responde ao navegador — as tabelas
+  de faturamento nasceram no painel e não dá para conferi-las pelo
+  repositório.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
@@ -532,5 +568,11 @@ middleware.ts        controle de acesso por rota
   o corpo da função no meio e o erro que aparece é `unterminated dollar-quoted
   string` numa linha que não tem defeito nenhum. Em função plpgsql, portanto:
   **nada de `select … into`** — `RETURN QUERY` preenche `FOUND` e resolve sem
-  variável (conferido no PG 16). E ligar a RLS no próprio arquivo tira do
-  editor o motivo de mexer.
+  variável (conferido no PG 16). Mais forte que isso: **arquivo que cria
+  tabela não define função.** A quebra só acontece quando as duas coisas
+  estão no mesmo script — `sql/gatilho-saldo-da-fatura-v1.sql` usa tag
+  nomeada e rodou (não cria tabela); `sql/permissoes-por-pessoa-v1.sql` cria
+  tabela e rodou (só usa `$$`). Por isso `sql/codigo-de-autorizacao-v1.sql`
+  (a tabela) e `sql/codigo-de-autorizacao-funcao-v1.sql` (o consumo) são dois
+  arquivos, nessa ordem, e a auditoria recusa `create or replace function`
+  num arquivo que cria tabela.

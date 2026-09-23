@@ -45,7 +45,9 @@ export async function getStaffLevel(userId: string): Promise<StaffLevel> {
   // Não grava nada aqui — quem grava é o aceite do convite.
   try {
     const { data: u } = await db.auth.admin.getUserById(userId)
-    const papel = u?.user?.user_metadata?.role
+    // app_metadata, nunca user_metadata: o usuario escreve no segundo, e
+    // este ramo decide o NIVEL (um 'owner' forjado sairia daqui).
+    const papel = u?.user?.app_metadata?.role
     if (papel) return nivelDoPapel(papel)
   } catch { /* segue para o padrão */ }
 

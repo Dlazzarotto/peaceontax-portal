@@ -81,8 +81,11 @@ export async function POST(
 
     const db = adminDb()
     const papel = convite.role || 'staff'
+    // O PAPEL vai para app_metadata, que só a service role escreve.
+    // user_metadata é gravável pelo próprio usuário pelo navegador -- papel
+    // ali seria um crachá que a pessoa reescreve sozinha (lib/papeis.ts).
+    const appMetadata  = { role: papel }
     const metadata = {
-      role: papel,
       full_name: convite.name,
       title: convite.title || '',
       phone: convite.phone || '',
@@ -96,6 +99,7 @@ export async function POST(
       email: convite.email,
       password: String(password),
       email_confirm: true,
+      app_metadata: appMetadata,
       user_metadata: metadata,
     })
 
@@ -116,7 +120,9 @@ export async function POST(
       userId = achado.id
       await db.auth.admin.updateUserById(userId, {
         password: String(password),
-        user_metadata: { ...(achado.user_metadata || {}), ...metadata },
+        app_metadata:  { ...(achado.app_metadata || {}), ...appMetadata },
+        // role sai de user_metadata: fica um lugar so, e o forjavel nao e ele
+        user_metadata: { ...(achado.user_metadata || {}), ...metadata, role: undefined },
       })
     }
 

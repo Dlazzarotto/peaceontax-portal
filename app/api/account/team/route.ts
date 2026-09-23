@@ -22,7 +22,7 @@ export async function GET() {
   // convidada como staff/manager/admin nao aparecia aqui.
   const { data: usersData } = await db.auth.admin.listUsers({ perPage: 100 })
   const firmUsers = (usersData?.users || []).filter(
-    (u: any) => ehDaFirma(u.user_metadata?.role)
+    (u: any) => ehDaFirma(u.app_metadata?.role)
   )
 
   const { data: roles } = await db.from('staff_roles').select('user_id, level, approval_pin_hash')

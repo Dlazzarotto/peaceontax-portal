@@ -43,6 +43,50 @@ begin
   end if;
 end $$;
 
+-- staff_roles e a tabela do NIVEL (owner/manager/junior) e nao esta em
+-- nenhum arquivo .sql -- nasceu no painel, e por isso ninguem sabe em que
+-- estado ela esta. Desde que o papel passou a se apoiar nela
+-- (sql/papel-no-app-metadata-v1.sql), uma linha inserida pelo navegador
+-- viraria promocao. Fechar aqui custa nada e e idempotente.
+do $$
+begin
+  if to_regclass('public.staff_roles') is not null then
+    execute 'alter table public.staff_roles enable row level security';
+    execute 'revoke all on public.staff_roles from anon, authenticated';
+  end if;
+end $$;
+
+-- wa_relatorio_atendimento: a view do atendimento por WhatsApp/SMS.
+-- As tabelas de baixo (wa_conversations, wa_messages) ja tinham RLS e
+-- revoke desde sql/whatsapp-atendimento-v1.sql -- a VIEW nao. E view roda
+-- com o dono, nao com quem chama: ela entregava o historico inteiro
+-- (telefone, canal, contagem de mensagens, client_id) a quem tivesse a
+-- anon key. Conversa de cliente e justamente o que a firma nao expoe.
+do $$
+begin
+  if to_regclass('public.wa_relatorio_atendimento') is not null then
+    execute 'revoke all on public.wa_relatorio_atendimento from anon, authenticated';
+  end if;
+end $$;
+
+-- security_invoker: a view passa a respeitar a RLS de QUEM CONSULTA, e nao
+-- a do dono. E o cinto alem do revoke -- o padrao que sql/painel-v1.sql ja
+-- usava. Em versao que nao suporta, segue sem ele (o revoke e o que segura).
+do $$
+declare
+  v text;
+begin
+  foreach v in array array['public.staff_grants_atual','public.wa_relatorio_atendimento'] loop
+    if to_regclass(v) is not null then
+      begin
+        execute format('alter view %s set (security_invoker = on)', v);
+      exception when others then
+        raise notice 'security_invoker indisponivel para % -- seguindo sem ele', v;
+      end;
+    end if;
+  end loop;
+end $$;
+
 -- == Conferencia ===========================================================
 do $$
 declare
@@ -65,3 +109,19 @@ begin
     raise exception 'RLS incompleta -- confira os avisos acima';
   end if;
 end $$;
+
+-- == O que AINDA responde ao navegador ====================================
+-- As tabelas de faturamento, planos e bookkeeping nasceram no painel, fora
+-- de qualquer arquivo .sql -- daqui nao da para saber o estado delas. Esta
+-- consulta nao muda nada: lista o que falta. Tabela em public sem RLS
+-- responde ao PostgREST para quem tem a anon key.
+select c.relname as tabela_sem_rls,
+       coalesce(string_agg(distinct g.grantee, ', '), 'sem privilegio direto') as quem_alcanca
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  left join information_schema.role_table_grants g
+         on g.table_schema = 'public' and g.table_name = c.relname
+        and g.grantee in ('anon','authenticated')
+ where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity
+ group by c.relname
+ order by c.relname;

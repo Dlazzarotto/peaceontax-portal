@@ -81,12 +81,12 @@ export async function GET() {
     const mapa = new Map((papeis || []).map((p: any) => [p.user_id, p.level]))
 
     const firmUsers = users
-      .filter(u => ehDaFirma(u.user_metadata?.role))
+      .filter(u => ehDaFirma(u.app_metadata?.role))
       .map(u => ({
         id:           u.id,
         email:        u.email,
         name:         u.user_metadata?.full_name || u.email?.split('@')[0] || '—',
-        role:         u.user_metadata?.role || 'staff',
+        role:         u.app_metadata?.role || 'staff',
         nivelReal:    mapa.get(u.id) || null,     // null = ainda não registrado
         title:        u.user_metadata?.title || '',
         phone:        u.user_metadata?.phone || '',

@@ -6,7 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import { textoGenerico, MOTIVO_GENERICO } from '@/lib/regra-texto'
 
@@ -49,6 +49,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ rules: marcarGenericas(data || []), businessKind: 'regular', scope: 'global' })
   }
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
+  // Escopo por TIPO: as regras dizem o plano de contas, os fornecedores e os
+  // clientes daquela empresa. Esta rota ficou fora do funil canAccessClient
+  // quando o escopo foi criado.
+  if (!(await canAccessClient(auth, clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
   const { data: cli } = await db0.from('clients')
     .select('business_kind').eq('id', clientId).maybeSingle()
   const soDoCliente = cli?.business_kind === 'nonprofit'
@@ -86,6 +91,11 @@ export async function POST(req: NextRequest) {
   const amountValue = amountOp ? Number(b.amountValue) : null
   const payee = String(b.payee || '').trim() || null
   let global = b.scope === 'global'
+
+  // Regra de um cliente so vale se a pessoa alcanca aquele cliente.
+  // Regra GLOBAL nao tem cliente -- requireManager ja e a trava dela.
+  if (b.clientId && !(await canAccessClient(auth, b.clientId)))
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
 
   // Non-profit: a regra é SEMPRE da própria entidade (fundos/projetos únicos)
   if (b.clientId) {
@@ -203,6 +213,8 @@ export async function DELETE(req: NextRequest) {
   const mode = req.nextUrl.searchParams.get('mode')
   if (mode === 'no_payee') {
     const clientId = req.nextUrl.searchParams.get('clientId')
+    if (clientId && !(await canAccessClient(auth, clientId)))
+      return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
     let q = serviceDb().from('bookkeeping_rules').delete({ count: 'exact' })
       .or('payee.is.null,payee.eq.')
     if (clientId) q = q.or(`client_id.eq.${clientId},client_id.is.null`)

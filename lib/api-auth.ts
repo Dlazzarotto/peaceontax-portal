@@ -7,7 +7,7 @@
 
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { ehDaFirma } from "@/lib/papeis";
+import { papelDoLogin } from "@/lib/papeis";
 import { serviceDb } from "@/lib/service-db";
 import { getStaffLevel, concessoesDe } from "@/lib/staff-perms";
 import { permissoesDe } from "@/lib/permissoes";
@@ -30,7 +30,9 @@ export async function getAuth(): Promise<AuthContext | null> {
   if (!user) return null;
   return {
     userId: user.id,
-    isStaff: ehDaFirma(user.user_metadata?.role),
+    // O papel mora em app_metadata -- user_metadata e gravavel pelo proprio
+    // usuario. Ver lib/papeis.ts.
+    isStaff: papelDoLogin(user) === 'firm',
   };
 }
 
@@ -72,3 +74,24 @@ export async function canAccessClient(
 /** A mensagem de recusa, igual em todas as rotas. */
 export const SEM_ACESSO_EMPRESA =
   "Este é um cliente Empresa. Atender empresas exige autorização — fale com o sócio.";
+
+/**
+ * Ids de EMPRESA que esta pessoa nao pode enxergar -- vazio quando pode.
+ *
+ * canAccessClient responde por UM cliente. As telas de resumo (bookkeeping,
+ * alertas do painel) nao perguntam por um cliente: elas agregam a carteira
+ * inteira. Sem este filtro, o assistente restrito a pessoa fisica nao abria
+ * a ficha de uma empresa, mas via o NOME dela e quantos lancamentos ela tem
+ * no painel -- e o tamanho da carteira de empresas e justamente o que o
+ * escopo esconde (mesma correcao ja feita em /api/clients?resumo=1).
+ */
+export async function empresasVedadas(auth: AuthContext): Promise<Set<string>> {
+  if (!auth.isStaff) return new Set();
+  const nivel = await getStaffLevel(auth.userId);
+  if (nivel === "owner") return new Set();
+  const perms = permissoesDe(nivel, await concessoesDe(auth.userId));
+  if (perms.verEmpresas) return new Set();
+  const { data } = await serviceDb()
+    .from("clients").select("id").eq("type", "business");
+  return new Set((data || []).map((c: any) => c.id));
+}

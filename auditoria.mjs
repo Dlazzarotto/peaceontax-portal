@@ -262,6 +262,72 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
     : ok('Ninguem repete a comparacao role === "firm"')
 }
 
+{
+  // O PAPEL NAO PODE SAIR DE user_metadata.
+  // user_metadata e gravavel pelo proprio dono do login: com a sessao dele e
+  // a anon key do navegador, `auth.updateUser({ data: { role: 'owner' } })`
+  // virava firma -- e owner, porque getStaffLevel tambem caia ali. O papel
+  // mora em app_metadata, que so a service role escreve.
+  // Acesso DIRETO a propriedade, sem medir distancia: medir distancia ja deu
+  // falso positivo aqui (user_metadata?.full_name numa linha e .role na
+  // seguinte) e ja deixou passar defeito quando a distancia mudou.
+  const LE = /user_metadata\s*(\?\.|\.)\s*role\b|user_metadata\s*\[\s*['"]role['"]\s*\]/
+  const ESCREVE = /user_metadata:\s*\{[^}]{0,400}?\brole:\s*['"]/s
+  let leem = [], escrevem = []
+  const candidatos = [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']),
+                      ...arquivos(join(raiz, 'lib'), ['.ts']),
+                      join(raiz, 'middleware.ts')]
+  for (const arq of candidatos) {
+    const txt = readFileSync(arq, 'utf8')
+    // comentario explicando o historico nao conta
+    const codigo = txt.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (LE.test(codigo)) leem.push(rel(arq))
+    if (ESCREVE.test(codigo)) escrevem.push(rel(arq))
+  }
+  leem.length
+    ? falta('Ninguem LE o papel de user_metadata', `use papelDoLogin/app_metadata: ${leem.join(', ')}`)
+    : ok('Ninguem LE o papel de user_metadata')
+  escrevem.length
+    ? falta('Ninguem GRAVA o papel em user_metadata', `grave em app_metadata: ${escrevem.join(', ')}`)
+    : ok('Ninguem GRAVA o papel em user_metadata')
+  // Nos arquivos que DECIDEM acesso, user_metadata nao aparece em codigo de
+  // jeito nenhum -- nem numa leitura que a janela do regex acima nao cubra.
+  // (A primeira versao desta invariante nao pegou a troca de app_ por user_
+  // em lib/papeis.ts: o regex media distancia, e a distancia mudou.)
+  for (const arq of ['lib/papeis.ts', 'lib/api-auth.ts', 'lib/staff-perms.ts', 'middleware.ts']) {
+    const txt = readFileSync(join(raiz, arq), 'utf8')
+    const codigo = txt.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    const tocaUser = /user_metadata/.test(codigo)
+    if (tocaUser) falta(`${arq} nao toca em user_metadata`, 'o campo que o proprio usuario escreve nao decide acesso')
+    else ok(`${arq} nao toca em user_metadata`)
+  }
+  checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
+}
+
+titulo('ROTA DE EQUIPE QUE RECEBE UM CLIENTE PASSA PELO ESCOPO')
+// Conferir QUEM chama (isStaff) nao e conferir QUAL CLIENTE. O escopo por
+// TIPO -- assistente em pessoa fisica, empresa exige verEmpresas -- e
+// canAccessClient. Nove rotas ficaram de fora quando o escopo foi criado
+// (entre elas clients/profile e clients/access): bastava passar o id de uma
+// empresa. Resumo que agrega a carteira usa empresasVedadas.
+{
+  const PEGA_CLIENTE = /(searchParams\.get\(['"]clientId|\bclientId\b\s*[,}]|clientId\s*=\s*(body|await))/
+  let fora = []
+  for (const arq of arquivos(join(raiz, 'app/api'), ['route.ts'])) {
+    const txt = readFileSync(arq, 'utf8')
+    const codigo = txt.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    // A CHAMADA, nao o import: trocar a chamada por `true` e deixar o
+    // import deixaria a invariante passar (testado -- passava).
+    const semImports = codigo.split('\n').filter(l => !/^\s*import\b/.test(l)).join('\n')
+    if (/\b(canAccessClient|empresasVedadas)\s*\(/.test(semImports)) continue
+    if (!/isStaff/.test(codigo)) continue
+    if (PEGA_CLIENTE.test(codigo)) fora.push(rel(arq))
+  }
+  fora.length
+    ? falta('Toda rota de equipe com clientId passa pelo escopo', `sem canAccessClient: ${fora.join(', ')}`)
+    : ok('Toda rota de equipe com clientId passa pelo escopo')
+}
+
 titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
 // /api/firm/users/[id] nao conferia e usava a service role key: qualquer
 // cliente logado virava firma ou trocava a senha do socio.
@@ -487,9 +553,15 @@ checar('A regra do codigo vive num modulo so', 'lib/codigo-autorizacao.ts',
 checar('O alfabeto nao tem caractere ambiguo', 'lib/codigo-autorizacao.ts',
        /ALFABETO = 'ACDEFGHJKMNPQRTUVWXY34679'/,
        'o codigo e DITADO: O x 0 e I x 1 fazem a equipe errar')
-checar('O consumo e atomico no banco', 'sql/codigo-de-autorizacao-v1.sql',
+// A funcao mora em arquivo SEPARADO da tabela: o SQL Editor do Supabase
+// reescreve todo script que contem `create table` e o separador dessa
+// reescrita nao entende tag nomeada, partindo o corpo da funcao no meio.
+checar('O consumo e atomico no banco', 'sql/codigo-de-autorizacao-funcao-v1.sql',
        /update public\.approval_codes[\s\S]{0,400}usado_em is null[\s\S]{0,200}returning/,
        'conferir antes e gravar depois deixa dois atendentes usarem o mesmo codigo')
+recusar('Arquivo que cria tabela nao define funcao', 'sql/codigo-de-autorizacao-v1.sql',
+        /create or replace function/i,
+        'o SQL Editor do Supabase quebra o corpo da funcao quando o script cria tabela')
 checar('O codigo guarda O QUE autorizou', 'sql/codigo-de-autorizacao-v1.sql',
        /invoice_id[\s\S]{0,200}valor[\s\S]{0,200}forma/,
        'sem fatura, valor e forma nao ha rastro de o que foi autorizado')
@@ -640,6 +712,35 @@ titulo('TABELA NOVA NASCE FECHADA PARA O NAVEGADOR')
     if (!temRls) { abertas++; falta(`${tabela} sem RLS (${arq})`, 'tabela em public sem RLS responde ao PostgREST com a anon key') }
   }
   if (!abertas) ok(`as ${criadas.size} tabelas ligam RLS na propria migracao`)
+}
+
+titulo('VIEW NOVA TAMBEM NASCE FECHADA')
+// View roda com o DONO, nao com quem consulta: RLS na tabela de baixo nao
+// protege quem le pela view. Foi assim que wa_relatorio_atendimento
+// entregava o historico de atendimento com a anon key, embora
+// wa_conversations e wa_messages estivessem fechadas.
+{
+  const sqls = []
+  for (const d of ['.', 'sql']) {
+    const dir = join(raiz, d)
+    if (!existsSync(dir)) continue
+    for (const nome of readdirSync(dir)) if (nome.endsWith('.sql')) sqls.push(join(dir, nome))
+  }
+  const tudo = sqls.map(f => readFileSync(f, 'utf8')).join('\n').toLowerCase()
+  const views = new Map()
+  for (const f of sqls) {
+    const txt = readFileSync(f, 'utf8')
+    for (const m of txt.matchAll(/create\s+(?:or\s+replace\s+)?view\s+(?:public\.)?"?([a-z_][a-z0-9_]*)"?/gi))
+      if (!views.has(m[1].toLowerCase())) views.set(m[1].toLowerCase(), rel(f))
+  }
+  let abertas = 0
+  for (const [v, arq] of [...views].sort()) {
+    if (!new RegExp(`revoke\\s+all\\s+on\\s+(?:public\\.)?${v}\\s+from`).test(tudo)) {
+      abertas++
+      falta(`view ${v} sem revoke (${arq})`, 'view roda com o dono: a RLS da tabela nao protege quem le por ela')
+    }
+  }
+  if (!abertas) ok(`as ${views.size} views tiram o privilegio de anon/authenticated`)
 }
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')

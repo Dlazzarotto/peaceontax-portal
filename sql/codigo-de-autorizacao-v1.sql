@@ -18,6 +18,22 @@
 -- serializa, o segundo nao acha linha e recebe 'ja_usado'. Conferir antes e
 -- gravar depois, em dois passos, deixaria a janela aberta.
 --
+--
+-- POR QUE A FUNCAO ESTA EM OUTRO ARQUIVO
+-- O SQL Editor do Supabase, quando ve `create table`, REESCREVE o script
+-- para oferecer o `enable row level security`. O separador de comandos
+-- dessa reescrita entende `$$` mas NAO entende tag nomeada (uma tag NOMEADA):
+-- ele parte o corpo da funcao no primeiro `;` e o erro que aparece e
+-- `unterminated dollar-quoted string`, numa linha sem defeito nenhum.
+--
+-- A prova esta no proprio projeto: sql/gatilho-saldo-da-fatura-v1.sql usa
+-- tag nomeada e rodou (nao cria tabela); sql/permissoes-por-pessoa-v1.sql
+-- cria tabela e rodou (so usa $$). Quebra so quando as duas coisas estao
+-- no mesmo arquivo. Por isso: arquivo que cria tabela nao define funcao.
+--
+-- A funcao do consumo esta em sql/codigo-de-autorizacao-funcao-v1.sql.
+-- Rode este primeiro e aquele depois.
+--
 -- Idempotente.
 
 create table if not exists public.approval_codes (
@@ -68,63 +84,10 @@ end $$;
 alter table public.approval_codes enable row level security;
 revoke all on public.approval_codes from anon, authenticated;
 
--- ── O consumo ────────────────────────────────────────────────────────────
-create or replace function public.consumir_codigo_de_autorizacao(
-  p_codigo     text,
-  p_usado_por  uuid,
-  p_invoice_id uuid,
-  p_valor      numeric,
-  p_forma      text
-)
-returns table (ok boolean, motivo text, emitido_por uuid)
-language plpgsql
-as $function$
-declare
-  emissor uuid;
-begin
-  -- Primeiro TENTA consumir. A condicao esta no proprio UPDATE, entao dois
-  -- pedidos simultaneos com o mesmo codigo nao passam os dois.
-  update public.approval_codes ac set
-    usado_em   = now(),
-    usado_por  = p_usado_por,
-    invoice_id = p_invoice_id,
-    valor      = p_valor,
-    forma      = p_forma
-   where ac.codigo = upper(btrim(p_codigo))
-     and ac.usado_em is null
-     and ac.expira_em > now()
-  returning ac.emitido_por into emissor;
-
-  if emissor is not null then
-    return query select true, 'ok'::text, emissor;
-    return;
-  end if;
-
-  -- Nao consumiu: agora sim vale explicar por que.
-  --
-  -- Aqui NAO se usa `select ... into <variavel>`: o editor de SQL do Supabase
-  -- le essa linha como o `SELECT ... INTO <tabela>` do SQL puro, conclui que
-  -- a migracao criou uma tabela com o nome da VARIAVEL e reescreve o script
-  -- para acrescentar `alter table <variavel> enable row level security` --
-  -- cortando o corpo da funcao no meio. O erro que aparece e
-  -- "unterminated dollar-quoted string", que nao tem nada a ver com a causa.
-  -- RETURN QUERY preenche FOUND, entao da para decidir sem variavel nenhuma.
-  return query
-  select false,
-         (case when ac.usado_em is not null then 'ja_usado' else 'expirado' end)::text,
-         ac.emitido_por
-    from public.approval_codes ac
-   where ac.codigo = upper(btrim(p_codigo));
-
-  if not found then
-    return query select false, 'nao_encontrado'::text, null::uuid;
-  end if;
-end $function$;
-
--- ── Conferencia ───────────────────────────────────────────────────────────
+-- ── Conferencia ─────────────────────────────────────────
 do $$
 declare
-  t integer; i integer; c integer; f integer; r boolean;
+  t integer; i integer; c integer; r boolean;
 begin
   select count(*) into t from information_schema.tables
    where table_schema = 'public' and table_name = 'approval_codes';
@@ -132,11 +95,10 @@ begin
    where schemaname = 'public'
      and indexname in ('approval_codes_codigo_uk','approval_codes_vivos_idx','approval_codes_por_emissor_idx');
   select count(*) into c from pg_constraint where conname = 'approval_codes_codigo_ck';
-  select count(*) into f from pg_proc
-   where pronamespace = 'public'::regnamespace and proname = 'consumir_codigo_de_autorizacao';
   select relrowsecurity into r from pg_class where oid = 'public.approval_codes'::regclass;
-  raise notice 'tabela: % | indices (esperado 3): % | check: % | funcao: % | RLS: %', t, i, c, f, r;
-  if t <> 1 or i <> 3 or c <> 1 or f <> 1 or r is not true then
+  raise notice 'tabela: % | indices (esperado 3): % | check: % | RLS: %', t, i, c, r;
+  if t <> 1 or i <> 3 or c <> 1 or r is not true then
     raise exception 'Migracao incompleta -- confira os avisos acima';
   end if;
+  raise notice 'Agora rode sql/codigo-de-autorizacao-funcao-v1.sql';
 end $$;
