@@ -438,6 +438,13 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   tudo que começa em 100) e a consulta que falha vira erro, não "payee sem
   histórico" — dizer que não há sugestão quando há faz escolher no escuro.
   30 casos em `testes/payee-contas.mts`.
+  A sugestão é uma **faixa** abaixo do campo, nunca um painel: o quadro de
+  250×260 da primeira versão levava a linha de 40 a 330px e o `<select>`,
+  centralizado nessa altura, subia para junto da linha DE CIMA — quem lança
+  perdia de vista onde se escolhe a conta. Daí a regra: **célula que pode
+  crescer pede `verticalAlign: 'top'` na linha inteira**, senão o campo foge
+  do lugar. A faixa tem ✕ para fechar, e o campo da conta continua sendo o
+  `<select>`, que tem todas as contas e o "➕ Criar nova categoria…".
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.
