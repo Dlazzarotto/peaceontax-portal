@@ -1988,27 +1988,27 @@ export default function BookkeepingTab({ clientId }: Props) {
             <tbody>
               {tabTxs.map(t => (
                 <tr key={t.id} style={{ borderBottom:'1px solid #f0f4fa', background: selected.has(t.id) ? '#f0f4ff' : undefined }}>
-                  <td style={{ padding:'8px 8px' }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 8px' }}>
                     <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSel(t.id)}
                       style={{ width:17, height:17, cursor:'pointer' }} />
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:12.5, color:'#3a4a5a', whiteSpace:'nowrap' as const }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 14px', fontSize:12.5, color:'#3a4a5a', whiteSpace:'nowrap' as const }}>
                     {fmtDate(t.tx_date)}
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:12.5, color:'#1a2a3a', maxWidth:320 }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 14px', fontSize:12.5, color:'#1a2a3a', maxWidth:320 }}>
                     {t.description}
                     {t.account_hint && <div style={{ fontSize:10.5, color:'#9aaab0' }}>{t.account_hint}</div>}
                   </td>
-                  <td style={{ padding:'8px 10px' }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 10px' }}>
                     <PayeeCell value={t.payee || ''} amount={Number(t.amount)}
                       registry={payeeRegistry}
                       onSave={(name, type) => setTxPayee(t.id, name, type)} />
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:13, fontWeight:700, whiteSpace:'nowrap' as const,
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 14px', fontSize:13, fontWeight:700, whiteSpace:'nowrap' as const,
                     color: t.amount < 0 ? '#b02020' : '#1a6b4a' }}>
                     {money(Number(t.amount))}
                   </td>
-                  <td style={{ padding:'8px 14px', fontSize:12 }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 14px', fontSize:12 }}>
                     <select value={t.category || ''}
                       onChange={e => {
                         if (e.target.value === '__new__') {
@@ -2046,41 +2046,57 @@ export default function BookkeepingTab({ clientId }: Props) {
                       )}
                       <option value="__new__">➕ Criar nova categoria…</option>
                     </select>
-
                     {/* Sugestão do payee: as contas que ele já usou. NADA foi
                         gravado — antes a última era aplicada sozinha, e para o
-                        payee com contas variadas isso errava sempre. Um clique
-                        aceita; escolher na lista acima também resolve. */}
+                        payee com contas variadas isso errava sempre.
+
+                        A sugestão é uma FAIXA, não um painel. O campo da conta
+                        é o <select> acima, que tem TODAS as contas e o "➕ Criar
+                        nova categoria…". A primeira versão desenhava um quadro
+                        de 250×260 dentro da célula: a linha passava de 40 para
+                        330px de altura e o select, centralizado nessa altura,
+                        subia para junto da linha DE CIMA — quem lança perdia de
+                        vista onde se escolhe a conta e via só o quadro. Por
+                        isso as células desta linha são verticalAlign top: o
+                        campo fica onde sempre esteve, a sugestão vem abaixo. */}
                     {!t.category && sugestoes[t.id]?.contas?.length > 0 && (
-                      <div style={{ marginTop:6, padding:'8px 10px', borderRadius:9,
+                      <div style={{ marginTop:5, padding:'6px 8px', borderRadius:8,
                         background: sugestoes[t.id].variado ? '#fff8e8' : '#f3f8ff',
-                        border: `1.5px solid ${sugestoes[t.id].variado ? '#f0d8a0' : '#c8d4f0'}`,
+                        border: `1px solid ${sugestoes[t.id].variado ? '#f0d8a0' : '#c8d4f0'}`,
                         maxWidth:250 }}>
-                        <div style={{ fontSize:10.5, fontWeight:800, letterSpacing:0.3,
-                          color: sugestoes[t.id].variado ? '#7a5a10' : '#2D3278', marginBottom:5 }}>
-                          {sugestoes[t.id].variado
-                            ? `⚠️ ${sugestoes[t.id].contas.length} contas já usadas`
-                            : sugestoes[t.id].origem === 'regra' ? 'REGRA DESTE PAYEE' : 'JÁ USADA ANTES'}
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
+                          <span title={sugestoes[t.id].aviso || undefined}
+                            style={{ flex:1, fontSize:10, fontWeight:800, letterSpacing:0.2,
+                              color: sugestoes[t.id].variado ? '#7a5a10' : '#2D3278' }}>
+                            {sugestoes[t.id].variado
+                              ? `⚠️ ${sugestoes[t.id].contas.length} contas já usadas — confira`
+                              : sugestoes[t.id].origem === 'regra' ? 'REGRA DESTE PAYEE' : 'JÁ USADA ANTES'}
+                          </span>
+                          {/* Fechar: a sugestão sai da frente e sobra o campo. */}
+                          <button onClick={() => setSugestoes(prev => { const n = { ...prev }; delete n[t.id]; return n })}
+                            title="Fechar a sugestão — a lista de contas acima continua valendo"
+                            style={{ background:'none', border:'none', cursor:'pointer', color:'#8a9ab0',
+                              fontSize:12, lineHeight:1, padding:0 }}>✕</button>
                         </div>
-                        {sugestoes[t.id].variado && sugestoes[t.id].aviso && (
-                          <div style={{ fontSize:10.5, color:'#7a5a10', lineHeight:1.45, marginBottom:6 }}>
-                            {sugestoes[t.id].aviso}
-                          </div>
-                        )}
-                        <div style={{ display:'flex', flexDirection:'column' as const, gap:4 }}>
-                          {sugestoes[t.id].contas.slice(0, 5).map(c => (
+                        <div style={{ display:'flex', flexWrap:'wrap' as const, gap:4 }}>
+                          {sugestoes[t.id].contas.slice(0, 6).map(c => (
                             <button key={c.category} onClick={() => aplicarSugestao(t.id, c.category)}
-                              style={{ textAlign:'left' as const, background:'#fff', cursor:'pointer',
-                                border:'1px solid #d8e0ee', borderRadius:7, padding:'5px 8px', width:'100%' }}>
-                              <div style={{ fontSize:11.5, fontWeight:700, color:'#0f2340' }}>{c.category}</div>
-                              <div style={{ fontSize:10, color:'#6a7a9a' }}>
-                                {c.vezes > 0
-                                  ? `${c.vezes}×${c.ultima ? ` · última ${fmtDate(c.ultima)}` : ''}`
-                                  : 'pela regra do payee'}
-                              </div>
+                              title={c.vezes > 0
+                                ? `${c.vezes} lançamento(s)${c.ultima ? ` · última ${fmtDate(c.ultima)}` : ''}`
+                                : 'pela regra do payee'}
+                              style={{ background:'#fff', cursor:'pointer', border:'1px solid #d8e0ee',
+                                borderRadius:20, padding:'3px 8px', fontSize:10.5, fontWeight:700,
+                                color:'#0f2340', maxWidth:'100%', overflow:'hidden',
+                                textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>
+                              {c.category}{c.vezes > 0 ? ` · ${c.vezes}×` : ''}
                             </button>
                           ))}
                         </div>
+                        {sugestoes[t.id].contas.length > 6 && (
+                          <div style={{ fontSize:9.5, color:'#8a9ab0', marginTop:4 }}>
+                            +{sugestoes[t.id].contas.length - 6} outras — estão na lista acima
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2164,7 +2180,7 @@ export default function BookkeepingTab({ clientId }: Props) {
                       </>
                     )}
                   </td>
-                  <td style={{ padding:'8px 10px', whiteSpace:'nowrap' as const }}>
+                  <td style={{ verticalAlign:'top' as const, padding:'8px 10px', whiteSpace:'nowrap' as const }}>
                     {(t.status === 'auto' || t.status === 'pending') && (
                       <button onClick={() => bulkAction([t.id], 'approve')} title="Aprovar → registro"
                         style={{ background:'#e8f5ee', color:'#1a6b4a', border:'none', borderRadius:7, padding:'5px 9px', fontSize:12, fontWeight:800, cursor:'pointer', marginRight:4 }}>✓</button>
