@@ -55,3 +55,29 @@ export function inicioDoDia(agora: Date = new Date(), fuso = FUSO_DA_FIRMA): Dat
 export function corteDeHoje(agora: Date = new Date(), fuso = FUSO_DA_FIRMA): string {
   return inicioDoDia(agora, fuso).toISOString()
 }
+
+/**
+ * A janela [de, ate] de um relatório, no dia do ESCRITÓRIO.
+ *
+ * O relatório comparava `received_at` com `from` e `${to}T23:59:59Z` — UTC.
+ * Malden está 4 ou 5 horas atrás: um recebimento das 20h do último dia do mês
+ * já é 00h do dia seguinte em UTC e **caía no mês seguinte**. Na temporada,
+ * com balcão à noite, isso muda o faturamento do mês — e é o número em que o
+ * sócio decide.
+ *
+ * Devolve o fim EXCLUSIVO (use `.lt`, não `.lte`): assim nenhum instante fica
+ * de fora nem é contado duas vezes na emenda de um período com o outro.
+ */
+export function janelaDaFirma(de: string, ate: string, fuso = FUSO_DA_FIRMA): {
+  inicio: string
+  fimExclusivo: string
+} {
+  // Meio-dia UTC cai no MESMO dia em Nova York o ano todo — não há como o
+  // fuso empurrar a data para trás a partir daí.
+  const meioDia = (d: string) => new Date(`${d}T12:00:00Z`)
+  const diaSeguinte = new Date(meioDia(ate).getTime() + 24 * 60 * 60 * 1000)
+  return {
+    inicio: inicioDoDia(meioDia(de), fuso).toISOString(),
+    fimExclusivo: inicioDoDia(diaSeguinte, fuso).toISOString(),
+  }
+}

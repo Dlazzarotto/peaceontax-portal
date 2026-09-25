@@ -522,6 +522,38 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   literal do Resend. É o irmão de `/api/signatures/diag`, e existe pelo mesmo
   motivo. **O aviso no portal sai mesmo sem e-mail** — o cliente vê a fatura
   em Pagamentos ao entrar; o e-mail é o empurrão, não o único caminho.
+- **Conferir-e-gravar em dois passos não vale sob concorrência — e isso é
+  dinheiro.** Auditoria financeira, três travas que estavam no código e
+  viraram regra do banco (`sql/recebimento-seguro-v1.sql`, roda **depois** de
+  `status-da-fatura-v2`):
+  **1. Estorno.** A rota gravava `payment_reversals` com o erro DESCARTADO
+  (`.then(() => null, () => null)`) e só então apagava o recebimento: rastro
+  que falha = dinheiro apagado sem registro, o oposto do princípio 2 — e o
+  oposto do que `lib/estorno-stripe.ts`, o irmão dele, já fazia certo. E eram
+  dois passos: dois estornos simultâneos do mesmo recebimento gravavam DOIS
+  rastros. Agora é `estornar_recebimento`: o `delete … returning` trava a
+  linha (o segundo recebe `ja_estornado`) e, se o rastro falhar, a transação
+  volta atrás e **o recebimento fica**. Conferido no PG 16, inclusive o caso
+  do rastro recusado.
+  **2. Recebimento acima do saldo.** A rota confere `valor > saldo` antes de
+  gravar. O Zelle digitado no balcão e o webhook do Stripe chegando juntos
+  leem o mesmo saldo e os dois passam. O gatilho passa a recusar — só em
+  INSERT/UPDATE, nunca em DELETE, senão uma fatura que já esteja com sobra não
+  poderia nem ser estornada. A migração lista as faturas que já estejam assim.
+  **3. Parcela sem piso.** O parcelamento aceitava de 2 a 36 parcelas sem
+  olhar quanto dá cada uma: **$15 em 36× = $0,41**, e o Stripe recusa abaixo
+  de US$ 0,50 — o plano nasceria e toda cobrança falharia para sempre; com
+  saldo pequeno o `floor` chega a produzir parcela de **$0,00**. O cronograma
+  saiu da rota para `lib/cronograma-parcelas.ts` (puro, com teste — a conta é
+  dinheiro com arredondamento e não tinha nenhum) e a recusa diz o **número
+  máximo de parcelas** para aquele saldo. 41 casos.
+- **O relatório corta o período no dia do ESCRITÓRIO** (`janelaDaFirma` de
+  `lib/dia-da-firma.ts`). Comparava `received_at` com `${to}T23:59:59Z` — UTC:
+  o recebimento das 20h do último dia do mês caía no mês **seguinte**, e é o
+  número em que o sócio decide. O fim é EXCLUSIVO (`.lt`), então nenhum
+  instante fica de fora nem conta duas vezes na emenda de um mês com o outro.
+  Os dois domingos de horário de verão estão nos testes (dia de 23 e de 25
+  horas).
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

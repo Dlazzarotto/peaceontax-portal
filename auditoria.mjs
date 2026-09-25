@@ -304,6 +304,27 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
   checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
 }
 
+titulo('AUDITORIA FINANCEIRA: AS TRAVAS DE DINHEIRO')
+// Conferir-e-gravar em dois passos nao vale sob concorrencia. O que decide
+// dinheiro tem de ser UM passo, no banco.
+checar('Estorno manual e atomico no banco', 'app/api/billing/payments/route.ts',
+       /rpc\('estornar_recebimento'/,
+       'gravar o rastro e apagar o recebimento em dois passos perde o rastro e duplica o estorno')
+recusar('Estorno nao grava rastro com erro descartado', 'app/api/billing/payments/route.ts',
+        /payment_reversals'\)\.insert\([\s\S]{0,300}?then\(\(\) => null/,
+        'se o rastro falhar o recebimento tem de FICAR -- principio 2')
+checar('Recebimento acima do saldo e recusado pelo banco', 'sql/recebimento-seguro-v1.sql',
+       /Recebimento acima do saldo/, 'a rota confere antes de gravar; a janela fica aberta')
+checar('Cronograma e piso da parcela num modulo puro', 'lib/cronograma-parcelas.ts',
+       /MINIMO_POR_PARCELA/, 'dinheiro com arredondamento sem teste')
+recusar('A rota nao monta cronograma por conta propria', 'app/api/billing/installment-plan/route.ts',
+        /function montarCronograma/, 'a conta tem de ser a mesma do modulo testado')
+recusar('Relatorio nao corta o periodo em UTC', 'app/api/billing/reports/route.ts',
+        /T23:59:59Z`\)/,
+        'recebimento das 20h do ultimo dia caia no mes seguinte')
+checar('Relatorio usa a janela do escritorio', 'app/api/billing/reports/route.ts',
+       /janelaDaFirma\(/, 'o corte do periodo e o do dia da firma')
+
 titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
 // A FALHA DE METODO QUE ISTO FECHA
 // As auditorias anteriores olhavam ARQUIVOS: quem chama a rota, qual cliente

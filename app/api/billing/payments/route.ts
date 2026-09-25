@@ -138,15 +138,36 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    await dbR.from('payment_reversals').insert({
-      invoice_id: pag.invoice_id, amount: pag.amount, method: pag.method,
-      reference: pag.reference, stripe_object: pag.stripe_object,
-      reason: motivo || 'estorno pelo sócio',
-      performed_by: auth.userId, staff_level: perms.nivel,
-    }).then(() => null, () => null)
-
-    const { error: delErr } = await dbR.from('invoice_payments').delete().eq('id', b.paymentId)
-    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 500 })
+    // UM passo, no banco (sql/recebimento-seguro-v1.sql).
+    //
+    // Antes eram dois: gravar o rastro com o erro DESCARTADO
+    // (`.then(() => null, () => null)`) e depois apagar o recebimento. Se o
+    // rastro falhasse, o dinheiro sumia sem registro -- o oposto do princípio
+    // 2, e o oposto do que lib/estorno-stripe.ts já fazia certo. E eram dois
+    // passos: dois estornos simultâneos do mesmo recebimento gravavam DOIS
+    // rastros.
+    // Na função, o `delete ... returning` trava a linha (o segundo pedido
+    // recebe `ja_estornado`) e, se o rastro falhar, a transação volta atrás e
+    // o recebimento FICA. A regra deixou de depender de quem escreve a rota.
+    const { data: estorno, error: errEstorno } = await dbR.rpc('estornar_recebimento', {
+      p_payment_id:   b.paymentId,
+      p_reason:       motivo || 'estorno pelo sócio',
+      p_performed_by: auth.userId,
+      p_staff_level:  perms.nivel,
+    })
+    if (errEstorno) {
+      return NextResponse.json({
+        error: `O estorno NÃO foi feito e o recebimento continua lançado: ${errEstorno.message}`,
+      }, { status: 500 })
+    }
+    const r0 = Array.isArray(estorno) ? estorno[0] : estorno
+    if (!r0?.ok) {
+      return NextResponse.json({
+        error: r0?.motivo === 'ja_estornado'
+          ? 'Este recebimento já foi estornado.'
+          : 'Não foi possível estornar este recebimento.',
+      }, { status: 409 })
+    }
 
     await dbR.from('invoice_audit').insert({
       invoice_id: pag.invoice_id, action: 'payment_reversed', performed_by: auth.userId,
