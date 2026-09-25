@@ -53,11 +53,14 @@ export async function GET(req: NextRequest) {
     let tituloPeriodo = periodo
 
     if (report === 'faturamento') {
-      const [{ data: faturas }, { data: pagamentos }] = await Promise.all([
+      // Relatorio com consulta falha mostra faturamento MENOR do que foi -- e
+      // o socio decide em cima disso.
+      const [{ data: faturas, error: errF }, { data: pagamentos, error: errP }] = await Promise.all([
         db.from('invoices').select('id, issue_date, total, paid_total, status').eq('doc_type', 'invoice')
           .not('status', 'in', '(draft,void)').gte('issue_date', from).lte('issue_date', to),
         db.from('invoice_payments').select('amount, received_at').gte('received_at', from).lte('received_at', `${to}T23:59:59Z`),
       ])
+      if (errF || errP) return NextResponse.json({ error: `Faturamento: ${(errF || errP)!.message}` }, { status: 500 })
       dados = agregarFaturamento(faturas || [], pagamentos || [])
       resumo = [
         { rotulo: 'Faturas emitidas', valor: String(dados.total.qtd) },
@@ -143,12 +146,13 @@ export async function GET(req: NextRequest) {
     }
 
     if (report === 'estornos') {
-      const [{ data: estornos }, { data: cancel }] = await Promise.all([
+      const [{ data: estornos, error: errE }, { data: cancel, error: errC }] = await Promise.all([
         db.from('payment_reversals').select('amount, method, reason, created_at, staff_level, invoices(number, clients(name, business_name))')
           .gte('created_at', from).lte('created_at', `${to}T23:59:59Z`).order('created_at'),
         db.from('invoice_audit').select('created_at, reason, staff_level, invoices(number, total, clients(name, business_name))')
           .eq('action', 'canceled').gte('created_at', from).lte('created_at', `${to}T23:59:59Z`).order('created_at'),
       ])
+      if (errE || errC) return NextResponse.json({ error: `Estornos: ${(errE || errC)!.message}` }, { status: 500 })
       const totalEst = (estornos || []).reduce((s: number, e: any) => s + Number(e.amount), 0)
       const totalCan = (cancel || []).reduce((s: number, c: any) => s + Number(c.invoices?.total || 0), 0)
       dados = { estornos: estornos || [], cancelamentos: cancel || [], totalEst, totalCan }

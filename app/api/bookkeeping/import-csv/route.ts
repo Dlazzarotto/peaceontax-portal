@@ -181,7 +181,10 @@ export async function POST(req: NextRequest) {
     if (preview) {
       // O que já existe no período deste CSV — e de onde veio
       const dbp = serviceDb()
-      const [{ data: jaExiste }, { data: contas }] = await Promise.all([
+      // `jaExiste` e o que impede importar o mesmo extrato duas vezes. Erro
+      // engolido aqui vira lista vazia, e lista vazia quer dizer "nao ha nada
+      // importado" -- o extrato inteiro entraria em DOBRO no livro.
+      const [{ data: jaExiste, error: errJa }, { data: contas, error: errContas }] = await Promise.all([
         dbp.from('bank_transactions')
           .select('tx_date, source, account_id')
           .eq('client_id', clientId)
@@ -191,6 +194,12 @@ export async function POST(req: NextRequest) {
           .limit(20000),
         dbp.from('bank_accounts').select('id, name').eq('client_id', clientId),
       ])
+      if (errJa || errContas) {
+        return NextResponse.json({
+          error: `Nao da para conferir o que ja foi importado (${(errJa || errContas)!.message}). ` +
+                 `A importacao foi interrompida -- seguir assim duplicaria o extrato.`,
+        }, { status: 500 })
+      }
 
       const nomeConta = new Map((contas || []).map((a: any) => [a.id, a.name]))
       const porConta: Record<string, { nome: string; total: number; ultimaData: string; fontes: Record<string, number> }> = {}

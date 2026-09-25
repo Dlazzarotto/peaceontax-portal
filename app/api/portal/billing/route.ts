@@ -27,7 +27,16 @@ export async function GET() {
   if (!c) return NextResponse.json({ error: 'Cadastro não encontrado' }, { status: 404 })
 
   const db = serviceDb()
-  const [{ data: faturas }, { data: planos }, { data: contratos }, { data: pagamentos }] = await Promise.all([
+  // Nenhuma destas quatro pode falhar em silêncio. Se a consulta das faturas
+  // falha e o erro é descartado, o portal do cliente mostra ZERO -- e zero,
+  // na tela, é uma afirmação: "você não tem nada para pagar". O cliente
+  // acredita, e a firma não recebe.
+  const [
+    { data: faturas, error: errFaturas },
+    { data: planos, error: errPlanos },
+    { data: contratos, error: errContratos },
+    { data: pagamentos, error: errPagamentos },
+  ] = await Promise.all([
     db.from('invoices')
       .select('id, number, status, issue_date, due_date, total, paid_total, payment_plan, financier')
       .eq('client_id', c.id).eq('doc_type', 'invoice')
@@ -48,6 +57,17 @@ export async function GET() {
       .select('id, invoice_id, amount, method, financier, received_at')
       .eq('client_id', c.id).order('received_at', { ascending: false }).limit(50),
   ])
+
+  for (const [oque, err] of [['as faturas', errFaturas], ['os planos', errPlanos],
+                             ['os contratos', errContratos], ['os pagamentos', errPagamentos]] as const) {
+    if (err) {
+      console.error('[portal/billing]', oque, err.message)
+      return NextResponse.json({
+        error: `Não foi possível carregar ${oque} agora. Tente de novo em instantes — ` +
+               `se continuar, fale com a nossa equipe.`,
+      }, { status: 500 })
+    }
+  }
 
   const abertas = (faturas || []).filter((f: any) => f.status !== 'paid' && Number(f.total) - Number(f.paid_total) > 0.009)
   const ids = abertas.map((f: any) => f.id)

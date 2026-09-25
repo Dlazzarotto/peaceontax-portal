@@ -44,7 +44,9 @@ export async function GET(req: NextRequest) {
 
   const staffIds = [...new Set(availability.map(a => a.staff_id))];
 
-  const [{ data: bookings }, { data: blocks }] = await Promise.all([
+  // Erro aqui nao pode virar "agenda livre": ofereceria horario ja marcado
+  // e o cliente sairia com dois compromissos no mesmo minuto.
+  const [{ data: bookings, error: errBookings }, { data: blocks, error: errBlocks }] = await Promise.all([
     supabase.from("bookings")
       .select("staff_id,starts_at,ends_at")
       .in("staff_id", staffIds).eq("status", "booked")
@@ -54,6 +56,10 @@ export async function GET(req: NextRequest) {
       .in("staff_id", staffIds)
       .gte("ends_at", from).lt("starts_at", to),
   ]);
+
+  if (errBookings || errBlocks) {
+    return NextResponse.json({ error: `Nao foi possivel ler a agenda: ${(errBookings || errBlocks)!.message}` }, { status: 500 });
+  }
 
   // Calcula por staff e agrega, guardando quem atende cada slot
   const slotMap = new Map<string, { startUTC: string; endUTC: string; staffId: string }>();

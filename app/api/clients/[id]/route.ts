@@ -33,11 +33,20 @@ export async function GET(_: NextRequest, { params }: { params: { id: string } }
 
   try {
     const db = serviceDb()
-    const [{ data: client }, { data: docs }, { data: msgs }] = await Promise.all([
+    const [{ data: client, error: errCli }, { data: docs, error: errDocs }, { data: msgs, error: errMsgs }] = await Promise.all([
       db.from('clients').select('*').eq('id', params.id).single(),
       db.from('documents').select('*').eq('client_id', params.id).order('created_at', { ascending: false }),
       db.from('messages').select('*').eq('client_id', params.id).order('created_at', { ascending: false }).limit(20),
     ])
+    // "Cliente sem documento" e "nao consegui ler os documentos" sao coisas
+    // diferentes, e a ficha dizia a primeira nas duas situacoes.
+    // `single()` erra quando nao acha: isso e 404, nao falha de leitura.
+    if (errCli && errCli.code !== 'PGRST116') {
+      return NextResponse.json({ error: `Cliente: ${errCli.message}` }, { status: 500 })
+    }
+    if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
+    if (errDocs) return NextResponse.json({ error: `Documentos: ${errDocs.message}` }, { status: 500 })
+    if (errMsgs) return NextResponse.json({ error: `Mensagens: ${errMsgs.message}` }, { status: 500 })
     return NextResponse.json({ client, documents: docs || [], messages: msgs || [] })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })

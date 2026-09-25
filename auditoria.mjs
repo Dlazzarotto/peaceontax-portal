@@ -304,6 +304,20 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
   checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
 }
 
+titulo('MANDAR DOCUMENTO AO CLIENTE PEDE A CHAVE `enviar`')
+// A tela pedia `cancelar` para o botao Enviar e a rota exigia `enviar`: quem
+// recebesse a autorizacao de enviar continuava sem o botao, e a fatura ficava
+// rascunho para sempre -- nao chega ao portal do cliente nem sai e-mail.
+// Reenviar e Cobrar tinham o mesmo acoplamento, nos dois lados.
+recusar('Tela: Enviar nao depende de `cancelar`', 'app/dashboard/billing/page.tsx',
+        /status === 'draft' && perms\?\.cancelar/,
+        'o botao sumia para quem PODE enviar, e a fatura ficava rascunho')
+checar('Tela: Enviar depende de `enviar`', 'app/dashboard/billing/page.tsx',
+       /status === 'draft' && perms\?\.enviar/, 'a tela e a rota tem de pedir a mesma chave')
+recusar('Rota: reenviar/cobrar nao depende de `cancelar`', 'app/api/billing/invoices/route.ts',
+        /action === 'remind'[\s\S]{0,200}?!perms\.cancelar/,
+        'mandar documento ao cliente e ENVIAR; soltar cancelar soltava o envio junto')
+
 titulo('E-MAIL AO CLIENTE: O RESULTADO NAO SE DESCARTA')
 // enviarEmail devolve { ok, motivo }. Descartar isso e o que fazia "o cliente
 // nao recebeu a fatura" nao ter pista nenhuma -- nem para quem enviou, nem
@@ -345,8 +359,11 @@ titulo('CONSULTA LADO A LADO NAO PODE TER ERRO ENGOLIDO')
     for (const m of txt.matchAll(BLOCO)) {
       const campos = m[1].match(/\{[^{}]*\}/g) || []
       const semErro = campos.filter(c => c.includes('data') && !c.includes('error'))
-      const comErro = campos.some(c => c.includes('error'))
-      if (semErro.length && comErro) {
+      // A primeira versao so acusava quando ALGUM irmao conferia o erro -- e
+      // deixou passar o /api/portal/billing, onde NENHUM dos quatro conferia.
+      // Era justamente o pior caso: o portal do cliente mostrando zero, que
+      // na tela e uma afirmacao ("voce nao tem nada para pagar").
+      if (semErro.length) {
         const linha = txt.slice(0, m.index).split('\n').length
         engolidos.push(`${rel(arq)}:${linha}`)
       }

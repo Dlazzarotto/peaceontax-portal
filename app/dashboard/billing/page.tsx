@@ -909,13 +909,18 @@ export default function BillingPage() {
                         )}
                       </td>
                       <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
-                        {inv.status === 'draft' && perms?.cancelar && (
+                        {/* A CHAVE E `enviar`, nao `cancelar`. A tela pedia
+                            cancelar e a rota exige enviar: quem recebesse a
+                            autorizacao de enviar continuava sem o botao, e a
+                            fatura ficava rascunho para sempre -- sem chegar ao
+                            portal do cliente e sem e-mail. */}
+                        {inv.status === 'draft' && perms?.enviar && (
                           <button onClick={() => acao(inv, 'send')} disabled={busy} style={acaoBtn('#2D3278')}>Enviar</button>
                         )}
                         {/* Fatura em aberto que já saiu do rascunho — inclusive a de
                             mensalidade, que nasce enviada pelo Stripe e nunca teve
                             botão. Reenviar repete o documento; Lembrete cobra. */}
-                        {inv.status !== 'draft' && inv.status !== 'void' && inv.saldo > 0 && perms?.cancelar && (<>
+                        {inv.status !== 'draft' && inv.status !== 'void' && inv.saldo > 0 && perms?.enviar && (<>
                           <button onClick={() => acao(inv, 'resend',
                               `Reenviar ${inv.number} para ${inv.cliente}?\n\nMesmo aviso da emissão: "aqui está sua fatura, com o link de pagamento". Nada muda no valor nem na situação.`)}
                             disabled={busy} style={acaoBtn('#2D3278')}>Reenviar</button>
