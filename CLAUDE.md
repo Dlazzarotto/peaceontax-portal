@@ -443,6 +443,32 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   O contrato vai como **HTML** (`fileExtension: 'html'`) e o DocuSign
   converte; a 8879 vai como PDF. O nome `.html` aparece ao cliente e o
   conversor não garante o CSS — trocar o contrato por PDF é dívida aberta.
+- **Serviço novo nasce ATIVO, e "ativo" tem uma definição só**
+  (`lib/catalogo-precos.ts`). O catálogo (`pricing_items`) era lido de três
+  jeitos: `/api/pricing` (tela Preços, orçamentos) mostrava TUDO, a fatura e o
+  contrato mensal exigiam `active = true` — e o POST que cria o item **não
+  gravava `active`**. Com a coluna sem `default`, o item nascia nulo:
+  aparecia em Preços e sumia justamente onde seria usado, e para quem
+  cadastrou "a lista de serviços da fatura não atualiza". Agora o POST grava
+  `active: true`, quem lê usa `FILTRO_ATIVO` (nulo conta como ativo —
+  **desativar é um ATO**, e ele grava `false`), e
+  `sql/pricing-items-ativo-v1.sql` acerta as linhas nulas e põe o `default` na
+  coluna. 11 casos em `testes/catalogo-precos.mts`.
+- **Consulta lado a lado não pode ter erro engolido.** Num `Promise.all`,
+  conferir o erro de UMA consulta e ignorar o das outras faz a que falhou
+  virar lista vazia — e lista vazia, na tela, é uma afirmação: "não há serviço
+  cadastrado", "não há pagamento". Era assim em cinco lugares. O pior era
+  `billing/print`: itens ou pagamentos que falhassem mandavam embora uma
+  fatura **sem itens mas com o total**, ou sem os pagamentos já feitos,
+  entregue a um cliente que pagou — agora ela recusa imprimir e diz o quê
+  falhou, porque sair incompleto é pior. Ignorar de propósito continua
+  legítimo: capture o erro e não o use, para a decisão aparecer no código. É
+  a **quinta** vez que esse padrão custa tempo; agora a auditoria o recusa.
+- **A lista de clientes da fatura e do contrato obedece ao escopo por tipo.**
+  `GET /api/billing/invoices` e `GET /api/billing/recurring` filtram por
+  `empresasVedadas`. O POST já recusava empresa para quem não tem
+  `verEmpresas`; mostrar o nome no seletor e recusar no salvar seria oferecer
+  o que não se pode fazer — e a lista de empresas é o que o escopo esconde.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

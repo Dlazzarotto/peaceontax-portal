@@ -304,6 +304,34 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
   checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
 }
 
+titulo('CONSULTA LADO A LADO NAO PODE TER ERRO ENGOLIDO')
+// Num Promise.all, conferir o erro de UMA consulta e ignorar o das outras faz
+// a consulta que falhou virar lista vazia -- e lista vazia, na tela, e uma
+// afirmacao: "nao ha servico cadastrado", "nao ha pagamento". Foi o que
+// escondeu o catalogo de servicos da fatura, e no impresso teria mandado
+// embora uma fatura SEM ITENS, ou sem os pagamentos ja feitos.
+// Ignorar de proposito e legitimo -- entao capture o erro e nao o use, que
+// ai a decisao aparece no codigo em vez de sumir na desestruturacao.
+{
+  const BLOCO = /const\s*\[(.*?)\]\s*=\s*await\s+Promise\.all/gs
+  let engolidos = []
+  for (const arq of arquivos(join(raiz, 'app/api'), ['route.ts'])) {
+    const txt = readFileSync(arq, 'utf8')
+    for (const m of txt.matchAll(BLOCO)) {
+      const campos = m[1].match(/\{[^{}]*\}/g) || []
+      const semErro = campos.filter(c => c.includes('data') && !c.includes('error'))
+      const comErro = campos.some(c => c.includes('error'))
+      if (semErro.length && comErro) {
+        const linha = txt.slice(0, m.index).split('\n').length
+        engolidos.push(`${rel(arq)}:${linha}`)
+      }
+    }
+  }
+  engolidos.length
+    ? falta('Consulta lado a lado nao tem erro engolido', `capture o error: ${engolidos.join(', ')}`)
+    : ok('Consulta lado a lado nao tem erro engolido')
+}
+
 titulo('ROTA DE EQUIPE QUE RECEBE UM CLIENTE PASSA PELO ESCOPO')
 // Conferir QUEM chama (isStaff) nao e conferir QUAL CLIENTE. O escopo por
 // TIPO -- assistente em pessoa fisica, empresa exige verEmpresas -- e
