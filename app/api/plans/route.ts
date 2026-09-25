@@ -7,6 +7,7 @@
 //        parcelamento em andamento NÃO cancela: só quitação antecipada (billing/payments)
 // PATCH  /api/plans                     — edita plano ainda não ativado
 
+import { FILTRO_ATIVO } from '@/lib/catalogo-precos'
 import { NextRequest, NextResponse } from 'next/server'
 import Stripe from 'stripe'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
@@ -26,13 +27,17 @@ export async function GET(req: NextRequest) {
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
 
   const db0 = serviceDb()
-  const [{ data, error }, { data: catalogo }] = await Promise.all([
+  const [{ data, error }, { data: catalogo, error: errCatalogo }] = await Promise.all([
     db0.from('payment_plans').select('*').eq('client_id', clientId)
       .order('created_at', { ascending: false }),
+    // Mesma regra da fatura: nulo conta como ativo (lib/catalogo-precos.ts)
     db0.from('pricing_items').select('id, code, label, amount, kind')
-      .eq('active', true).order('sort').order('label'),
+      .or(FILTRO_ATIVO).order('sort').order('label'),
   ])
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // Catalogo que falha viraria "nenhum servico cadastrado" na tela do
+  // contrato mensal -- e quem cadastrou concluiria que o cadastro nao pegou.
+  if (errCatalogo) return NextResponse.json({ error: `Catalogo de servicos: ${errCatalogo.message}` }, { status: 500 })
 
   const level = await getStaffLevel(auth.userId)
   return NextResponse.json({ plans: data || [], services: catalogo || [], level })

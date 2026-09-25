@@ -20,9 +20,10 @@
 // expediente da temporada. Soltar a lista inteira para alguém é autorização
 // individual (`verTodasFaturas`), sem promover de nível.
 
+import { FILTRO_ATIVO } from '@/lib/catalogo-precos'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient, empresasVedadas } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 import { fmtUS, money } from '@/lib/format'
@@ -75,12 +76,26 @@ export async function GET(req: NextRequest) {
   if (sp.get('status')) q = q.eq('status', sp.get('status'))
   if (sp.get('clientId')) q = q.eq('client_id', sp.get('clientId'))
 
-  const [{ data: invoices, error }, { data: clients }, { data: services }] = await Promise.all([
+  const [
+    { data: invoices, error },
+    { data: clients, error: errClientes },
+    { data: services, error: errServicos },
+    vedadas,
+  ] = await Promise.all([
     q,
-    db.from('clients').select('id, business_name, name').eq('active', true).order('name'),
-    db.from('pricing_items').select('id, code, label, amount, kind').eq('active', true).order('sort').order('label'),
+    db.from('clients').select('id, business_name, name, type').eq('active', true).order('name'),
+    // Nulo conta como ATIVO (lib/catalogo-precos.ts): desativar e um ato, e
+    // ele grava false. O item que nascia com a coluna nula sumia daqui.
+    db.from('pricing_items').select('id, code, label, amount, kind')
+      .or(FILTRO_ATIVO).order('sort').order('label'),
+    empresasVedadas(auth),
   ])
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // Cada consulta responde pelo proprio erro. Antes so a das faturas era
+  // conferida: se a do catalogo falhasse, a tela dizia que nao ha servico
+  // nenhum -- e quem cadastrou concluia que o cadastro nao pegou.
+  if (error)       return NextResponse.json({ error: error.message }, { status: 500 })
+  if (errClientes) return NextResponse.json({ error: `Clientes: ${errClientes.message}` }, { status: 500 })
+  if (errServicos) return NextResponse.json({ error: `Catalogo de servicos: ${errServicos.message}` }, { status: 500 })
 
   return NextResponse.json({
     invoices: (invoices || []).map((i: any) => ({
@@ -88,7 +103,13 @@ export async function GET(req: NextRequest) {
       cliente: i.clients?.business_name || i.clients?.name || '—',
       saldo: round2(Number(i.total) - Number(i.paid_total)),
     })),
-    clients: (clients || []).map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
+    // A lista de clientes da fatura obedece ao mesmo escopo do POST: sem
+    // `verEmpresas`, empresa nao entra. Mostrar o nome e recusar no salvar
+    // seria oferecer o que nao se pode fazer -- e a lista de empresas e
+    // justamente o que o escopo esconde.
+    clients: (clients || [])
+      .filter((c: any) => !vedadas.has(c.id))
+      .map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
     // Catálogo de preços (tela Preços) — fonte única para os itens da fatura
     services: (services || []).map((x: any) => ({
       id: x.id, nome: x.label, preco: Number(x.amount) || 0, code: x.code, kind: x.kind,

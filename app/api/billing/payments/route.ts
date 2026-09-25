@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
   if (!invoiceId) return NextResponse.json({ error: 'invoiceId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
-  const [{ data, error }, { data: inv }, { data: falhas }] = await Promise.all([
+  const [{ data, error }, { data: inv, error: errInv }, { data: falhas, error: errFalhas }] = await Promise.all([
     db.from('invoice_payments')
       .select('id, amount, method, reference, received_at, stripe_object')
       .eq('invoice_id', invoiceId).order('received_at', { ascending: false }),
@@ -72,7 +72,11 @@ export async function GET(req: NextRequest) {
     db.from('invoice_installments').select('seq, amount, last_error, attempts')
       .eq('invoice_id', invoiceId).eq('status', 'failed').order('seq'),
   ])
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error)     return NextResponse.json({ error: error.message }, { status: 500 })
+  // Sem a fatura, `aberta` sairia false e a tela esconderia "cobrar de novo"
+  // como se a fatura estivesse quitada. Sem as parcelas, a que falhou some.
+  if (errInv)    return NextResponse.json({ error: `Fatura: ${errInv.message}` }, { status: 500 })
+  if (errFalhas) return NextResponse.json({ error: `Parcelas: ${errFalhas.message}` }, { status: 500 })
 
   // Situação da cobrança automática, para a tela mostrar o que pode ser feito
   const aberta = !!inv && !['paid', 'void', 'draft'].includes(inv.status)

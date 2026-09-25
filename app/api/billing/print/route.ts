@@ -53,7 +53,16 @@ export async function GET(req: NextRequest) {
   }
   if (!inv) return new NextResponse('Documento não encontrado', { status: 404 })
 
-  const [{ data: cli }, { data: itens }, { data: pagos }, { data: parcelas }] = await Promise.all([
+  // Cada consulta responde pelo proprio erro. Sem isto, a consulta que
+  // falhasse virava lista vazia e o IMPRESSO saia errado: sem itens mas com o
+  // total, ou sem os pagamentos ja feitos -- entregue a um cliente que pagou.
+  // Documento que sai do predio nao pode sair incompleto em silencio.
+  const [
+    { data: cli, error: errCli },
+    { data: itens, error: errItens },
+    { data: pagos, error: errPagos },
+    { data: parcelas, error: errParcelas },
+  ] = await Promise.all([
     db.from('clients').select('*').eq('id', inv.client_id).maybeSingle(),
     db.from('invoice_items').select('*').eq('invoice_id', id).order('sort'),
     db.from('invoice_payments').select('amount, method, reference, received_at, financier')
@@ -61,6 +70,13 @@ export async function GET(req: NextRequest) {
     db.from('invoice_installments').select('seq, due_date, amount, status')
       .eq('invoice_id', id).order('seq'),
   ])
+
+  for (const [oque, err] of [['o cliente', errCli], ['os itens', errItens],
+                             ['os pagamentos', errPagos], ['as parcelas', errParcelas]] as const) {
+    if (err) return new NextResponse(
+      `Nao foi possivel imprimir: falhou ao buscar ${oque} (${err.message}). ` +
+      `O documento nao foi gerado -- imprimir incompleto seria pior.`, { status: 500 })
+  }
 
   const c: any = cli || {}
   const nome = c.business_name || c.name || '—'

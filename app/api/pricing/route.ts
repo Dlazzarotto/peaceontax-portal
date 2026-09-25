@@ -39,7 +39,9 @@ export async function POST(req: NextRequest) {
 
   const { data, error } = await serviceDb()
     .from('pricing_items')
-    .insert({ code, label: label.trim(), amount, kind: validKind, sort: 50 })
+    // `active: true` EXPLICITO. Sem isto o item nascia com a coluna nula e
+    // sumia da fatura, que exige ativo -- aparecia so na tela de Precos.
+    .insert({ code, label: label.trim(), amount, kind: validKind, sort: 50, active: true })
     .select()
     .single()
 
