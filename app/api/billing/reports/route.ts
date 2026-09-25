@@ -15,6 +15,7 @@
 // Orçamentos nunca entram: só doc_type 'invoice', e rascunho/cancelada ficam
 // de fora do faturamento.
 
+import { janelaDaFirma } from '@/lib/dia-da-firma'
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
@@ -40,6 +41,12 @@ export async function GET(req: NextRequest) {
   const ano = hoje.slice(0, 4)
   const from = /^\d{4}-\d{2}-\d{2}$/.test(sp.get('from') || '') ? sp.get('from')! : `${ano}-01-01`
   const to = /^\d{4}-\d{2}-\d{2}$/.test(sp.get('to') || '') ? sp.get('to')! : `${ano}-12-31`
+
+  // A janela e do dia do ESCRITORIO, nao do servidor. Comparar com
+  // `${to}T23:59:59Z` jogava o recebimento das 20h do ultimo dia do mes para
+  // o mes seguinte -- e o faturamento do mes e onde o socio decide.
+  // O fim e EXCLUSIVO: nenhum instante fica de fora nem conta duas vezes.
+  const { inicio: deQuando, fimExclusivo: ateQuando } = janelaDaFirma(from, to)
   if (from > to) return NextResponse.json({ error: 'Período inválido' }, { status: 400 })
   const periodo = `${fmtUS(from)} a ${fmtUS(to)}`
   const json = sp.get('format') === 'json'
@@ -58,7 +65,7 @@ export async function GET(req: NextRequest) {
       const [{ data: faturas, error: errF }, { data: pagamentos, error: errP }] = await Promise.all([
         db.from('invoices').select('id, issue_date, total, paid_total, status').eq('doc_type', 'invoice')
           .not('status', 'in', '(draft,void)').gte('issue_date', from).lte('issue_date', to),
-        db.from('invoice_payments').select('amount, received_at').gte('received_at', from).lte('received_at', `${to}T23:59:59Z`),
+        db.from('invoice_payments').select('amount, received_at').gte('received_at', deQuando).lt('received_at', ateQuando),
       ])
       if (errF || errP) return NextResponse.json({ error: `Faturamento: ${(errF || errP)!.message}` }, { status: 500 })
       dados = agregarFaturamento(faturas || [], pagamentos || [])
@@ -79,7 +86,7 @@ export async function GET(req: NextRequest) {
     if (report === 'recebimentos') {
       const { data: pagamentos } = await db.from('invoice_payments')
         .select('amount, method, financier, received_at, reference, invoices(number), clients(name, business_name)')
-        .gte('received_at', from).lte('received_at', `${to}T23:59:59Z`).order('received_at')
+        .gte('received_at', deQuando).lt('received_at', ateQuando).order('received_at')
       dados = agregarRecebimentos(pagamentos || [])
       resumo = [{ rotulo: 'Pagamentos', valor: String(dados.qtd) }, { rotulo: 'Total recebido', valor: money(dados.total) }]
       secoes = [
@@ -148,9 +155,9 @@ export async function GET(req: NextRequest) {
     if (report === 'estornos') {
       const [{ data: estornos, error: errE }, { data: cancel, error: errC }] = await Promise.all([
         db.from('payment_reversals').select('amount, method, reason, created_at, staff_level, invoices(number, clients(name, business_name))')
-          .gte('created_at', from).lte('created_at', `${to}T23:59:59Z`).order('created_at'),
+          .gte('created_at', deQuando).lt('created_at', ateQuando).order('created_at'),
         db.from('invoice_audit').select('created_at, reason, staff_level, invoices(number, total, clients(name, business_name))')
-          .eq('action', 'canceled').gte('created_at', from).lte('created_at', `${to}T23:59:59Z`).order('created_at'),
+          .eq('action', 'canceled').gte('created_at', deQuando).lt('created_at', ateQuando).order('created_at'),
       ])
       if (errE || errC) return NextResponse.json({ error: `Estornos: ${(errE || errC)!.message}` }, { status: 500 })
       const totalEst = (estornos || []).reduce((s: number, e: any) => s + Number(e.amount), 0)

@@ -1,5 +1,9 @@
 {
   "compilerOptions": {
+    // Permite `import ... from \'./x.ts\'`: o runner de testes (node
+    // --experimental-strip-types) nao resolve import sem extensao, e modulo
+    // puro que o teste importa precisa poder importar outro modulo puro.
+    "allowImportingTsExtensions": true,
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,

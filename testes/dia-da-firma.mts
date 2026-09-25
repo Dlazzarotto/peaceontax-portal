@@ -3,7 +3,7 @@
 // Decide o que o assistente VÊ. Com a data do servidor (UTC), a lista dele
 // zerava às 20h de Malden — no meio do expediente da temporada.
 
-import { dataDaFirma, inicioDoDia, corteDeHoje, FUSO_DA_FIRMA } from '../lib/dia-da-firma.ts'
+import { dataDaFirma, inicioDoDia, corteDeHoje, janelaDaFirma, FUSO_DA_FIRMA } from '../lib/dia-da-firma.ts'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -59,6 +59,54 @@ eq('ultimo dia de fevereiro em ano comum', dataDaFirma(new Date('2026-03-01T04:3
   eq('corteDeHoje devolve o inicio do dia',
      corteDeHoje(agora), inicioDoDia(agora).toISOString())
   eq('o corte esta no passado', new Date(corteDeHoje(agora)) <= agora, true)
+}
+
+// ── A JANELA DO RELATORIO ──
+// O relatorio cortava em UTC: recebimento das 20h do ultimo dia do mes caia
+// no mes SEGUINTE. E o numero em que o socio decide.
+{
+  const j = janelaDaFirma('2026-09-01', '2026-09-30')
+  eq('setembro comeca a meia-noite de Malden (04:00 UTC, EDT)',
+     j.inicio, '2026-09-01T04:00:00.000Z')
+  eq('setembro termina quando outubro comeca, e o fim e EXCLUSIVO',
+     j.fimExclusivo, '2026-10-01T04:00:00.000Z')
+
+  // O caso que motivou: 20h30 de 30/09 em Malden = 00h30 de 01/10 em UTC
+  const balcaoDaNoite = new Date('2026-10-01T00:30:00Z')
+  eq('o recebimento das 20h30 do dia 30 esta DENTRO de setembro',
+     balcaoDaNoite >= new Date(j.inicio) && balcaoDaNoite < new Date(j.fimExclusivo), true)
+  eq('e em UTC ele pareceria outubro',
+     balcaoDaNoite.toISOString().slice(0, 7), '2026-10')
+}
+{
+  // Janeiro: horario padrao, -5h
+  const j = janelaDaFirma('2026-01-01', '2026-01-31')
+  eq('janeiro comeca as 05:00 UTC (EST)', j.inicio, '2026-01-01T05:00:00.000Z')
+  eq('janeiro termina as 05:00 UTC de 1/2', j.fimExclusivo, '2026-02-01T05:00:00.000Z')
+}
+{
+  // Um dia so: a janela tem de ter 24h (fora dos domingos de mudanca)
+  const j = janelaDaFirma('2026-06-15', '2026-06-15')
+  eq('um dia so fecha em 24 horas',
+     (new Date(j.fimExclusivo).getTime() - new Date(j.inicio).getTime()) / 3600000, 24)
+}
+{
+  // Domingo da virada para o horario de verao: o dia tem 23 horas
+  const j = janelaDaFirma('2026-03-08', '2026-03-08')
+  eq('o domingo em que o relogio adianta tem 23 horas',
+     (new Date(j.fimExclusivo).getTime() - new Date(j.inicio).getTime()) / 3600000, 23)
+}
+{
+  // Domingo da volta: 25 horas
+  const j = janelaDaFirma('2026-11-01', '2026-11-01')
+  eq('o domingo em que o relogio atrasa tem 25 horas',
+     (new Date(j.fimExclusivo).getTime() - new Date(j.inicio).getTime()) / 3600000, 25)
+}
+{
+  // Dois periodos seguidos nao podem contar o mesmo instante duas vezes
+  const set = janelaDaFirma('2026-09-01', '2026-09-30')
+  const out = janelaDaFirma('2026-10-01', '2026-10-31')
+  eq('o fim de setembro e o comeco de outubro', set.fimExclusivo, out.inicio)
 }
 
 console.log(`dia-da-firma: ${passou} passaram, ${falhou} falharam`)

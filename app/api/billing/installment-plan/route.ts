@@ -26,7 +26,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
-import { avancarData, type Frequency } from '@/lib/plans'
+import { type Frequency } from '@/lib/plans'
+// O cronograma e o PISO da parcela moram num modulo puro, com teste: e
+// dinheiro com arredondamento, e antes a conta estava aqui dentro sem
+// nenhum teste -- e sem piso, entao $15 em 36x criava parcela de $0,41,
+// que o Stripe recusa para sempre.
+import { montarCronograma } from '@/lib/cronograma-parcelas'
 import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL, type ResultadoEmail } from '@/lib/avisos'
 import { encerrarParcelamento } from '@/lib/parcelamento'
@@ -64,19 +69,7 @@ function planoNuncaComecou(p: any): boolean {
 }
 
 /** Cronograma: base para todas, última absorve o centavo da divisão. */
-function montarCronograma(restante: number, n: number, primeira: string, freq: Frequency) {
-  const base = Math.floor((restante / n) * 100) / 100
-  const linhas: { seq: number; due_date: string; amount: number }[] = []
-  const inicio = new Date(`${primeira}T12:00:00Z`)
-  for (let i = 0; i < n; i++) {
-    linhas.push({
-      seq: i + 1,
-      due_date: avancarData(inicio, freq, i).toISOString().slice(0, 10),
-      amount: i === n - 1 ? round2(restante - base * (n - 1)) : base,
-    })
-  }
-  return linhas
-}
+
 
 // GET → parcelamentos existentes + faturas elegíveis para parcelar
 export async function GET() {
@@ -228,7 +221,9 @@ export async function POST(req: NextRequest) {
   if ('erro' in res) return NextResponse.json({ error: res.erro }, { status: 400 })
   const { entrada, pct: entryPct, restante } = res
 
-  const cronograma = montarCronograma(restante, n, String(b.firstDueDate), freq)
+  const cron = montarCronograma(restante, n, String(b.firstDueDate), freq)
+  if ('erro' in cron) return NextResponse.json({ error: cron.erro }, { status: 400 })
+  const cronograma = cron
   const valorParcela = cronograma[0].amount
 
   const client = (inv as any).clients || {}
