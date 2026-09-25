@@ -144,6 +144,21 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   soltar cancelar soltaria o envio junto. Quem pode enviar tem o botão
   **Criar e enviar** (`enviarAgora` no POST, conferido no servidor); quem não
   pode vê só **Salvar rascunho**, e o rascunho não se perde.
+- **A tela pede a mesma chave que a rota exige — e isso é conferido.** Foi a
+  falha de método que custou mais caro aqui. As auditorias olhavam ARQUIVOS:
+  quem chama a rota, qual cliente ela alcança, RLS, erro engolido. Nenhuma
+  perguntou se o **botão** e a **trava** pedem a mesma coisa — e eles vivem em
+  arquivos diferentes, então conferir cada um sozinho nunca acha a
+  discrepância. Dois casos reais: o botão **Enviar** pedia `cancelar` e a rota
+  exigia `enviar` (a fatura ficava rascunho, não chegava ao cliente e não saía
+  e-mail); o botão **Estornar** pedia `estornar` e a rota barrava antes num
+  `!perms.receber` que cobria o POST inteiro — quem recebesse `estornar` sem
+  `receber` via o botão e levava 403. Agora a auditoria faz duas conferências:
+  a **automática**, que casa `perms?.X && … acao(_, 'Y')` da tela com
+  `action === 'Y' … !perms.Z` da rota (pelo `perms` IMEDIATAMENTE ANTERIOR, não
+  por distância de regex — medir distância já acusou defeito que não existia),
+  e uma **tabela declarada** para os botões cujo destino não dá para deduzir
+  lendo. Botão novo entra na tabela.
 - **Mandar documento ao cliente pede a chave `enviar` — na tela TAMBÉM.** O
   botão **Enviar** da lista olhava `perms.cancelar` enquanto a rota exigia
   `perms.enviar`: quem recebesse a autorização de enviar continuava sem o

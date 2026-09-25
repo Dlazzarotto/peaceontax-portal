@@ -304,6 +304,81 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
   checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
 }
 
+titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
+// A FALHA DE METODO QUE ISTO FECHA
+// As auditorias anteriores olhavam ARQUIVOS: quem chama a rota, qual cliente
+// ela alcanca, RLS, erro engolido. Nenhuma perguntou se o BOTAO e a TRAVA
+// pedem a mesma coisa -- e eles vivem em arquivos diferentes, entao conferir
+// cada um sozinho nunca acha a discrepancia.
+// Custou caro: o botao Enviar pedia `cancelar` e a rota exigia `enviar`, e a
+// fatura ficava rascunho -- sem chegar ao cliente e sem e-mail. O botao
+// Estornar pedia `estornar` e a rota barrava antes em `receber`.
+//
+// Duas conferencias: a AUTOMATICA, que casa `perms?.X && ... acao(_, 'Y')`
+// da tela com `action === 'Y' ... !perms.Z` da rota; e a TABELA, para os
+// botoes cujo destino nao da para deduzir lendo.
+{
+  const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
+  const rota = readFileSync(join(raiz, 'app/api/billing/invoices/route.ts'), 'utf8')
+
+  // rota: qual chave cada acao exige
+  const exigePorAcao = new Map()
+  for (const m of rota.matchAll(/action === '(\w+)'[\s\S]{0,400}?!perms\.(\w+)/g)) {
+    if (!exigePorAcao.has(m[1])) exigePorAcao.set(m[1], m[2])
+  }
+
+  // tela: qual chave libera cada acao.
+  // O `perms` IMEDIATAMENTE ANTERIOR, nao "algum dentro de 400 caracteres" --
+  // a primeira versao disto casou `perms?.editar` com o acao('duplicate') da
+  // linha seguinte e acusou um defeito que nao existe. Medir distancia de
+  // regex ja custou caro neste projeto mais de uma vez.
+  const guardas = [...tela.matchAll(/perms\?\.(\w+)/g)].map(m => ({ i: m.index, chave: m[1] }))
+  const pedePorAcao = new Map()
+  for (const m of tela.matchAll(/acao\([^,]+,\s*'(\w+)'/g)) {
+    const antes = guardas.filter(g => g.i < m.index)
+    if (!antes.length) continue
+    const chave = antes[antes.length - 1].chave
+    if (!pedePorAcao.has(m[1])) pedePorAcao.set(m[1], chave)
+  }
+
+  let divergem = []
+  for (const [acao, pede] of pedePorAcao) {
+    const exige = exigePorAcao.get(acao)
+    if (!exige) continue
+    if (pede !== exige) divergem.push(`${acao}: tela pede ${pede}, rota exige ${exige}`)
+  }
+  divergem.length
+    ? falta('Botao e trava pedem a mesma chave (automatico)', divergem.join(' · '))
+    : ok(`Botao e trava pedem a mesma chave (${pedePorAcao.size} acoes conferidas)`)
+
+  // Os que nao dao para deduzir: cada linha e [o que faz, tela, chave da tela, rota, chave da rota]
+  const PARES = [
+    ['Receber',                'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/payments/route.ts',         'receber'],
+    ['Estornar',               'app/dashboard/billing/page.tsx', 'estornar',      'app/api/billing/payments/route.ts',         'estornar'],
+    ['Ativar/pausar contrato', 'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recurring/route.ts',        'receber'],
+    ['Cobrar de novo',         'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recharge/route.ts',         'receber'],
+    ['Cancelar parcelamento',  'app/dashboard/billing/page.tsx', 'cancelar',      'app/api/billing/installment-plan/route.ts', 'cancelar'],
+    ['Relatorios',             'app/dashboard/billing/page.tsx', 'verRelatorios', 'app/api/billing/reports/route.ts',          'verRelatorios'],
+  ]
+  let semPar = []
+  for (const [oque, arqTela, chaveTela, arqRota, chaveRota] of PARES) {
+    const t = readFileSync(join(raiz, arqTela), 'utf8')
+    const r = readFileSync(join(raiz, arqRota), 'utf8')
+    if (!new RegExp(`perms\\??\\.${chaveTela}\\b`).test(t)) semPar.push(`${oque}: a tela nao pede ${chaveTela}`)
+    if (!new RegExp(`!perms\\.${chaveRota}\\b`).test(r)) semPar.push(`${oque}: a rota nao exige ${chaveRota}`)
+  }
+  semPar.length
+    ? falta('Botao e trava pedem a mesma chave (tabela)', semPar.join(' · '))
+    : ok(`Botao e trava pedem a mesma chave (${PARES.length} pares declarados)`)
+
+  // O estorno tem chave PROPRIA: barrar antes em `receber` torna `estornar`
+  // sozinho inutil, e separar as duas coisas e o motivo de existirem duas.
+  recusar('Estorno nao e barrado por `receber` antes da chave dele',
+          'app/api/billing/payments/route.ts',
+          /permissoesFinanceiro\(auth\.userId\)\s*\n\s*if \(!perms\.receber\)/,
+          'quem recebe `estornar` sem `receber` via o botao e levava 403')
+}
+
 titulo('MANDAR DOCUMENTO AO CLIENTE PEDE A CHAVE `enviar`')
 // A tela pedia `cancelar` para o botao Enviar e a rota exigia `enviar`: quem
 // recebesse a autorizacao de enviar continuava sem o botao, e a fatura ficava

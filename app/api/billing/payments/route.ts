@@ -92,11 +92,14 @@ export async function POST(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   const perms = await permissoesFinanceiro(auth.userId)
-  if (!perms.receber) return NextResponse.json({ error: RECUSA.receber }, { status: 403 })
 
   const b = await req.json()
 
   // ── Estorno ──
+  // A trava daqui e `estornar`, e SO ela. Antes havia um `!perms.receber`
+  // cobrindo o POST inteiro, acima deste ponto: quem recebesse a autorizacao
+  // de estornar sem a de receber via o botao Estornar na tela e levava 403 --
+  // a autorizacao por pessoa existe justamente para separar as duas coisas.
   if (b.action === 'refund') {
     if (!perms.estornar) return NextResponse.json({ error: RECUSA.estornar }, { status: 403 })
     if (!b.paymentId) return NextResponse.json({ error: 'paymentId obrigatório' }, { status: 400 })
@@ -226,6 +229,10 @@ export async function POST(req: NextRequest) {
       error: `Esta fatura de mensalidade está na cobrança automática do Stripe. Recebimento manual só do saldo inteiro ($${saldo.toFixed(2)}): assim ela sai da linha de cobrança e o débito não acontece.`,
     }, { status: 409 })
   }
+
+  // Daqui para baixo entra DINHEIRO: a chave e `receber`. Conferida antes de
+  // qualquer gravacao e depois do caminho de estorno, que tem chave propria.
+  if (!perms.receber) return NextResponse.json({ error: RECUSA.receber }, { status: 403 })
 
   // ── Forma fora de cartão/Zelle: aprovação de gerente ou sócio ──
   // Fica por último de propósito: não se manda buscar um gerente para depois
