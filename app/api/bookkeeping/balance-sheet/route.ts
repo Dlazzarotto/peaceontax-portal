@@ -32,7 +32,13 @@ export async function GET(req: NextRequest) {
   }
 
   const db = serviceDb()
-  const [{ data: client }, { data: accounts }, { data: txs }, { data: cats }] = await Promise.all([
+  // Balanco com lancamento faltando e demonstrativo ERRADO, nao incompleto.
+  const [
+    { data: client, error: errCliente },
+    { data: accounts, error: errContas },
+    { data: txs, error: errTxs },
+    { data: cats, error: errCats },
+  ] = await Promise.all([
     db.from('clients').select('name, business_name').eq('id', clientId).single(),
     db.from('bank_accounts').select('id, name, type').eq('client_id', clientId).eq('active', true),
     db.from('bank_transactions')
@@ -40,6 +46,10 @@ export async function GET(req: NextRequest) {
       .eq('client_id', clientId).limit(20000),
     db.from('bookkeeping_categories').select('name, kind').eq('active', true),
   ])
+  for (const [oque, err] of [['o cliente', errCliente], ['as contas bancarias', errContas], ['os lancamentos', errTxs],
+                             ['o plano de contas', errCats]] as const) {
+    if (err) return NextResponse.json({ error: `Balanco nao gerado -- falhou ao ler ${oque}: ${err.message}` }, { status: 500 })
+  }
 
   const kindOf: Record<string, string> = {}
   for (const c of cats || []) kindOf[c.name] = c.kind

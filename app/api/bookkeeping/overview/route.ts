@@ -12,7 +12,12 @@ export async function GET() {
   const db = serviceDb()
   const year = new Date().getFullYear()
 
-  const [{ data: plans }, { data: txs }, { data: statements }, { data: alerts }] = await Promise.all([
+  const [
+    { data: plans, error: errPlans },
+    { data: txs, error: errTxs },
+    { data: statements, error: errDocs },
+    { data: alerts, error: errAlerts },
+  ] = await Promise.all([
     db.from('payment_plans')
       .select('client_id, monthly_amount, included_transactions, status, clients(id, name)')
       .eq('kind', 'bookkeeping')
@@ -29,6 +34,12 @@ export async function GET() {
       .order('created_at', { ascending: false })
       .limit(20),
   ])
+  // Central de bookkeeping com consulta falha mostra cliente a MENOS, e a
+  // equipe conclui que nao ha trabalho pendente naquele cliente.
+  for (const [oque, err] of [['contratos', errPlans], ['lancamentos', errTxs],
+                             ['extratos', errDocs], ['alertas', errAlerts]] as const) {
+    if (err) return NextResponse.json({ error: `Nao foi possivel ler ${oque}: ${err.message}` }, { status: 500 })
+  }
 
   // Clientes relevantes: com contrato OU com transações OU com extratos
   const clientIds = new Set<string>()

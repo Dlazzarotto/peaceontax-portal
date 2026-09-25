@@ -58,10 +58,15 @@ export async function POST(req: NextRequest) {
     }
 
     const db = serviceDb()
-    const [{ data: cats }, { data: contasCliente }] = await Promise.all([
+    // Sem o catalogo, NENHUMA categoria casa e tudo entra sem classificacao --
+    // parecendo que o arquivo e que nao trazia conta.
+    const [{ data: cats, error: errCats }, { data: contasCliente, error: errContas }] = await Promise.all([
       db.from('bookkeeping_categories').select('name').eq('active', true),
       db.from('bank_accounts').select('id, name').eq('client_id', clientId),
     ])
+    if (errCats || errContas) {
+      return NextResponse.json({ error: `Catalogo de contas: ${(errCats || errContas)!.message}` }, { status: 500 })
+    }
     // Casamento de categoria: nome exato, sem diferenciar maiúsculas
     const porNome = new Map<string, string>()
     for (const c of cats || []) porNome.set(normalizarCategoriaQB(c.name).toLowerCase(), c.name)

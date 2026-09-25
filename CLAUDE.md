@@ -144,6 +144,16 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   soltar cancelar soltaria o envio junto. Quem pode enviar tem o botão
   **Criar e enviar** (`enviarAgora` no POST, conferido no servidor); quem não
   pode vê só **Salvar rascunho**, e o rascunho não se perde.
+- **Mandar documento ao cliente pede a chave `enviar` — na tela TAMBÉM.** O
+  botão **Enviar** da lista olhava `perms.cancelar` enquanto a rota exigia
+  `perms.enviar`: quem recebesse a autorização de enviar continuava sem o
+  botão, e a fatura ficava **rascunho para sempre** — não chega ao portal do
+  cliente (rascunho nunca aparece lá, de propósito) e não sai e-mail. Nada de
+  fora avisa; o cliente simplesmente não vê fatura nenhuma. **Reenviar** e
+  **Cobrar** tinham o mesmo acoplamento, nos dois lados, e também passaram a
+  `enviar`: mandar documento ao cliente é enviar, não cancelar. Por NÍVEL nada
+  muda (as duas chaves são de gerente/sócio); o que muda é a autorização por
+  pessoa, que é justamente para isso. A auditoria confere os três pontos.
 - **A lista de faturas é do dia e é de quem emitiu.** Sem `verTodasFaturas`,
   `GET /api/billing/invoices` filtra por `created_by` + `created_at >=`
   início do dia; o `?id=` respeita o mesmo escopo. O corte vem de
@@ -464,6 +474,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   falhou, porque sair incompleto é pior. Ignorar de propósito continua
   legítimo: capture o erro e não o use, para a decisão aparecer no código. É
   a **quinta** vez que esse padrão custa tempo; agora a auditoria o recusa.
+  A primeira versão da invariante só acusava quando **algum irmão** conferia o
+  erro — e deixou passar `/api/portal/billing`, onde nenhum dos quatro
+  conferia. Era o pior caso: o portal do CLIENTE mostrando zero, que na tela é
+  uma afirmação ("você não tem nada para pagar") — o cliente acredita e a
+  firma não recebe. Reforçada, ela achou mais nove, entre eles a importação de
+  CSV (a consulta que falha vira "nada importado" e o extrato entra **em
+  dobro**), a agenda (oferece horário já marcado), o balanço (demonstrativo
+  errado, não incompleto) e a edição de fatura (abre sem itens, e salvar dali
+  apaga o que estava).
 - **A lista de clientes da fatura e do contrato obedece ao escopo por tipo.**
   `GET /api/billing/invoices` e `GET /api/billing/recurring` filtram por
   `empresasVedadas`. O POST já recusava empresa para quem não tem

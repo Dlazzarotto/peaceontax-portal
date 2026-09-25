@@ -47,11 +47,19 @@ export async function GET(req: NextRequest) {
   // Uma fatura específica, com itens — usado pela tela de edição
   const umId = sp.get('id')
   if (umId) {
-    const [{ data: doc }, { data: itens }] = await Promise.all([
+    const [{ data: doc, error: errDoc }, { data: itens, error: errItens }] = await Promise.all([
       db.from('invoices').select('*').eq('id', umId).single(),
       db.from('invoice_items').select('*').eq('invoice_id', umId).order('sort'),
     ])
+    // `single()` devolve erro quando nao acha, entao 'nao encontrado' e o caso
+    // esperado; qualquer OUTRO erro e falha de leitura e precisa aparecer.
+    if (errDoc && errDoc.code !== 'PGRST116') {
+      return NextResponse.json({ error: `Fatura: ${errDoc.message}` }, { status: 500 })
+    }
     if (!doc) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+    // Sem os itens, a tela de edicao abriria a fatura VAZIA -- e salvar dali
+    // apagaria o que estava nela.
+    if (errItens) return NextResponse.json({ error: `Itens da fatura: ${errItens.message}` }, { status: 500 })
     // Filtrar a lista e deixar ?id= aberto seria fechar a porta e esquecer a
     // janela: bastaria o id para ver qualquer fatura da carteira.
     if (!perms.verTodasFaturas && doc.created_by !== auth.userId) {
@@ -305,8 +313,14 @@ export async function PATCH(req: NextRequest) {
   // NÃO mexe no status nem em valor: só repete o aviso.
   if (action === 'resend' || action === 'remind') {
     const lembrete = action === 'remind'
-    if (!perms.cancelar) {
-      return NextResponse.json({ error: `${lembrete ? 'Cobrar' : 'Reenviar'} ao cliente é de gerente ou sócio.` }, { status: 403 })
+    // Reenviar e cobrar sao atos de ENVIAR, nao de cancelar. Estavam
+    // pendurados em `cancelar` -- o mesmo acoplamento que ja tinha sido
+    // desfeito na criacao e que ficou aqui. Por nivel nada muda (as duas
+    // chaves sao de gerente/socio); o que muda e a autorizacao POR PESSOA:
+    // soltar `enviar` a quem emite passa a soltar tambem o reenvio, e soltar
+    // `cancelar` deixa de soltar o envio junto.
+    if (!perms.enviar) {
+      return NextResponse.json({ error: `${lembrete ? 'Cobrar' : 'Reenviar'} ao cliente é de quem pode enviar documento.` }, { status: 403 })
     }
     if (inv.status === 'draft') {
       return NextResponse.json({ error: 'Ainda é rascunho — use Enviar.' }, { status: 400 })
