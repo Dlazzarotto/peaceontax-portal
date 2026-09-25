@@ -6,24 +6,43 @@
 // Documento que sai leva a marca (princípio 5): o rodapé é o da firma.
 
 import { FIRM } from '@/lib/contract-html'
+import { porqueNaoTenta, remetenteDoEmail } from '@/lib/email-motivo'
 
 export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 
-export async function enviarEmail(to: string, subject: string, html: string): Promise<boolean> {
+export interface ResultadoEmail {
+  ok: boolean
+  /** Por que NÃO saiu, em uma linha que serve para agir. */
+  motivo?: string
+}
+
+// A regra de "por que nem tenta" e o remetente moram num modulo PURO, que os
+// testes conseguem importar e que o diagnostico (/api/avisos/diag) reusa --
+// diagnostico que calcula por conta propria mente na hora que muda o envio.
+export { porqueNaoTenta, remetenteDoEmail } from '@/lib/email-motivo'
+
+export async function enviarEmail(to: string, subject: string, html: string): Promise<ResultadoEmail> {
   const key = process.env.RESEND_API_KEY
-  if (!key || !to || !to.includes('@')) return false
-  const from = process.env.RESEND_FROM_EMAIL || 'noreply@peaceontax.com'
+  const impede = porqueNaoTenta(!!key, to)
+  if (impede) return { ok: false, motivo: impede }
+
+  const from = remetenteDoEmail()
   try {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
       body: JSON.stringify({ from: `Peace on Tax <${from}>`, to, subject, html }),
     })
-    if (!r.ok) console.error('[avisos] Resend:', await r.text().catch(() => ''))
-    return r.ok
+    if (r.ok) return { ok: true }
+    // A recusa do Resend é a informação que resolve o caso (dominio nao
+    // verificado, remetente nao autorizado, chave revogada). Engolir isso
+    // deixava "o cliente nao recebeu" sem nenhuma pista.
+    const corpo = await r.text().catch(() => '')
+    console.error('[avisos] Resend recusou:', r.status, corpo)
+    return { ok: false, motivo: `o Resend recusou (${r.status}) usando ${from}: ${corpo.slice(0, 300)}` }
   } catch (e) {
     console.error('[avisos] Resend:', (e as Error).message)
-    return false
+    return { ok: false, motivo: `falha de rede ao falar com o Resend: ${(e as Error).message}` }
   }
 }
 
