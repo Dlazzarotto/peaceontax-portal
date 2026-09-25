@@ -304,6 +304,31 @@ for (const alvo of ['middleware.ts', 'lib/supabase-server.ts', 'lib/api-auth.ts'
   checar('lib/papeis.ts le app_metadata', 'lib/papeis.ts', /app_metadata[\s\S]{0,60}\.role|\.role[\s\S]{0,60}app_metadata|app_metadata as Record/, 'o papel voltou para o campo que o usuario escreve')
 }
 
+titulo('E-MAIL AO CLIENTE: O RESULTADO NAO SE DESCARTA')
+// enviarEmail devolve { ok, motivo }. Descartar isso e o que fazia "o cliente
+// nao recebeu a fatura" nao ter pista nenhuma -- nem para quem enviou, nem
+// depois na trilha. Tres dos cinco pontos de envio faziam `await
+// enviarEmail(...)` e seguiam em frente.
+{
+  let descartam = []
+  const candidatos = [...arquivos(join(raiz, 'app/api'), ['route.ts']),
+                      ...arquivos(join(raiz, 'lib'), ['.ts'])]
+  for (const arq of candidatos) {
+    const txt = readFileSync(arq, 'utf8')
+    if (rel(arq) === 'lib/avisos.ts') continue          // e quem define
+    const codigo = txt.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    // `await enviarEmail(` no inicio de uma expressao, sem nada recebendo
+    if (/(^|[;{}]\s*)\s*await\s+enviarEmail\s*\(/m.test(codigo)) descartam.push(rel(arq))
+  }
+  descartam.length
+    ? falta('Resultado de enviarEmail nao se descarta', `guarde o { ok, motivo }: ${descartam.join(', ')}`)
+    : ok('Resultado de enviarEmail nao se descarta')
+  checar('Ha diagnostico de e-mail para o socio', 'app/api/avisos/diag/route.ts',
+         /porqueNaoTenta|RESEND_API_KEY/, 'sem ele "o cliente nao recebeu" nao tem por onde comecar')
+  checar('O diagnostico reusa a regra do envio', 'app/api/avisos/diag/route.ts',
+         /from '@\/lib\/avisos'/, 'diagnostico que calcula por conta propria mente quando o envio muda')
+}
+
 titulo('CONSULTA LADO A LADO NAO PODE TER ERRO ENGOLIDO')
 // Num Promise.all, conferir o erro de UMA consulta e ignorar o das outras faz
 // a consulta que falhou virar lista vazia -- e lista vazia, na tela, e uma

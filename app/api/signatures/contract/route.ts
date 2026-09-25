@@ -151,18 +151,22 @@ export async function POST(req: NextRequest) {
     })
 
     // O cliente fica sabendo pela firma (princípio 4), com o caminho do portal
+    let emailContrato: { ok: boolean; motivo?: string } = { ok: false, motivo: 'aviso por e-mail nao se aplica a este envio' }
     if (noPortal) {
       const texto = lang === 'pt'
         ? `✍️ Seu contrato de serviços está pronto para assinatura. Em Pagamentos, clique em "Assinar contrato": depois de assinar, você cadastra o débito automático na mesma tela.`
         : `✍️ Your service agreement is ready to sign. Under Payments, click "Sign agreement": after signing, you will set up the automatic debit on the same screen.`
       await avisarNoPortal(db, client.id, texto)
-      await enviarEmail(client.email,
+      // Guardado, nao descartado: contrato que o cliente nunca recebeu e
+      // assinatura que nao acontece, e ninguem sabe por que.
+      emailContrato = await enviarEmail(client.email,
         lang === 'pt' ? `Contrato de serviços para assinatura — ${FIRM.name}` : `Service agreement ready to sign — ${FIRM.name}`,
         emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${texto.replace(/^✍️ /, '')}</p>`,
           botao: { texto: lang === 'pt' ? 'Assinar contrato' : 'Sign agreement', url: `${APP_URL}/portal/payments` } }))
     }
 
-    return NextResponse.json({ ok: true, envelopeId, noPortal })
+    return NextResponse.json({ ok: true, envelopeId, noPortal,
+      email: emailContrato.ok, emailMotivo: emailContrato.motivo || null })
   } catch (e) {
     console.error('Contract send error:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

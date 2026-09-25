@@ -469,6 +469,25 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `empresasVedadas`. O POST já recusava empresa para quem não tem
   `verEmpresas`; mostrar o nome no seletor e recusar no salvar seria oferecer
   o que não se pode fazer — e a lista de empresas é o que o escopo esconde.
+- **E-mail que não sai diz POR QUE, e o resultado nunca se descarta.**
+  `enviarEmail` (`lib/avisos.ts`) devolve `{ ok, motivo }`, e o motivo aponta
+  onde está o conserto: **sem chave** → o sócio, no Vercel; **cadastro sem
+  e-mail** ou endereço inválido → a equipe, na ficha; **recusa do Resend** →
+  o painel do Resend, com o texto dele (domínio não verificado é o caso
+  comum). A regra de "nem tenta" mora em `lib/email-motivo.ts`, módulo puro
+  sem import — `avisos.ts` depende de `contract-html` e o teste não
+  conseguiria importar de lá. 12 casos em `testes/email-motivo.mts`.
+  Três dos cinco pontos de envio faziam `await enviarEmail(...)` e seguiam em
+  frente: contrato, parcelamento criado e parcelamento cancelado. Contrato
+  que o cliente nunca recebe é assinatura que não acontece, e ninguém sabe
+  por quê. Agora o resultado vai para a trilha (`invoice_audit.next.email`) e
+  para a resposta da tela. A auditoria recusa quem descartar.
+  **`/api/avisos/diag`** (só o sócio) responde "por que o cliente não
+  recebeu": diz se a chave existe, qual é o remetente e, com
+  `?teste=email@dominio`, manda um e-mail de verdade e devolve a resposta
+  literal do Resend. É o irmão de `/api/signatures/diag`, e existe pelo mesmo
+  motivo. **O aviso no portal sai mesmo sem e-mail** — o cliente vê a fatura
+  em Pagamentos ao entrar; o e-mail é o empurrão, não o único caminho.
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.

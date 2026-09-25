@@ -28,7 +28,7 @@ import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { avancarData, type Frequency } from '@/lib/plans'
 import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
-import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
+import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL, type ResultadoEmail } from '@/lib/avisos'
 import { encerrarParcelamento } from '@/lib/parcelamento'
 import { entradaDoPedido } from '@/lib/entrada-parcelamento'
 import { createClient } from '@supabase/supabase-js'
@@ -289,8 +289,11 @@ export async function POST(req: NextRequest) {
       ? `📆 Su factura ${inv.number} fue dividida en ${n} cuotas de ${valorParcelaFmt}${entrada > 0 ? `, con anticipo de $${entrada.toFixed(2)}` : ''}. En Pagos, registre el débito automático (cuenta bancaria o tarjeta).`
       : `📆 Your invoice ${inv.number} was split into ${n} installments of ${valorParcelaFmt}${entrada > 0 ? `, with a down payment of $${entrada.toFixed(2)}` : ''}. Under Payments, set up automatic debit (bank account or card).`
     await avisarNoPortal(db, inv.client_id, textoPortal)
+    // O resultado do e-mail NAO se joga fora: sem ele, "o cliente nao
+    // recebeu" nao tem pista nenhuma. Vai para a trilha e para a resposta.
+    let emailParcelamento: ResultadoEmail = { ok: false, motivo: 'cliente sem e-mail no cadastro' }
     if (client.email) {
-      await enviarEmail(client.email,
+      emailParcelamento = await enviarEmail(client.email,
         lang === 'pt' ? `Fatura ${inv.number} parcelada — cadastre o débito automático` : lang === 'es' ? `Factura ${inv.number} en cuotas — registre el débito automático` : `Invoice ${inv.number} installment plan — set up automatic debit`,
         emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${textoPortal.replace(/^📆 /, '')}</p>`,
           botao: { texto: lang === 'pt' ? 'Cadastrar débito automático' : lang === 'es' ? 'Registrar débito automático' : 'Set up automatic debit', url: `${APP_URL}/portal/payments` } }))
@@ -299,7 +302,8 @@ export async function POST(req: NextRequest) {
     await db.from('invoice_audit').insert({
       invoice_id: inv.id, action: 'installment_plan_created', performed_by: auth.userId,
       staff_level: perms.nivel,
-      next: { planId: plan.id, entrada, parcelas: n, frequencia: freq, primeira: b.firstDueDate },
+      next: { planId: plan.id, entrada, parcelas: n, frequencia: freq, primeira: b.firstDueDate,
+              email: emailParcelamento.ok, emailMotivo: emailParcelamento.motivo || null },
     }).then(() => null, () => null)
 
     return NextResponse.json({
@@ -415,8 +419,9 @@ export async function PATCH(req: NextRequest) {
       ? `📆 El plan de cuotas de la factura ${inv.number} fue cancelado y el débito automático ya no se cobrará. Saldo pendiente: $${saldo.toFixed(2)}. Hable con nuestro equipo para acordar el pago.`
       : `📆 The installment plan for invoice ${inv.number} was ended and automatic debit will no longer be charged. Outstanding balance: $${saldo.toFixed(2)}. Please contact our team to arrange payment.`)
   await avisarNoPortal(db, plano.client_id, texto)
+  let emailCancelamento: ResultadoEmail = { ok: false, motivo: 'cliente sem e-mail no cadastro' }
   if (client.email) {
-    await enviarEmail(client.email,
+    emailCancelamento = await enviarEmail(client.email,
       lang === 'pt' ? `Parcelamento da fatura ${inv.number} encerrado`
       : lang === 'es' ? `Plan de cuotas de la factura ${inv.number} cancelado`
       : `Installment plan for invoice ${inv.number} ended`,
@@ -433,5 +438,12 @@ export async function PATCH(req: NextRequest) {
       ? `Proposta de parcelamento de ${inv.number} encerrada — nada havia sido cobrado. ` +
         `Saldo em aberto: $${saldo.toFixed(2)}. Pode criar o novo acordo.`
       : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
+    // O cliente tinha um acordo e um debito automatico: ele PRECISA saber.
+    // Se o e-mail nao saiu, quem cancelou tem de ver o motivo na hora.
+    email: emailCancelamento.ok,
+    emailMotivo: emailCancelamento.motivo || null,
+    avisoAoCliente: emailCancelamento.ok
+      ? 'Cliente avisado por e-mail e no portal.'
+      : `Cliente avisado NO PORTAL. E-mail nao saiu: ${emailCancelamento.motivo}`,
   })
 }

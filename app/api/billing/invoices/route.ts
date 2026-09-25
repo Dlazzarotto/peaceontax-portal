@@ -578,10 +578,12 @@ async function avisarClienteDaFatura(
   const t = T[lang] || T.en
   await avisarNoPortal(db, c.id, t.texto)
 
-  if (!c.email || !c.email.includes('@')) return { email: false, motivo: 'cliente sem e-mail' }
-  const ok = await enviarEmail(c.email, t.assunto,
+  // O motivo vem de enviarEmail e e ESPECIFICO: falta de chave no servidor,
+  // cadastro sem e-mail, ou a recusa do Resend com o texto dele. "Falha no
+  // envio" nao dizia se o sócio tinha de mexer no Vercel ou a equipe na ficha.
+  const r = await enviarEmail(c.email, t.assunto,
     emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${t.texto.replace(/^[🧾⏰] /, '')}</p>`,
       botao: { texto: t.botao, url: `${APP_URL}/portal/payments` } }))
-  return { email: ok, motivo: ok ? undefined : 'falha no envio' }
+  return { email: r.ok, motivo: r.motivo }
 }
 
