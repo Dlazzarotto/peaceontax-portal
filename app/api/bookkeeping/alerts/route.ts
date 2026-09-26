@@ -2,7 +2,7 @@
 // clientes com transações em aberto + alertas de planos não resolvidos
 
 import { NextResponse } from 'next/server'
-import { getAuth, serviceDb, empresasVedadas } from '@/lib/api-auth'
+import { getAuth, serviceDb, clientesOcultos } from '@/lib/api-auth'
 
 export async function GET() {
   const auth = await getAuth()
@@ -19,12 +19,13 @@ export async function GET() {
 
   // Escopo por TIPO: nome e volume de empresa nao entram no painel de quem
   // nao pode abrir empresa -- e a carteira inteira que se le por ai.
-  const vedadas = await empresasVedadas(auth)
+  const { ocultos, erro: errEscopo } = await clientesOcultos(auth)
+  if (errEscopo) return NextResponse.json({ error: errEscopo }, { status: 500 })
 
   const byClient: Record<string, { name: string; count: number }> = {}
   for (const t of (pending || []) as any[]) {
     const id = t.client_id
-    if (vedadas.has(id)) continue
+    if (ocultos.has(id)) continue
     if (!byClient[id]) byClient[id] = { name: t.clients?.name || 'Cliente', count: 0 }
     byClient[id].count++
   }

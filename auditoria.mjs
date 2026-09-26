@@ -489,7 +489,7 @@ titulo('ROTA DE EQUIPE QUE RECEBE UM CLIENTE PASSA PELO ESCOPO')
 // TIPO -- assistente em pessoa fisica, empresa exige verEmpresas -- e
 // canAccessClient. Nove rotas ficaram de fora quando o escopo foi criado
 // (entre elas clients/profile e clients/access): bastava passar o id de uma
-// empresa. Resumo que agrega a carteira usa empresasVedadas.
+// empresa. Resumo que agrega a carteira usa clientesOcultos.
 {
   const PEGA_CLIENTE = /(searchParams\.get\(['"]clientId|\bclientId\b\s*[,}]|clientId\s*=\s*(body|await))/
   let fora = []
@@ -499,7 +499,7 @@ titulo('ROTA DE EQUIPE QUE RECEBE UM CLIENTE PASSA PELO ESCOPO')
     // A CHAMADA, nao o import: trocar a chamada por `true` e deixar o
     // import deixaria a invariante passar (testado -- passava).
     const semImports = codigo.split('\n').filter(l => !/^\s*import\b/.test(l)).join('\n')
-    if (/\b(canAccessClient|empresasVedadas)\s*\(/.test(semImports)) continue
+    if (/\b(canAccessClient|clientesOcultos)\s*\(/.test(semImports)) continue
     if (!/isStaff/.test(codigo)) continue
     if (PEGA_CLIENTE.test(codigo)) fora.push(rel(arq))
   }
@@ -952,6 +952,65 @@ titulo('VIEW NOVA TAMBEM NASCE FECHADA')
   }
   if (!abertas) ok(`as ${views.size} views tiram o privilegio de anon/authenticated`)
 }
+
+titulo('CAIXA DA FIRMA (a Peace on Tax como cliente de si mesma)')
+// A firma e uma LINHA em `clients` marcada com `is_firm`: assim o livro dela
+// usa o mesmo motor dos clientes (Plaid, regras, plano de contas, P&L) em vez
+// de uma segunda implementacao -- a quarta copia do motor de classificacao.
+// O preco e que a firma aparece por padrao em toda tela que lista cliente, o
+// contrario do padrao da casa. O que paga esse preco sao as travas abaixo.
+{
+  // DENTRO do corpo de canAccessClient, nao "em algum lugar do arquivo":
+  // clientesOcultos, logo abaixo, tambem cita idDaFirma e owner, e a
+  // invariante passava com a trava da firma REMOVIDA. Medir por distancia ou
+  // por "aparece depois" ja acusou defeito que nao existia e deixou passar
+  // defeito que existia -- por isso aqui se recorta a funcao.
+  const t = readFileSync(join(raiz, 'lib/api-auth.ts'), 'utf8')
+  const i = t.indexOf('export async function canAccessClient')
+  const corpo = i < 0 ? '' : t.slice(i, t.indexOf('export ', i + 40))
+  const temFirma = /idDaFirma/.test(corpo)
+  const temSocio = /['"]owner['"]/.test(corpo)
+  temFirma && temSocio
+    ? ok('O funil de acesso conhece a firma')
+    : falta('O funil de acesso conhece a firma',
+        'canAccessClient precisa liberar a linha da firma SO para o socio -- gerente tem verEmpresas por nivel e abriria a folha de pagamento da firma')
+}
+checar('A firma sai das listas (seletor de fatura, contrato, bookkeeping)',
+  'lib/api-auth.ts', /clientesOcultos[\s\S]*?idDaFirma/,
+  'sem o id da firma no conjunto oculto, ela vira um cliente a quem faturar por engano')
+recusar('O nome antigo do escopo nao volta',
+  'lib/api-auth.ts', /empresasVedadas/,
+  'empresasVedadas dizia so metade: o conjunto agora esconde tambem a firma, e o nome tem de dizer isso')
+checar('A firma fica fora da lista de clientes',
+  'app/api/clients/route.ts', /query = query\.neq\('id', firma\)/,
+  'a firma apareceria no quadro de clientes como uma empresa qualquer')
+{
+  const t = readFileSync(join(raiz, 'app/api/clients/route.ts'), 'utf8')
+  const contagens = (t.match(/q = q\.neq\('id', firma\)/g) || []).length
+  contagens >= 2
+    ? ok('E fora das CONTAGENS (cartoes de Empresas e Pessoa fisica)')
+    : falta('E fora das CONTAGENS (cartoes de Empresas e Pessoa fisica)',
+        'contar a firma junto erra o numero que o socio le no cartao -- faltam filtros em contar()/totalDe()')
+}
+checar('A lista geral de fornecedores tambem passa pelo escopo',
+  'app/api/bookkeeping/payees/route.ts', /clientesOcultos\s*\(/,
+  '?all=1 agrega a carteira inteira (nome de cada cliente e com quem gasta) e nao recebe clientId -- ficou fora quando o escopo por tipo foi criado')
+checar('O caixa da firma e so do socio',
+  'app/api/caixa/firma/route.ts', /getStaffLevel\([\s\S]*?\)\)\s*===\s*['"]owner['"]/,
+  'sem isto o livro da firma abre para gerente, que tem verEmpresas por nivel')
+checar('A marca da firma nao vem do corpo do pedido',
+  'app/api/caixa/firma/route.ts', /camposDaFirma\(body\)/,
+  'corpo inteiro no update deixaria marcar um CLIENTE como firma -- e o cliente marcado sumiria de todas as listas')
+recusar('E nem por um caminho indireto',
+  'app/api/caixa/firma/route.ts', /body\.is_firm|body\?\.is_firm|\.\.\.body/,
+  'is_firm so pode vir de MARCA_DA_FIRMA')
+checar('Uma firma, e uma so (indice unico no banco)',
+  'sql/caixa-da-firma-v1.sql', /create unique index if not exists clients_uma_firma[\s\S]*?where is_firm/,
+  'duas linhas marcadas dariam dois caixas, e o codigo pega "a" firma')
+checar('A coluna que falta nao derruba o funil de acesso',
+  'lib/caixa-firma.ts', /if \(error\) return null/,
+  'o codigo sobe na Vercel antes de a migracao rodar a mao: exigir is_firm ali faria canAccessClient recusar TUDO entre o deploy e a migracao')
+
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []

@@ -28,6 +28,11 @@ const ITENS_1: [string, string][] = [
   ['Atendimento', '/dashboard/atendimento'],
 ]
 
+// O caixa da PROPRIA firma so existe para o socio -- a rota recusa qualquer
+// outro nivel. Oferecer o item a quem vai levar 403 e oferecer o que nao se
+// pode fazer, o mesmo defeito ja corrigido no seletor de cliente da fatura.
+const CAIXA: [string, string] = ['Caixa', '/dashboard/caixa']
+
 const LISTAS: [string, string][] = [
   ['Plano de contas',        '/dashboard/accounts'],
   ['Fornecedores e clientes','/dashboard/payees'],
@@ -41,8 +46,9 @@ const ITENS_2: [string, string][] = [
   ['Precos',   '/dashboard/pricing'],
 ]
 
-export default function FirmNav({ name }: { name?: string }) {
+export default function FirmNav({ name, socio }: { name?: string; socio?: boolean }) {
   const pathname = usePathname()
+  const itens1 = socio ? [...ITENS_1, CAIXA] : ITENS_1
   const [menu, setMenu] = useState(false)
   const [listas, setListas] = useState(false)
   const [listasMob, setListasMob] = useState(false)
@@ -84,7 +90,7 @@ export default function FirmNav({ name }: { name?: string }) {
 
       {/* ── Computador: barra sempre visível ── */}
       <div className="fw-desk">
-        {ITENS_1.map(([l, h]) => link(l, h))}
+        {itens1.map(([l, h]) => link(l, h))}
 
         <div className="fw-sub" ref={caixaListas}>
           <button type="button" className={`fw-link fw-sub-abrir${listas ? ' on' : ''}`}
@@ -110,7 +116,7 @@ export default function FirmNav({ name }: { name?: string }) {
 
         {menu && (
           <div className="fw-itens">
-            {ITENS_1.map(([l, h]) => link(l, h))}
+            {itens1.map(([l, h]) => link(l, h))}
 
             <button type="button" className={`fw-link fw-sub-abrir${listasMob ? ' on' : ''}`}
               aria-expanded={listasMob} onClick={() => setListasMob(v => !v)}>

@@ -3,7 +3,7 @@
 // contadores de transações, contrato ativo e contador anual vs limite.
 
 import { NextResponse } from 'next/server'
-import { getAuth, serviceDb, empresasVedadas } from '@/lib/api-auth'
+import { getAuth, serviceDb, clientesOcultos } from '@/lib/api-auth'
 
 export async function GET() {
   const auth = await getAuth()
@@ -49,8 +49,11 @@ export async function GET() {
 
   // Escopo por TIPO: quem nao pode ver empresa nao ve nem o nome dela aqui.
   // A central de bookkeeping e, em boa parte, carteira de empresa.
-  const vedadas = await empresasVedadas(auth)
-  for (const id of Array.from(clientIds)) if (vedadas.has(id)) clientIds.delete(id)
+  // A firma tambem sai daqui: o caixa dela tem tela propria (/dashboard/caixa)
+  // e nao e carteira de cliente.
+  const { ocultos, erro: errEscopo } = await clientesOcultos(auth)
+  if (errEscopo) return NextResponse.json({ error: errEscopo }, { status: 500 })
+  for (const id of Array.from(clientIds)) if (ocultos.has(id)) clientIds.delete(id)
 
   // Nomes dos clientes sem contrato
   const missingNames = Array.from(clientIds).filter(id =>

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getUser, getRole } from '@/lib/supabase-server'
+import { getStaffLevel } from '@/lib/staff-perms'
 import Link from 'next/link'
 import FirmNav from '@/components/FirmNav'
 
@@ -11,10 +12,12 @@ export default async function SettingsLayout({ children }: { children: React.Rea
   if (!user) redirect('/login')
   if (getRole(user) !== 'firm') redirect('/portal')
   const name = user.user_metadata?.full_name?.split(' ')[0] || 'Staff'
+  // O item Caixa (o livro da propria firma) so aparece para o socio.
+  const socio = (await getStaffLevel(user.id)) === 'owner'
 
   return (
     <div style={{ minHeight: '100vh', background: '#f0f4fa' }}>
-      <FirmNav name={name} />
+      <FirmNav name={name} socio={socio} />
       <div className="st-grade">
         <div style={{ background: '#fff', borderRadius: 12, padding: 14, border: '1px solid #e2e8f4', alignSelf: 'start' }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#6a7a9a', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, padding: '0 4px' }}>Settings</div>

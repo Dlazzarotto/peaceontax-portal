@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { getUser, getRole } from '@/lib/supabase-server'
+import { getStaffLevel } from '@/lib/staff-perms'
 import FirmNav from '@/components/FirmNav'
 
 // Área da FIRMA (Peace on Tax). A área do cliente é /portal e tem layout
@@ -13,10 +14,12 @@ export default async function FirmLayout({ children }: { children: React.ReactNo
   if (!user) redirect('/login')
   if (getRole(user) !== 'firm') redirect('/portal')
   const name = user.user_metadata?.full_name?.split(' ')[0] || 'Staff'
+  // O item Caixa (o livro da propria firma) so aparece para o socio.
+  const socio = (await getStaffLevel(user.id)) === 'owner'
 
   return (
     <div style={{ minHeight: '100vh', background: '#f0f4fa' }}>
-      <FirmNav name={name} />
+      <FirmNav name={name} socio={socio} />
       <main className="fw-main">{children}</main>
       <style>{`
         .fw-main { padding:24px 28px; max-width:1400px; margin:0 auto; }

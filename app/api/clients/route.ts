@@ -16,6 +16,7 @@ import { getAuth, SEM_ACESSO_EMPRESA } from '@/lib/api-auth'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
 import { camposDoCliente, criticarCliente, deveConvidar } from '@/lib/novo-cliente'
 import { ETAPAS, resumirEtapas, buscaLiteral } from '@/lib/clientes-grupos'
+import { idDaFirma } from '@/lib/caixa-firma'
 
 export async function GET(req: NextRequest) {
   try {
@@ -36,6 +37,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: SEM_ACESSO_EMPRESA }, { status: 403 })
     }
     const type = tipoPedido
+
+    // A PROPRIA firma e uma linha em `clients` (lib/caixa-firma.ts) e nao e
+    // cliente: fica fora da lista E das contagens, para todo mundo, socio
+    // inclusive. Contada junto, ela erra o numero do cartao de Empresas; na
+    // lista, ela e um cadastro a quem faturar por engano. O livro dela abre
+    // em /dashboard/caixa. O filtro e por ID, nunca por `is_firm`: assim a
+    // tela nao quebra entre o deploy e a migracao da coluna.
+    const firma = await idDaFirma(db)
     const TIPOS_VISIVEIS = perms.verEmpresas
       ? ['business', 'individual']
       : ['individual']
@@ -46,9 +55,11 @@ export async function GET(req: NextRequest) {
     // da tela — e nenhuma delas aparece.
     if (searchParams.get('resumo') === '1') {
       const contar = async (t: string, etapa: string) => {
-        const { count } = await db.from('clients')
+        let q = db.from('clients')
           .select('id', { count: 'exact', head: true })
           .eq('active', true).eq('type', t).eq('stage', etapa)
+        if (firma) q = q.neq('id', firma)
+        const { count } = await q
         return count ?? 0
       }
       const porTipo: Record<string, { stage: string; quantidade: number }[]> = {}
@@ -61,8 +72,10 @@ export async function GET(req: NextRequest) {
       }
       // Etapa fora da lista (cadastro antigo, importação) não pode sumir da conta
       const totalDe = async (t: string) => {
-        const { count } = await db.from('clients')
+        let q = db.from('clients')
           .select('id', { count: 'exact', head: true }).eq('active', true).eq('type', t)
+        if (firma) q = q.neq('id', firma)
+        const { count } = await q
         return count ?? 0
       }
       const resumo: Record<string, any> = {}
@@ -78,6 +91,7 @@ export async function GET(req: NextRequest) {
     }
 
     let query = db.from('clients').select('*').eq('active', true).order('name')
+    if (firma) query = query.neq('id', firma)
     // Curinga do LIKE escapado: buscar "100%" casava com "1000" e "100X"
     if (search) query = query.ilike('name', `%${buscaLiteral(search)}%`)
     if (type) query = query.eq('type', type)
