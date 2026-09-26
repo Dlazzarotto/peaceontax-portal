@@ -3,6 +3,8 @@
 //
 //   npm run migrar -- sql/painel-v1.sql sql/payees-escopo-v1.sql   aplica estes arquivos
 //   npm run migrar -- --pendentes                                   lista o que ainda não foi anotado
+//   npm run migrar -- --pendentes --so-nomes                        só os caminhos, para outro
+//                                                                    programa consumir (workflow)
 //   npm run migrar -- --so-ver sql/painel-v1.sql                    mostra o SQL, não executa
 //   npm run migrar -- --registrar sql/x.sql                         anota como aplicado sem rodar
 //                                                                    (para o que já foi rodado à mão)
@@ -164,15 +166,30 @@ async function main() {
   const livro = await aplicados(exec)
 
   if (flag('--pendentes')) {
+    // --so-nomes: só os caminhos, um por linha, para outro programa consumir
+    // (é o que o workflow do GitHub passa adiante). Sai NUA: sem cabeçalho,
+    // sem contagem, sem cor.
+    const soNomes = flag('--so-nomes')
     let n = 0
+    const paraAplicar = []
     for (const f of todos) {
       const nome = `sql/${f}`
       const hash = sha(readFileSync(join(dirSql, f), 'utf-8'))
       const est = !livro.has(nome) ? 'PENDENTE' : livro.get(nome) !== hash ? 'MUDOU DEPOIS DE APLICADO' : 'ok'
       if (est !== 'ok') n++
-      console.log(`  ${est.padEnd(26)} ${nome}`)
+      // Só PENDENTE entra na lista automática. "MUDOU DEPOIS DE APLICADO" é
+      // arquivo editado depois de rodar (aconteceu: a conferência de
+      // permissoes-por-pessoa-v1 foi reescrita). Pode ser inofensivo, pode
+      // não ser — quem decide é gente, então ele aparece no relato e fica de
+      // fora do automático.
+      if (est === 'PENDENTE') paraAplicar.push(nome)
+      if (!soNomes) console.log(`  ${est.padEnd(26)} ${nome}`)
     }
+    if (soNomes) { for (const nome of paraAplicar) console.log(nome); return }
     console.log(n === 0 ? 'Nada pendente.' : `${n} arquivo(s) a decidir.`)
+    if (n > paraAplicar.length) {
+      console.log(`  (${n - paraAplicar.length} mudou depois de aplicado — não entra no automático)`)
+    }
     return
   }
 

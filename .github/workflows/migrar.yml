@@ -1,0 +1,102 @@
+# Aplicar migrações do banco sem colar SQL em lugar nenhum.
+#
+# POR QUE ASSIM, E NÃO POR UM BOTÃO DENTRO DO SISTEMA
+# A ideia anterior era uma tela em Settings chamando uma função
+# `aplicar_sql(text)` no banco. Isso é, literalmente, execução de SQL
+# arbitrário exposta por HTTP: mesmo travada no service_role e mesmo só
+# recebendo nome de arquivo, a FUNÇÃO em si é genérica e passa a existir para
+# sempre. Num sistema que guarda dado de imposto de quase mil pessoas, não
+# vale o atalho.
+#
+# Aqui a credencial não fica no aplicativo: fica em GitHub → Secrets, é usada
+# só por este job e só quando alguém APERTA o botão. O sistema publicado não
+# ganha nenhuma porta nova.
+#
+# COMO USAR, DO CELULAR
+#   GitHub → Actions → "Migrações do banco" → Run workflow
+#     acao = listar   → só mostra o que falta, não muda nada  (é o padrão)
+#     acao = aplicar  → aplica o que falta, na ordem dos arquivos
+#
+# O QUE PRECISA ESTAR CONFIGURADO (uma vez só)
+#   Settings → Secrets and variables → Actions → New repository secret
+#     Nome:  SUPABASE_DB_URL
+#     Valor: a cadeia de conexão do Postgres do projeto
+#            (Supabase → Project Settings → Database → Connection string)
+#   Use a do **Session pooler**: o runner do GitHub só tem IPv4, e a conexão
+#   direta de vários projetos hoje é só IPv6 — daria "network unreachable".
+#
+# NUNCA roda sozinho no push: migração é ato consciente, como enviar documento
+# ao cliente. Quem decide é quem aperta.
+
+name: Migrações do banco
+
+on:
+  workflow_dispatch:
+    inputs:
+      acao:
+        description: 'listar = só mostra o que falta · aplicar = aplica'
+        required: true
+        default: listar
+        type: choice
+        options: [listar, aplicar]
+
+# Duas execuções ao mesmo tempo aplicariam a mesma migração duas vezes.
+concurrency:
+  group: migracoes-do-banco
+  cancel-in-progress: false
+
+jobs:
+  migrar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # scripts/migrar.mjs só usa módulos do próprio Node e chama o psql.
+      # Nada de `npm install` aqui: o lockfile deste projeto exige
+      # --legacy-peer-deps e não há dependência nenhuma a instalar.
+      - name: Instalar o cliente do Postgres
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Conferir se a credencial existe
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::Falta o secret SUPABASE_DB_URL. Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "Credencial presente (o valor nunca é impresso)."
+
+      - name: O que ainda não foi aplicado
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: node scripts/migrar.mjs --pendentes
+
+      - name: Aplicar
+        if: ${{ inputs.acao == 'aplicar' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          # As pendentes, na ordem em que --pendentes as lista (ordem do
+          # arquivo em sql/, que é a ordem de dependência que a entrega diz).
+          PENDENTES=$(node scripts/migrar.mjs --pendentes --so-nomes)
+          if [ -z "$PENDENTES" ]; then
+            echo "Nada pendente. Nada a fazer."
+            exit 0
+          fi
+          echo "Vou aplicar, nesta ordem:"
+          echo "$PENDENTES" | sed 's/^/  · /'
+          # shellcheck disable=SC2086
+          node scripts/migrar.mjs $PENDENTES
+
+      - name: Como ficou
+        if: ${{ always() && inputs.acao == 'aplicar' }}
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: node scripts/migrar.mjs --pendentes
