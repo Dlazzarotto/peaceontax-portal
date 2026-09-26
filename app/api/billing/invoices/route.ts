@@ -590,7 +590,9 @@ async function avisarClienteDaFatura(
     },
   }
   const t = T[lang] || T.en
-  await avisarNoPortal(db, c.id, t.texto)
+  // O portal e o canal que SEMPRE deveria funcionar: se ele falhar tambem, o
+  // cliente nao fica sabendo por nenhum caminho, e quem enviou precisa saber.
+  const noPortal = await avisarNoPortal(db, c.id, t.texto)
 
   // O motivo vem de enviarEmail e e ESPECIFICO: falta de chave no servidor,
   // cadastro sem e-mail, ou a recusa do Resend com o texto dele. "Falha no
@@ -598,6 +600,10 @@ async function avisarClienteDaFatura(
   const r = await enviarEmail(c.email, t.assunto,
     emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${t.texto.replace(/^[🧾⏰] /, '')}</p>`,
       botao: { texto: t.botao, url: `${APP_URL}/portal/payments` } }))
-  return { email: r.ok, motivo: r.motivo }
+  return {
+    email: r.ok,
+    motivo: noPortal.ok ? r.motivo
+      : `${r.motivo ? r.motivo + ' · ' : ''}e o aviso no portal também falhou: ${noPortal.motivo}`,
+  }
 }
 

@@ -414,6 +414,20 @@ recusar('Rota: reenviar/cobrar nao depende de `cancelar`', 'app/api/billing/invo
         /action === 'remind'[\s\S]{0,200}?!perms\.cancelar/,
         'mandar documento ao cliente e ENVIAR; soltar cancelar soltava o envio junto')
 
+titulo('POR QUE O CLIENTE NAO RECEBEU: HA COMO PERGUNTAR')
+// O caso "o cliente nao recebeu e nao ve nada no portal" ja foi diagnosticado
+// errado tres vezes. As causas sao parecidas por fora e diferentes por
+// dentro, e a pior nao tem erro em lugar nenhum: a fatura esta num cadastro e
+// o LOGIN do cliente esta em OUTRO (duplicata da importacao). O portal procura
+// pelo user_id, entao aquele cliente nunca ve aquela fatura.
+checar('Ha diagnostico por fatura', 'app/api/billing/diag-envio/route.ts',
+       /numero=INV/, 'sem ele, a proxima vez tambem sera por adivinhacao')
+checar('O diagnostico procura cadastro duplicado', 'app/api/billing/diag-envio/route.ts',
+       /chaveDoNome/, 'a causa que ninguem adivinha e a duplicata da importacao')
+recusar('Aviso no portal nao falha em silencio', 'lib/avisos.ts',
+        /chat_messages'\)[\s\S]{0,200}?then\(\(\) => null/,
+        'quando o e-mail nao sai, o portal e o unico canal que resta')
+
 titulo('E-MAIL AO CLIENTE: O RESULTADO NAO SE DESCARTA')
 // enviarEmail devolve { ok, motivo }. Descartar isso e o que fazia "o cliente
 // nao recebeu a fatura" nao ter pista nenhuma -- nem para quem enviou, nem
