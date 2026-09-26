@@ -256,6 +256,30 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   retorno `/dashboard/caixa` precisa entrar em *Allowed redirect URIs* no
   painel do Plaid, senão banco OAuth não conecta (a rota avisa, em vez de só
   falhar).
+- **Contabilidade fiscal × caixa diário: a receita passa por "Recebimentos a
+  depositar".** (`lib/deposito-match.ts`, `lib/caixa-recebimentos.ts`,
+  `lib/stripe-repasse.ts`, `/api/caixa/depositos`, migrações
+  `sql/caixa-conciliacao-v1.sql` e `-funcao-v1.sql`.) O livro da firma é
+  **regime de caixa**: despesa direto do extrato, receita no RECEBIMENTO da
+  fatura, numa conta de passagem (o Undeposited Funds do QuickBooks) que o
+  depósito esvazia. **A receita não é lida do extrato** porque na mesma conta
+  caem o depósito de cheque/Zelle (um a um) e o repasse do Stripe, que junta
+  vários pagamentos e chega LÍQUIDO — lendo só o banco, a receita bruta nunca
+  fecha, e é a bruta que vai no 1099-K. A conta de passagem **fecha em zero**:
+  `+ recebimentos − taxa − transferência = 0`, e é isso que o teste exige.
+  **A conciliação é UMA RPC** (`conciliar_deposito`): são cinco escritas que
+  valem juntas ou nenhuma, e **o valor é recalculado no banco** — a tela manda
+  ids, número vindo do navegador não lança despesa. Testado no PG 16, inclusive
+  duas sessões simultâneas (a segunda recebe `ja_conciliado`). Três recusas
+  deliberadas: depósito MAIOR que os recebimentos é `falta_recebimento` (não é
+  taxa negativa — é fatura paga que ninguém baixou); **reembolso dentro do
+  repasse não é taxa** (seria despesa que não existiu, com a receita ainda
+  lançada); e recebimento estornado DEPOIS de depositado não some do livro,
+  vira aviso. A sincronização dos recebimentos é **idempotente e sem gancho no
+  caminho do dinheiro** — `invoice_payments` é gravado em três lugares e
+  apagado no estorno; pendurar a criação do lançamento em cada um seriam
+  quatro pontos para manter em pé. O índice único em `payment_id` é o que
+  garante que rodar duas vezes não dobra a receita do ano.
 - **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
   pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
   ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas

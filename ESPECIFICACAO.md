@@ -346,6 +346,47 @@ Como a firma passa a ser uma linha na mesma tabela dos clientes, a marca é
   esse cliente desaparecer de todas as listas; só o cadastro do caixa grava a
   marca, e o banco impede que exista mais de uma firma.
 
+**Contabilidade fiscal ≠ caixa diário.** São dois números diferentes e não
+podem morar no mesmo lugar:
+
+- A **contabilidade fiscal** da firma é por **regime de caixa**. A despesa
+  vem direto do extrato; a receita nasce no **recebimento** da fatura. Fatura
+  emitida e não paga não entra na contabilidade.
+- O **caixa diário** é gestão: o que está para receber, o que está para
+  pagar, o que sobra. Não vira lançamento contábil.
+
+**Toda receita passa por "Recebimentos a depositar"** — o *Undeposited Funds*
+do QuickBooks. O recebimento da fatura (cheque, Zelle, espécie, cartão ou ACH
+pelo Stripe) entra nessa conta de passagem; o **depósito** que aparece no
+extrato apenas a esvazia. O saldo dela é, por definição, o dinheiro recebido
+que ainda não chegou ao banco.
+
+**Por que a receita não é lida do extrato.** Na mesma conta caem duas coisas
+diferentes: o depósito de cheque e Zelle (um a um) e o **repasse do Stripe**,
+que junta vários pagamentos e chega **líquido da taxa**. Lendo só o extrato, a
+receita bruta nunca fecha — e é a bruta que o Stripe informa ao IRS no
+**1099-K**. Um repasse de $970 vira, no livro, $1.000 de receita (que já
+entrou no recebimento) e $30 de taxa, despesa dedutível.
+
+A conta de passagem **fecha em zero** a cada depósito, e é isso que prova a
+conciliação: `+ recebimentos (bruto) − taxa − transferência para o banco = 0`.
+
+Três recusas, todas deliberadas:
+
+- **Depósito maior que os recebimentos escolhidos é recusado.** Não é taxa
+  negativa: é pagamento que entrou e não foi lançado em fatura nenhuma. O
+  conserto é lançar o recebimento, não fechar a conta na marra.
+- **Reembolso dentro do repasse não é taxa.** Devolução ao cliente também
+  encolhe o repasse; somada à taxa viraria uma despesa de processamento que
+  não existiu, com a receita continuando lançada.
+- **Recebimento estornado depois de depositado não some do livro.** O dinheiro
+  entrou no banco; apagar a linha deixaria o depósito sem explicação. Vira
+  aviso para o sócio decidir.
+
+O sistema pergunta ao Stripe **quais cobranças** compõem cada repasse e propõe
+a seleção — escolher à mão entre dezenas de recebimentos é adivinhação, e
+adivinhar errado lança receita no cliente errado.
+
 **Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
 
 **Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.

@@ -1012,6 +1012,65 @@ checar('A coluna que falta nao derruba o funil de acesso',
   'o codigo sobe na Vercel antes de a migracao rodar a mao: exigir is_firm ali faria canAccessClient recusar TUDO entre o deploy e a migracao')
 
 
+titulo('CONCILIACAO DE DEPOSITO (contabilidade fiscal x caixa diario)')
+// A firma fecha o livro por REGIME DE CAIXA: a despesa vem do extrato e a
+// receita vem do RECEBIMENTO da fatura, que fica numa conta de passagem
+// ("Recebimentos a depositar") ate o deposito esvazia-la. No repasse do
+// Stripe, a diferenca entre o bruto e o que cai no banco e a TAXA -- sem
+// lanca-la, a receita bruta nao fecha com o 1099-K e a taxa nao e deduzida.
+checar('A conciliacao e UMA operacao no banco',
+  'app/api/caixa/depositos/route.ts', /rpc\('conciliar_deposito'/,
+  'sao cinco escritas que valem juntas ou nenhuma -- metade gravada e livro sem conserto')
+recusar('E a rota nao lanca nada por fora dela',
+  'app/api/caixa/depositos/route.ts', /from\('bank_transactions'\)[\s\S]{0,80}\.(insert|upsert|delete)\(/,
+  'lancamento fora da RPC escapa da transacao e da conferencia de valor')
+{
+  // O valor NAO pode vir do navegador: a tela manda ids, o banco soma.
+  const t = readFileSync(join(raiz, 'app/api/caixa/depositos/route.ts'), 'utf8')
+  const mandaValor = /p_(bruto|taxa|valor)\s*:/.test(t) || /body\?\.(bruto|valor|taxa)\b/.test(t)
+  mandaValor
+    ? falta('O valor e recalculado no banco, nunca recebido',
+        'numero vindo do navegador nao pode lancar despesa nem receita')
+    : ok('O valor e recalculado no banco, nunca recebido')
+}
+checar('Sincronizar duas vezes nao dobra a receita',
+  'sql/caixa-conciliacao-v1.sql', /create unique index if not exists bank_tx_um_por_recebimento[\s\S]*?payment_id/,
+  'a rotina roda a cada abertura da tela: sem o indice unico, o ano fecha com receita em dobro')
+checar('E a rotina respeita esse indice',
+  'lib/caixa-recebimentos.ts', /onConflict:\s*'payment_id',\s*ignoreDuplicates:\s*true/,
+  'duas abas sincronizando ao mesmo tempo nao podem lancar o mesmo recebimento duas vezes')
+checar('Estorno DEPOIS do deposito nao se apaga em silencio',
+  'lib/caixa-recebimentos.ts', /podeApagar\s*=\s*sobrando\.filter\([\s\S]{0,60}?!\s*\w+\.deposit_tx_id/,
+  'o dinheiro ja entrou no banco: apagar a linha deixaria o deposito sem explicacao -- a lista do delete tem de excluir o que ja foi depositado')
+checar('Reembolso dentro do repasse nao vira taxa',
+  'lib/stripe-repasse.ts', /bt\.type === 'refund'[\s\S]{0,200}det\.reembolsos\s*\+=/,
+  'devolucao ao cliente tambem encolhe o repasse -- somada a taxa, vira despesa que nao existiu e receita que continua lancada')
+checar('E a tela avisa quando ha reembolso no repasse',
+  'app/api/caixa/depositos/route.ts', /reembolsos\s*<\s*0/,
+  'sem o aviso, a devolucao entra como taxa e a receita continua lancada')
+checar('Deposito maior que os recebimentos e RECUSADO',
+  'sql/caixa-conciliacao-funcao-v1.sql', /falta_recebimento/,
+  'entrou dinheiro sem recebimento lancado: nao e taxa negativa, e fatura que ninguem baixou')
+checar('Da para desfazer a conciliacao',
+  'sql/caixa-conciliacao-funcao-v1.sql', /create or replace function public\.desconciliar_deposito/,
+  'sem desfazer, errar a selecao so se conserta com SQL na mao')
+recusar('A funcao nao atribui variavel por consulta',
+  'sql/caixa-conciliacao-funcao-v1.sql', /select[\s\S]{0,200}?\sinto\s+v_/i,
+  'o detector de RLS do SQL Editor le `select ... into <var>` como criacao de tabela e reescreve o arquivo')
+{
+  // Tela e trava tem de fazer a MESMA conta -- a falha que mais custou caro
+  // aqui foi botao e rota pedindo coisas diferentes.
+  const tela = readFileSync(join(raiz, 'components/CaixaDepositos.tsx'), 'utf8')
+  const rota = readFileSync(join(raiz, 'app/api/caixa/depositos/route.ts'), 'utf8')
+  const mesma = /from '@\/lib\/deposito-match'/.test(tela) && /conferirDeposito/.test(tela)
+             && /from '@\/lib\/deposito-match'/.test(rota)
+  mesma
+    ? ok('A tela e a rota fazem a MESMA conta do deposito')
+    : falta('A tela e a rota fazem a MESMA conta do deposito',
+        'duas contas diferentes para o mesmo numero e o defeito que a auditoria existe para pegar')
+}
+
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
