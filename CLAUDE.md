@@ -671,6 +671,25 @@ middleware.ts        controle de acesso por rota
   feito com o nome curto vira uma linha que ninguém encontra, e `--pendentes`
   segue dizendo PENDENTE — alguém roda a migração de novo.
   A entrega sempre diz qual migração precisa rodar.
+  **Do celular (ou de qualquer lugar), a migração roda pelo GitHub:**
+  Actions → *Migrações do banco* → Run workflow, com `acao = listar` (só
+  mostra) ou `acao = aplicar`. Precisa do secret `SUPABASE_DB_URL` em
+  Settings → Secrets and variables → Actions, com a cadeia do **Session
+  pooler** — o runner do GitHub só tem IPv4 e a conexão direta de muitos
+  projetos hoje é só IPv6. Nunca roda sozinho no push: migração é ato
+  consciente, como enviar documento ao cliente.
+  **Por que NÃO é um botão dentro do sistema:** a ideia era uma tela em
+  Settings chamando `aplicar_sql(text)` no banco. Isso é execução de SQL
+  arbitrário exposta por HTTP — mesmo travada no `service_role` e mesmo
+  recebendo só nome de arquivo, a FUNÇÃO é genérica e passa a existir para
+  sempre. Num sistema com dado de imposto de quase mil pessoas, não vale o
+  atalho. No GitHub a credencial fica em Secrets, é usada só pelo job e o
+  sistema publicado não ganha porta nenhuma.
+  `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
+  ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
+  depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
+  aparece no relato e fica FORA do automático: pode ser inofensivo, pode não
+  ser, e quem decide é gente.
   **O SQL Editor do Supabase reescreve o script — e a causa não é a que
   parecia.** Ele tem um detector de "tabela criada sem RLS" e, quando acha
   uma, reescreve o script para acrescentar `enable row level security`. Esse
