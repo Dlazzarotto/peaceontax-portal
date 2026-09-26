@@ -8,7 +8,7 @@
 // paga todo mês. Cobrança automática exige cartão/ACH salvo (trava no banco).
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb, canAccessClient, empresasVedadas } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient, clientesOcultos } from '@/lib/api-auth'
 import { permissoesFinanceiro } from '@/lib/billing-perms'
 
 export const dynamic = 'force-dynamic'
@@ -30,18 +30,19 @@ export async function GET() {
   const perms = await permissoesFinanceiro(auth.userId)
 
   const db = serviceDb()
-  const [{ data: planos, error }, { data: clients, error: errClientes }, vedadas] = await Promise.all([
+  const [{ data: planos, error }, { data: clients, error: errClientes }, escopo] = await Promise.all([
     db.from('recurring_plans')
       .select('id, client_id, description, amount, interval, day_of_month, start_date, end_date, auto_charge, next_run, active, clients(business_name, name)')
       .order('active', { ascending: false })
       .order('next_run'),
     db.from('clients').select('id, business_name, name').eq('active', true).order('name'),
-    empresasVedadas(auth),
+    clientesOcultos(auth),
   ])
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   // Lista de clientes que falha viraria seletor vazio -- 'nao ha cliente'
   // quando o que houve foi erro de consulta.
   if (errClientes) return NextResponse.json({ error: `Clientes: ${errClientes.message}` }, { status: 500 })
+  if (escopo.erro) return NextResponse.json({ error: escopo.erro }, { status: 500 })
 
   return NextResponse.json({
     plans: (planos || []).map((p: any) => ({
@@ -49,7 +50,7 @@ export async function GET() {
     })),
     // Mesmo escopo do POST: sem `verEmpresas`, empresa nao entra na lista.
     clients: (clients || [])
-      .filter((c: any) => !vedadas.has(c.id))
+      .filter((c: any) => !escopo.ocultos.has(c.id))
       .map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
     perms,
   })

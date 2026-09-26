@@ -23,7 +23,7 @@
 import { FILTRO_ATIVO } from '@/lib/catalogo-precos'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getAuth, serviceDb, canAccessClient, empresasVedadas } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient, clientesOcultos } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
 import { fmtUS, money } from '@/lib/format'
@@ -88,7 +88,7 @@ export async function GET(req: NextRequest) {
     { data: invoices, error },
     { data: clients, error: errClientes },
     { data: services, error: errServicos },
-    vedadas,
+    escopo,
   ] = await Promise.all([
     q,
     db.from('clients').select('id, business_name, name, type').eq('active', true).order('name'),
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
     // ele grava false. O item que nascia com a coluna nula sumia daqui.
     db.from('pricing_items').select('id, code, label, amount, kind')
       .or(FILTRO_ATIVO).order('sort').order('label'),
-    empresasVedadas(auth),
+    clientesOcultos(auth),
   ])
   // Cada consulta responde pelo proprio erro. Antes so a das faturas era
   // conferida: se a do catalogo falhasse, a tela dizia que nao ha servico
@@ -104,6 +104,7 @@ export async function GET(req: NextRequest) {
   if (error)       return NextResponse.json({ error: error.message }, { status: 500 })
   if (errClientes) return NextResponse.json({ error: `Clientes: ${errClientes.message}` }, { status: 500 })
   if (errServicos) return NextResponse.json({ error: `Catalogo de servicos: ${errServicos.message}` }, { status: 500 })
+  if (escopo.erro)  return NextResponse.json({ error: escopo.erro }, { status: 500 })
 
   return NextResponse.json({
     invoices: (invoices || []).map((i: any) => ({
@@ -116,7 +117,7 @@ export async function GET(req: NextRequest) {
     // seria oferecer o que nao se pode fazer -- e a lista de empresas e
     // justamente o que o escopo esconde.
     clients: (clients || [])
-      .filter((c: any) => !vedadas.has(c.id))
+      .filter((c: any) => !escopo.ocultos.has(c.id))
       .map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
     // Catálogo de preços (tela Preços) — fonte única para os itens da fatura
     services: (services || []).map((x: any) => ({

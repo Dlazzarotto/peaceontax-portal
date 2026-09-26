@@ -1,7 +1,13 @@
-// POST /api/plaid/exchange { publicToken, institutionName } — troca e salva a conexão
+// POST /api/plaid/exchange { publicToken, institutionName, clientId? }
+//   — troca o public_token e salva a conexão.
+//
+// Sem `clientId`, a conexão é do CLIENTE logado (portal). Com `clientId`, é a
+// EQUIPE conectando o banco de um cadastro, pelo mesmo funil de acesso das
+// outras rotas do Plaid (canAccessClient) — é assim que o sócio conecta a
+// conta da própria firma em /dashboard/caixa.
 import { NextRequest, NextResponse } from 'next/server'
 import { getUser } from '@/lib/supabase-server'
-import { serviceDb } from '@/lib/api-auth'
+import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { plaidPost } from '@/lib/plaid'
 import { syncPlaidItem } from '@/lib/plaid-sync'
 
@@ -9,12 +15,28 @@ export async function POST(req: NextRequest) {
   const user = await getUser()
   if (!user) return NextResponse.json({ error: 'Login necessário' }, { status: 401 })
 
-  const { publicToken, institutionName } = await req.json()
+  const { publicToken, institutionName, clientId } = await req.json()
   if (!publicToken) return NextResponse.json({ error: 'publicToken obrigatório' }, { status: 400 })
 
   const db = serviceDb()
-  const { data: client } = await db.from('clients')
-    .select('id').eq('user_id', user.id).single()
+  let client: { id: string } | null = null
+  if (clientId) {
+    const auth = await getAuth()
+    if (!auth?.isStaff || !(await canAccessClient(auth, String(clientId)))) {
+      return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
+    }
+    const { data } = await db.from('clients').select('id').eq('id', String(clientId)).maybeSingle()
+    client = data as any
+  } else {
+    // `.single()` derrubava a rota quando o login nao tem cadastro; a
+    // resposta precisa dizer isso, nao estourar.
+    const { data } = await db.from('clients')
+      .select('id').eq('user_id', user.id).limit(2)
+    if ((data || []).length > 1) {
+      return NextResponse.json({ error: 'Seu login está vinculado a mais de um cadastro — fale com nossa equipe.' }, { status: 409 })
+    }
+    client = (data || [])[0] as any
+  }
   if (!client) return NextResponse.json({ error: 'Cliente não encontrado' }, { status: 404 })
 
   try {

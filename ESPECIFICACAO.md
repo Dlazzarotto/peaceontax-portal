@@ -323,6 +323,29 @@ O núcleo operacional. Importa movimentação bancária por **Plaid**, **PDF de 
 - **Pagamento de cartão** reconhecido pelo nome do cartão ou pelos 4 dígitos, nas duas pontas (saída do checking e entrada no cartão). A detecção de cartão tem precedência sobre as regras.
 - **Non-profit** (igreja, ONG): cada conta bancária é um fundo; as regras valem só para aquela entidade, nunca as gerais.
 
+**O caixa da própria firma.** A Peace on Tax tem o livro dela dentro do
+sistema, em `/dashboard/caixa`: conta bancária pelo Plaid, extrato entrando
+sozinho, as mesmas regras, o mesmo plano de contas e os mesmos relatórios dos
+clientes. Tecnicamente a firma é **um cadastro em `clients` marcado como
+firma** — foi a forma de ter livro próprio sem uma segunda implementação do
+motor de classificação, que já existe em três lugares e desandaria na quarta
+cópia.
+
+Como a firma passa a ser uma linha na mesma tabela dos clientes, a marca é
+**fronteira, não rótulo**:
+
+- **O caixa é do sócio.** Não basta ser da equipe, e não adianta ter a
+  autorização de ver empresas — o gerente tem essa autorização por nível e
+  abriria a folha de pagamento, o honorário de sócio e o resultado do ano.
+- **A firma não é cliente.** Ela fica fora da lista de clientes, das
+  contagens dos cartões, do seletor de cliente da fatura e do contrato, da
+  central de bookkeeping e da lista geral de fornecedores. Ninguém emite
+  fatura para a própria firma por engano, e o número da carteira não conta a
+  firma junto.
+- **A marca nunca vem do formulário.** Marcar um cliente como firma faria
+  esse cliente desaparecer de todas as listas; só o cadastro do caixa grava a
+  marca, e o banco impede que exista mais de uma firma.
+
 **Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
 
 **Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.

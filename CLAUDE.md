@@ -228,6 +228,34 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Migração: `sql/permissoes-por-pessoa-v4.sql` (substitui o `CHECK` da v3).
   O texto de cada nível em `app/settings/users/page.tsx` descreve o que o
   sistema FAZ (matriz da seção 3): mudou a matriz, muda o texto.
+- **O caixa da firma é a firma como CLIENTE de si mesma** (`clients.is_firm`,
+  `lib/caixa-firma.ts`, tela `/dashboard/caixa`, migração
+  `sql/caixa-da-firma-v1.sql`). O bookkeeping inteiro é amarrado a
+  `clients.id`; dar livro próprio à firma com tabelas separadas seria a
+  QUARTA cópia do motor de classificação. O preço da escolha é que a firma
+  aparece por padrão em toda tela que lista cliente — o contrário do padrão
+  da casa —, e quem paga esse preço são duas travas, e só elas:
+  `canAccessClient` (a linha da firma é **só do sócio**: `verEmpresas` não
+  serve, porque o gerente a tem por nível e abriria a folha de pagamento) e
+  `clientesOcultos`, que tira a firma das LISTAS — seletor de fatura e de
+  contrato, central de bookkeeping, alertas, e `/api/clients` também das
+  CONTAGENS. `empresasVedadas` virou `clientesOcultos` porque o nome antigo
+  dizia metade, e o erro da consulta agora VIAJA (`{ ocultos, erro }`): um
+  conjunto vazio ali não esconde nada e mostraria justamente a carteira de
+  empresas que o escopo existe para esconder. A mesma varredura achou
+  `/api/bookkeeping/payees?all=1`, que agrega a carteira inteira (o nome de
+  cada cliente e com quem ele gasta) e ficara de fora do escopo por não
+  receber `clientId`. `is_firm` nunca vem do corpo do pedido — marcar um
+  CLIENTE faria o cliente sumir de todas as listas — e o banco só admite uma
+  firma (índice único parcial). **A coluna pode ainda não existir**:
+  `idDaFirma` trata a ausência como "ainda não há caixa" em vez de derrubar o
+  funil de acesso, senão o sistema recusaria tudo entre o deploy e a migração
+  feita à mão. O Plaid do caixa é o mesmo do portal: `link-token` e
+  `exchange` passaram a aceitar `clientId` da equipe, pelo funil
+  `canAccessClient` (era o que `/api/plaid/items` já fazia) — e a URL de
+  retorno `/dashboard/caixa` precisa entrar em *Allowed redirect URIs* no
+  painel do Plaid, senão banco OAuth não conecta (a rota avisa, em vez de só
+  falhar).
 - **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
   pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
   ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas

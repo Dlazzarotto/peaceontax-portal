@@ -19,7 +19,7 @@
 // Cadastro geral (sem cliente) vale para todos: só manager/owner mexe nele.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { getAuth, canAccessClient, serviceDb, clientesOcultos } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 
 export const dynamic = 'force-dynamic'
@@ -71,12 +71,23 @@ export async function GET(req: NextRequest) {
       dbAll.from('bookkeeping_categories').select('name, kind').eq('active', true).order('kind').order('name'),
     ])
     if (cadastro.error) return NextResponse.json({ error: cadastro.error.message }, { status: 500 })
+    if (clientes.error) return NextResponse.json({ error: `Clientes: ${clientes.error.message}` }, { status: 500 })
+
+    // Esta lista AGREGA a carteira inteira: nome de todo cliente e o
+    // fornecedor de cada um. Ela nao recebe clientId, entao ficou de fora
+    // quando o escopo por TIPO foi criado -- e era o mesmo vazamento ja
+    // corrigido em /api/clients?resumo=1 e na central de bookkeeping: quem
+    // atende o balcao via o nome de todas as empresas e com quem elas
+    // gastam. Sai por aqui tambem o caixa da firma.
+    const { ocultos, erro: errEscopo } = await clientesOcultos(auth)
+    if (errEscopo) return NextResponse.json({ error: errEscopo }, { status: 500 })
 
     const listaRegras = regras.data || []
     const nivel = await getStaffLevel(auth.userId)
 
     return NextResponse.json({
-      payees: (cadastro.data || []).map((p: any) => {
+      // Payee global (sem dono) continua aparecendo: ele nao diz de quem e.
+      payees: (cadastro.data || []).filter((p: any) => !p.client_id || !ocultos.has(p.client_id)).map((p: any) => {
         const dono: string | null = p.client_id ?? null
         const regra = regraDoPayee(listaRegras, p.name, dono)
         return {
@@ -89,7 +100,7 @@ export async function GET(req: NextRequest) {
           regraEscopo: regra ? (regra.client_id ? 'client' : 'global') : null,
         }
       }),
-      clientes: (clientes.data || []).map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
+      clientes: (clientes.data || []).filter((c: any) => !ocultos.has(c.id)).map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
       contas: (contas.data || []).map((c: any) => ({ name: c.name, kind: c.kind })),
       podeEscopo: nivel === 'owner' || nivel === 'manager',
     })
