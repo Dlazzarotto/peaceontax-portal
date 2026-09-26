@@ -46,12 +46,26 @@ export async function enviarEmail(to: string, subject: string, html: string): Pr
   }
 }
 
-/** Mensagem que aparece no portal do cliente (mesma tabela do chat). */
-export async function avisarNoPortal(db: any, clientId: string | null | undefined, texto: string): Promise<void> {
-  if (!clientId) return
-  await db.from('chat_messages').insert({
+/**
+ * Mensagem que aparece no portal do cliente (mesma tabela do chat).
+ *
+ * O erro NÃO se descarta. Quando o e-mail não sai — e sai errado com
+ * frequência: domínio não verificado, cadastro sem e-mail — o portal é o
+ * único canal que resta. Engolir a falha aqui deixava o cliente sem nenhum
+ * aviso e ninguém sabendo.
+ */
+export async function avisarNoPortal(
+  db: any, clientId: string | null | undefined, texto: string,
+): Promise<ResultadoEmail> {
+  if (!clientId) return { ok: false, motivo: 'cadastro sem id' }
+  const { error } = await db.from('chat_messages').insert({
     client_id: clientId, role: 'assistant', channel: 'portal', content: texto,
-  }).then(() => null, () => null)
+  })
+  if (error) {
+    console.error('[avisos] aviso no portal:', error.message)
+    return { ok: false, motivo: `o aviso no portal não foi gravado: ${error.message}` }
+  }
+  return { ok: true }
 }
 
 /** Saudação e rodapé com a marca; o miolo vem pronto em HTML. */

@@ -516,6 +516,21 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   que o cliente nunca recebe é assinatura que não acontece, e ninguém sabe
   por quê. Agora o resultado vai para a trilha (`invoice_audit.next.email`) e
   para a resposta da tela. A auditoria recusa quem descartar.
+  **`/api/billing/diag-envio?numero=INV-2026-0007`** (equipe, respeitando o
+  escopo por tipo) responde "por que ESTE cliente não recebeu", em nove
+  passos, só leitura. Existe porque o caso já foi diagnosticado errado três
+  vezes — as causas são parecidas por fora e completamente diferentes por
+  dentro: fatura ainda em rascunho · cadastro sem e-mail · Resend não
+  configurado · e a que **ninguém adivinha**, porque não há erro em lugar
+  nenhum: **a fatura está num cadastro e o LOGIN do cliente está em OUTRO**
+  (duplicata da importação, de antes de o aceite passar a completar o cadastro
+  existente). O portal procura pelo `user_id`, então aquele cliente nunca vê
+  aquela fatura, e nenhum log acusa nada. O diagnóstico procura irmãos por
+  `chaveDoNome` e por e-mail, e diz qual é o primeiro conserto.
+  **O aviso no portal também deixou de falhar em silêncio**: `avisarNoPortal`
+  devolve `{ ok, motivo }`. Quando o e-mail não sai, o portal é o único canal
+  que resta — engolir a falha ali deixava o cliente sem aviso nenhum e ninguém
+  sabendo.
   **`/api/avisos/diag`** (só o sócio) responde "por que o cliente não
   recebeu": diz se a chave existe, qual é o remetente e, com
   `?teste=email@dominio`, manda um e-mail de verdade e devolve a resposta
