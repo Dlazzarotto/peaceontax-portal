@@ -43,6 +43,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { credencialDoPostgres } from './credencial-postgres.mjs'
 import { join, basename } from 'node:path'
 
 const RAIZ = new URL('..', import.meta.url).pathname
@@ -75,8 +76,13 @@ const escapar = (s) => s.replace(/'/g, "''")
 
 // ── Executores ───────────────────────────────────────────────────────────
 function viaPsql(sql) {
+  // A cadeia é conferida ANTES: texto que não é URI faz o psql procurar um
+  // Postgres local e falar de socket, que não tem nada a ver com o defeito.
+  const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL)
+  if (cred.erro) throw new Error(cred.erro)
+  for (const a of cred.avisos || []) console.error(`    aviso: ${a}`)
   // -1: o arquivo inteiro numa transação — se a conferência do fim falhar, nada fica pela metade
-  const r = spawnSync('psql', [process.env.SUPABASE_DB_URL, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-1'], {
+  const r = spawnSync('psql', [cred.url, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-1'], {
     input: sql, encoding: 'utf-8',
   })
   if (r.error) throw new Error(`psql não pôde ser executado: ${r.error.message}`)
@@ -139,6 +145,23 @@ const anotar = (exec, nome, hash) => exec.run(
 async function main() {
   const dirSql = join(RAIZ, 'sql')
   const todos = readdirSync(dirSql).filter(f => f.endsWith('.sql')).sort()
+
+  // --credencial: só confere o formato da cadeia, sem tocar no banco. É o
+  // que o job do GitHub roda primeiro, para o defeito aparecer no passo da
+  // CREDENCIAL e não num erro de socket três passos adiante.
+  if (flag('--credencial')) {
+    if (!process.env.SUPABASE_DB_URL && process.env.SUPABASE_ACCESS_TOKEN) {
+      console.log('Sem SUPABASE_DB_URL; vai pela API de gestão.')
+      return
+    }
+    const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL)
+    if (cred.erro) { console.error(`::error::${cred.erro}`); process.exit(1) }
+    for (const a of cred.avisos || []) console.log(`aviso: ${a}`)
+    // O valor nunca é impresso — só o que dá para conferir sem vazá-lo.
+    const host = (cred.url.match(/@([^:/?]+)/) || [])[1] || '?'
+    console.log(`Credencial no formato certo. Servidor: ${host}`)
+    return
+  }
 
   if (flag('--so-ver')) {
     for (const a of arquivos) { console.log(`── ${a} ──`); console.log(readFileSync(join(RAIZ, a), 'utf-8')) }
