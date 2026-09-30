@@ -1098,9 +1098,16 @@ titulo('A CREDENCIAL DO BANCO NO CI')
 checar('E o job do GitHub confere no passo da credencial',
   '.github/workflows/migrar.yml', /migrar\.mjs --credencial/,
   'o passo que diz "credencial" tem de ser o que falha quando a credencial esta errada')
+checar('Senha com caractere especial tem saida sem codificacao',
+  'scripts/migrar.mjs', /PGPASSWORD: cred\.senha/,
+  'dentro da URI o psql corta no PRIMEIRO @ (conferido no PG 16): senha com @ vira erro de "host name". Por variavel de ambiente nao ha parser nenhum.')
+checar('E o workflow passa o segundo secret',
+  '.github/workflows/migrar.yml', /SUPABASE_DB_PASSWORD: \$\{\{ secrets\.SUPABASE_DB_PASSWORD \}\}/,
+  'sem isso a saida existe no script e nao chega ao job')
 recusar('A mensagem de erro nunca imprime a cadeia',
-  'scripts/credencial-postgres.mjs', /limpo\.slice\(|\$\{limpo\}|\$\{original\}/,
-  'isto vai para log de CI, e `usuario:senha@host` poe a senha nos primeiros caracteres -- o GitHub so mascara o secret INTEIRO, um trecho passa limpo')
+  'scripts/credencial-postgres.mjs', /\$\{limpo(?!\.length\})|\$\{original|\$\{cru\b|\$\{senha\b/,
+  'isto vai para log de CI, e `usuario:senha@host` poe a senha nos primeiros caracteres -- o GitHub so mascara o secret INTEIRO, um trecho passa limpo. '
+  + 'A primeira versao proibia `limpo.slice(` e acusou o corte do esquema, que nao imprime nada. O perigo e a INTERPOLACAO do valor num texto -- `${limpo.length}` e liberado de proposito: o TAMANHO ajuda a diagnosticar e nao revela nada.')
 
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
