@@ -312,11 +312,20 @@ async function main() {
     } catch (e) {
       console.log('FALHOU')
       console.error(String(e.message || e))
-      process.exit(1)
+      // `process.exit` aqui derruba o Node no Windows quando a conexao HTTP
+      // da API ainda esta aberta:
+      //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c
+      // `exitCode` + `return` deixa o Node fechar o que abriu e sair sozinho.
+      process.exitCode = 1
+      return
     }
     await anotar(exec, nome, hash)
   }
   console.log('Concluído.')
 }
 
-main().catch(e => { console.error(e.message || e); process.exit(1) })
+// Nada de `process.exit` aqui: com a conexao da API ainda aberta, o Windows
+// aborta com `Assertion failed ... UV_HANDLE_CLOSING` DEPOIS da mensagem --
+// o diagnostico aparece e o usuario ainda leva um crash. Marcar o codigo de
+// saida faz o Node encerrar limpo assim que fechar o que abriu.
+main().catch(e => { console.error(e.message || e); process.exitCode = 1 })
