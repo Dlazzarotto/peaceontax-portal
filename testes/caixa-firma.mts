@@ -5,7 +5,7 @@
 // Por isso a marca não pode vir do corpo do pedido — se viesse, marcar um
 // cliente faria o cliente sumir da carteira.
 
-import { camposDaFirma, criticarFirma, MARCA_DA_FIRMA, idDaFirma, esquecerFirma }
+import { camposDaFirma, criticarFirma, MARCA_DA_FIRMA, idDaFirma, esquecerFirma, colunaAusente }
   from '../lib/caixa-firma.ts'
 
 let passou = 0, falhou = 0
@@ -93,6 +93,22 @@ const bancoQue = (resposta: any) => ({
   eq('e a próxima consulta vai ao banco', db.chamadas, 2)
 }
 esquecerFirma()
+
+// ── Qual coluna falta: o diagnóstico não pode chutar ───────────────────
+// A primeira versão concluía "falta a migração do caixa" a partir de
+// QUALQUER 42703 — e mandaria o sócio rodar a migração errada.
+eq('acha a coluna no texto do Postgres',
+  colunaAusente({ code: '42703', message: 'column clients.is_firm does not exist' }), 'is_firm')
+eq('sem o prefixo da tabela também',
+  colunaAusente({ code: '42703', message: 'column "ein" does not exist' }), 'ein')
+eq('outra coluna NÃO vira a do caixa',
+  colunaAusente({ code: '42703', message: 'column clients.sms_phone does not exist' }), 'sms_phone')
+eq('42703 sem nome legível devolve a interrogação, não um palpite',
+  colunaAusente({ code: '42703', message: 'undefined column' }), '?')
+eq('erro comum não é coluna ausente',
+  colunaAusente({ code: '23505', message: 'duplicate key value' }), null)
+eq('erro de rede não é coluna ausente', colunaAusente({ message: 'fetch failed' }), null)
+eq('nulo não estoura', colunaAusente(null), null)
 
 console.log(`caixa-firma: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)

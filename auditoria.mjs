@@ -1007,6 +1007,9 @@ recusar('E nem por um caminho indireto',
 checar('Uma firma, e uma so (indice unico no banco)',
   'sql/caixa-da-firma-v1.sql', /create unique index if not exists clients_uma_firma[\s\S]*?where is_firm/,
   'duas linhas marcadas dariam dois caixas, e o codigo pega "a" firma')
+recusar('O aviso de migracao nao chuta qual coluna falta',
+  'app/api/caixa/firma/route.ts', /code === '42703'\s*\|\|/,
+  'concluir "falta a migracao do caixa" de QUALQUER 42703 manda o socio rodar a migracao errada -- ele roda, nao acha nada e segue sem saber o que quebrou')
 checar('A coluna que falta nao derruba o funil de acesso',
   'lib/caixa-firma.ts', /if \(error\) return null/,
   'o codigo sobe na Vercel antes de a migracao rodar a mao: exigir is_firm ali faria canAccessClient recusar TUDO entre o deploy e a migracao')

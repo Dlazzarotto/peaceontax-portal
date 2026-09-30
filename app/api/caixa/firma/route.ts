@@ -14,16 +14,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
-import { camposDaFirma, criticarFirma, MARCA_DA_FIRMA, esquecerFirma } from '@/lib/caixa-firma'
+import { camposDaFirma, criticarFirma, MARCA_DA_FIRMA, esquecerFirma, colunaAusente } from '@/lib/caixa-firma'
 
 const SO_O_SOCIO = 'O caixa da firma é do sócio. Fale com ele.'
 const FALTA_MIGRACAO =
-  'O banco ainda não tem a coluna do caixa da firma. Rode a migração ' +
-  'sql/caixa-da-firma-v1.sql (Actions → Migrações do banco) e abra esta tela de novo.'
+  'O banco ainda não tem a coluna do caixa da firma. Rode, nesta ordem: ' +
+  'sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql e ' +
+  'sql/caixa-conciliacao-funcao-v1.sql — pelo SQL Editor do Supabase ou por ' +
+  'Actions → Migrações do banco. Depois abra esta tela de novo.'
 
-/** Erro do PostgREST de coluna que nao existe — a migracao ainda nao rodou. */
-function ehColunaAusente(e: any): boolean {
-  return e?.code === '42703' || /column .*is_firm.* does not exist/i.test(String(e?.message || ''))
+/** É a coluna do caixa que falta — e não outra qualquer. */
+function faltaOCaixa(e: any): boolean {
+  const c = colunaAusente(e)
+  return c === 'is_firm' || (c === '?' && /is_firm/i.test(String(e?.message || '')))
 }
 
 async function socio() {
@@ -43,10 +46,15 @@ export async function GET() {
     .select('id, name, business_name, ein, email, phone, address_line1, city, state, zip')
     .eq('is_firm', true).limit(1)
   if (error) {
-    if (ehColunaAusente(error)) {
+    if (faltaOCaixa(error)) {
       return NextResponse.json({ firma: null, migracaoPendente: true, aviso: FALTA_MIGRACAO })
     }
-    return NextResponse.json({ error: `Nao foi possivel ler o caixa: ${error.message}` }, { status: 500 })
+    const outra = colunaAusente(error)
+    return NextResponse.json({
+      error: outra
+        ? `O banco não tem a coluna "${outra}" em clients — não é a migração do caixa. Erro do banco: ${error.message}`
+        : `Nao foi possivel ler o caixa: ${error.message}`,
+    }, { status: 500 })
   }
 
   const firma = data?.[0] || null
@@ -91,7 +99,7 @@ export async function POST(req: NextRequest) {
   const { data: existentes, error: errBusca } = await db.from('clients')
     .select('id').eq('is_firm', true).limit(1)
   if (errBusca) {
-    if (ehColunaAusente(errBusca)) {
+    if (faltaOCaixa(errBusca)) {
       return NextResponse.json({ error: FALTA_MIGRACAO, migracaoPendente: true }, { status: 409 })
     }
     return NextResponse.json({ error: errBusca.message }, { status: 500 })
