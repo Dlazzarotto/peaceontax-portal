@@ -766,7 +766,17 @@ middleware.ts        controle de acesso por rota
   aparecer onde se procura por ele. A mensagem **nunca imprime a cadeia, nem
   em pedaço**: isso vai para log de CI, `usuario:senha@host` põe a senha nos
   primeiros caracteres, e o GitHub só mascara o secret INTEIRO — um trecho
-  passa limpo. 24 casos em `testes/credencial-postgres.mts`.
+  passa limpo.
+  **Senha com `@` (ou `#`, `?`, `/`, `%`) dentro da URI não funciona.**
+  Conferido no PostgreSQL 16, com psql de verdade: o libpq corta no
+  **PRIMEIRO** `@`, então `ab@cd` faz o servidor virar `cd@host` e o erro sai
+  como `could not translate host name` — que não fala de senha nenhuma. E o
+  `new URL` do Node corta no ÚLTIMO, ou seja, os dois discordam: não dá para
+  usar o parser do Node como juiz. Duas saídas, as duas atendidas: codificar
+  (`@`→`%40`, `:`→`%3A`, `/`→`%2F`, `?`→`%3F`, `#`→`%23`, `%`→`%25`) ou —
+  melhor — o secret **`SUPABASE_DB_PASSWORD`** com a senha CRUA e a URI sem
+  senha, que vai por `PGPASSWORD` e não passa por parser nenhum. 42 casos em
+  `testes/credencial-postgres.mts`.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)

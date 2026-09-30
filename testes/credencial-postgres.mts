@@ -6,7 +6,7 @@
 // procura um Postgres na própria máquina. O erro fala de socket e o defeito
 // é o formato do texto — ninguém liga uma coisa à outra sozinho.
 
-import { credencialDoPostgres } from '../scripts/credencial-postgres.mjs'
+import { credencialDoPostgres, senhaParaUri } from '../scripts/credencial-postgres.mjs'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -66,6 +66,54 @@ eq('e o texto diz onde redefinir a senha',
 }
 eq('a do pooler não leva esse aviso',
   credencialDoPostgres(URI).avisos?.some((a: string) => a.includes('IPv4')), false)
+
+// ── Senha com caractere especial ────────────────────────────────────────
+// Conferido no PostgreSQL 16 (psql de verdade, senha 'ab@cd'): o libpq
+// corta no PRIMEIRO "@" e o erro sai como
+//   could not translate host name "cd@127.0.0.1"
+// que não fala de senha nenhuma. O `new URL` do Node faz o CONTRÁRIO (corta
+// no último), então não dá para usar o parser dele como juiz.
+{
+  const r = credencialDoPostgres('postgresql://u:ab@cd@host:5432/postgres')
+  eq('dois @ é recusado', !!r.erro, true)
+  eq('e o erro ensina o %40', r.erro!.includes('%40'), true)
+  eq('e oferece a saída pelo segundo secret', r.erro!.includes('SUPABASE_DB_PASSWORD'), true)
+  eq('e não vaza a senha', r.erro!.includes('ab@cd'), false)
+}
+{
+  const r = credencialDoPostgres('postgresql://u:p#s@host:5432/postgres')
+  eq('# na senha é recusado', !!r.erro, true)
+  eq('com a mesma tabela de codificação', r.erro!.includes('%23'), true)
+}
+eq('senha já codificada passa',
+  credencialDoPostgres('postgresql://u:ab%40cd@host:5432/postgres').url,
+  'postgresql://u:ab%40cd@host:5432/postgres')
+
+// ── A senha em secret próprio: nada para codificar ──────────────────────
+{
+  const r = credencialDoPostgres('postgresql://postgres.abc:[YOUR-PASSWORD]@h.pooler.supabase.com:5432/postgres', 'ab@cd')
+  eq('a senha sai da URI', r.url, 'postgresql://postgres.abc@h.pooler.supabase.com:5432/postgres')
+  eq('e vem crua, sem codificar', r.senha, 'ab@cd')
+  eq('o marcador deixa de ser erro', r.erro, undefined)
+}
+{
+  const r = credencialDoPostgres('postgresql://u:senhaVelha@h:5432/d', 'nova@x')
+  eq('senha antiga na URI é descartada', r.url, 'postgresql://u@h:5432/d')
+  eq('vale a do secret', r.senha, 'nova@x')
+}
+{
+  const r = credencialDoPostgres('postgresql://u@h:5432/d', 'ab@cd')
+  eq('URI já sem senha também serve', r.url, 'postgresql://u@h:5432/d')
+}
+eq('URI sem "@" nenhum é recusada mesmo com senha separada',
+  !!credencialDoPostgres('postgresql://host:5432/d', 'x').erro, true)
+eq('senha separada em branco não conta',
+  credencialDoPostgres('postgresql://u:p@h:5432/d', '   ').url, 'postgresql://u:p@h:5432/d')
+
+// senhaParaUri, para quem preferir codificar à mão
+eq('codifica o arroba', senhaParaUri('ab@cd'), 'ab%40cd')
+eq('codifica o porcento sem dobrar', senhaParaUri('a%b'), 'a%25b')
+eq('codifica barra, cerquilha e interrogação', senhaParaUri('a/b#c?d'), 'a%2Fb%23c%3Fd')
 
 console.log(`credencial-postgres: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)

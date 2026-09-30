@@ -78,12 +78,15 @@ const escapar = (s) => s.replace(/'/g, "''")
 function viaPsql(sql) {
   // A cadeia é conferida ANTES: texto que não é URI faz o psql procurar um
   // Postgres local e falar de socket, que não tem nada a ver com o defeito.
-  const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL)
+  const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL, process.env.SUPABASE_DB_PASSWORD)
   if (cred.erro) throw new Error(cred.erro)
   for (const a of cred.avisos || []) console.error(`    aviso: ${a}`)
+  // A senha separada vai por PGPASSWORD: variável de ambiente não passa por
+  // parser de URI, então `@`, `#` e `%` na senha deixam de ser problema.
+  const ambiente = cred.senha ? { ...process.env, PGPASSWORD: cred.senha } : process.env
   // -1: o arquivo inteiro numa transação — se a conferência do fim falhar, nada fica pela metade
   const r = spawnSync('psql', [cred.url, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-1'], {
-    input: sql, encoding: 'utf-8',
+    input: sql, encoding: 'utf-8', env: ambiente,
   })
   if (r.error) throw new Error(`psql não pôde ser executado: ${r.error.message}`)
   const saida = (r.stdout + r.stderr).trim()
@@ -154,8 +157,9 @@ async function main() {
       console.log('Sem SUPABASE_DB_URL; vai pela API de gestão.')
       return
     }
-    const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL)
+    const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL, process.env.SUPABASE_DB_PASSWORD)
     if (cred.erro) { console.error(`::error::${cred.erro}`); process.exit(1) }
+    if (cred.senha) console.log('Senha vem de SUPABASE_DB_PASSWORD (fora da URI).')
     for (const a of cred.avisos || []) console.log(`aviso: ${a}`)
     // O valor nunca é impresso — só o que dá para conferir sem vazá-lo.
     const host = (cred.url.match(/@([^:/?]+)/) || [])[1] || '?'

@@ -25,6 +25,13 @@
 #   Use a do **Session pooler**: o runner do GitHub só tem IPv4, e a conexão
 #   direta de vários projetos hoje é só IPv6 — daria "network unreachable".
 #
+#   SENHA COM CARACTERE ESPECIAL (@ # ? / %): crie um SEGUNDO secret
+#     Nome:  SUPABASE_DB_PASSWORD
+#     Valor: a senha CRUA, sem codificar
+#   e deixe a URI sem senha. Dentro de uma URI o psql corta no PRIMEIRO `@`
+#   (conferido no PG 16), então `ab@cd` faria o servidor virar outra coisa e
+#   o erro falaria de "host name". Por PGPASSWORD não há parser nenhum.
+#
 # NUNCA roda sozinho no push: migração é ato consciente, como enviar documento
 # ao cliente. Quem decide é quem aperta.
 
@@ -66,6 +73,7 @@ jobs:
       - name: Conferir a credencial
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
           if [ -z "$SUPABASE_DB_URL" ]; then
             echo "::error::Falta o secret SUPABASE_DB_URL. Settings → Secrets and variables → Actions."
@@ -78,12 +86,14 @@ jobs:
       - name: O que ainda não foi aplicado
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: node scripts/migrar.mjs --pendentes
 
       - name: Aplicar
         if: ${{ inputs.acao == 'aplicar' }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: |
           # As pendentes, na ordem em que --pendentes as lista (ordem do
           # arquivo em sql/, que é a ordem de dependência que a entrega diz).
@@ -101,4 +111,5 @@ jobs:
         if: ${{ always() && inputs.acao == 'aplicar' }}
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
         run: node scripts/migrar.mjs --pendentes
