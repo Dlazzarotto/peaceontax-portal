@@ -1117,6 +1117,9 @@ checar('E o workflow passa o segundo secret',
     : falta('Texto de exemplo e recusado antes do atalho da senha separada',
         'depois do atalho, a trava nao roda justamente no caminho recomendado')
 }
+checar('Migracao no projeto ERRADO e recusada',
+  'scripts/migrar.mjs', /exigirProjetoCerto\(cred\.url\)[\s\S]{0,200}spawnSync\('psql'/,
+  'a cadeia de OUTRO projeto Supabase cria as tabelas onde ninguem olha e deixa o certo sem elas -- e isso nao tem desfazer. A conferencia tem de vir ANTES do psql.')
 recusar('A mensagem de erro nunca imprime a cadeia',
   'scripts/credencial-postgres.mjs', /\$\{limpo(?!\.length\})|\$\{original|\$\{cru\b|\$\{senha\b/,
   'isto vai para log de CI, e `usuario:senha@host` poe a senha nos primeiros caracteres -- o GitHub so mascara o secret INTEIRO, um trecho passa limpo. '
