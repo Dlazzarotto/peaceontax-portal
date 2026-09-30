@@ -795,7 +795,10 @@ middleware.ts        controle de acesso por rota
   `NEXT_PUBLIC_SUPABASE_URL` em **`.env.example`** — que está versionado e
   não é segredo, só diz QUAL projeto é o desta aplicação. Sem base de
   comparação não se inventa recusa, e `MIGRAR_OUTRO_PROJETO=1` libera de
-  propósito (cópia de teste). 64 casos em `testes/credencial-postgres.mts`.
+  propósito (cópia de teste). **A trava vale nos DOIS caminhos**: a primeira
+  versão só cobria o psql, e pela API de gestão um `SUPABASE_PROJECT_REF` de
+  outro projeto passava direto — meia trava é pior que nenhuma, porque quem
+  confia nela para de conferir. 64 casos em `testes/credencial-postgres.mts`.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)

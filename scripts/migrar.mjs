@@ -72,12 +72,33 @@ function refEsperadoDoRepo() {
 
 /** Recusa a cadeia que aponta para OUTRO projeto. */
 function exigirProjetoCerto(url) {
-  if (process.env.MIGRAR_OUTRO_PROJETO === '1') {
-    console.error('    aviso: MIGRAR_OUTRO_PROJETO=1 — a conferência de projeto está desligada.')
-    return
-  }
+  if (liberouOutroProjeto()) return
   const r = conferirProjeto(url, refEsperadoDoRepo())
   if (!r.ok) throw new Error(r.erro)
+}
+
+/**
+ * O mesmo, para o caminho da API de gestao -- que nao tem cadeia, tem REF.
+ *
+ * A primeira versao da trava so cobria o psql: pela API, um
+ * SUPABASE_PROJECT_REF de outro projeto passava direto. Meia trava e pior
+ * que nenhuma, porque quem confia nela para de conferir.
+ */
+function exigirRefCerto(ref) {
+  if (liberouOutroProjeto()) return
+  const esperado = refEsperadoDoRepo()
+  if (!esperado || !ref || ref === esperado) return
+  throw new Error(
+    `A API aponta para o projeto "${ref}", e este repositório é do projeto "${esperado}" `
+    + '(NEXT_PUBLIC_SUPABASE_URL em .env.example).\n'
+    + '      Migração no banco errado não tem desfazer. Confira SUPABASE_PROJECT_REF.\n'
+    + '      Se a intenção É outro banco (uma cópia de teste), rode com MIGRAR_OUTRO_PROJETO=1.')
+}
+
+function liberouOutroProjeto() {
+  if (process.env.MIGRAR_OUTRO_PROJETO !== '1') return false
+  console.error('    aviso: MIGRAR_OUTRO_PROJETO=1 — a conferência de projeto está desligada.')
+  return true
 }
 
 const LIVRO = `
@@ -125,6 +146,7 @@ async function viaApi(sql) {
   const ref = process.env.SUPABASE_PROJECT_REF
     || (process.env.NEXT_PUBLIC_SUPABASE_URL || '').match(/^https:\/\/([a-z0-9]+)\.supabase\.co/)?.[1]
   if (!ref) throw new Error('Defina SUPABASE_PROJECT_REF ou NEXT_PUBLIC_SUPABASE_URL')
+  exigirRefCerto(ref)
   const headers = { 'content-type': 'application/json' }
   if (process.env.SUPABASE_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.SUPABASE_ACCESS_TOKEN}`
   const r = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
