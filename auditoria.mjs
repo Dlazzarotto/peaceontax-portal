@@ -1117,6 +1117,9 @@ checar('E o workflow passa o segundo secret',
     : falta('Texto de exemplo e recusado antes do atalho da senha separada',
         'depois do atalho, a trava nao roda justamente no caminho recomendado')
 }
+checar('E a API de gestao passa pela MESMA trava',
+  'scripts/migrar.mjs', /async function viaApi[\s\S]{0,500}?exigirRefCerto\(ref\)/,
+  'a primeira versao so cobria o psql: pela API um SUPABASE_PROJECT_REF de outro projeto passava direto. Meia trava e pior que nenhuma.')
 checar('Migracao no projeto ERRADO e recusada',
   'scripts/migrar.mjs', /exigirProjetoCerto\(cred\.url\)[\s\S]{0,200}spawnSync\('psql'/,
   'a cadeia de OUTRO projeto Supabase cria as tabelas onde ninguem olha e deixa o certo sem elas -- e isso nao tem desfazer. A conferencia tem de vir ANTES do psql.')
