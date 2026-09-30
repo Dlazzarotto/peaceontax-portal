@@ -1074,6 +1074,35 @@ recusar('A funcao nao atribui variavel por consulta',
 }
 
 
+titulo('A CREDENCIAL DO BANCO NO CI')
+// A primeira execucao do workflow falhou com erro de SOCKET LOCAL tendo o
+// secret gravado: o psql aceita URI ou NOME DE BANCO no primeiro argumento,
+// e texto sem `postgresql://` vira nome de banco. O erro fala de socket e o
+// defeito e o formato do texto -- ninguem liga uma coisa a outra.
+{
+  // DENTRO de viaPsql, nao "em algum lugar do arquivo": a conferencia do
+  // modo --credencial usa as mesmas palavras, e a invariante passava com a
+  // trava REMOVIDA do caminho que de fato chama o psql. Terceira vez que
+  // "aparece no arquivo" engana -- por isso aqui se recorta a funcao.
+  const t = readFileSync(join(raiz, 'scripts/migrar.mjs'), 'utf8')
+  const i = t.indexOf('function viaPsql')
+  const corpo = i < 0 ? '' : t.slice(i, t.indexOf('\nasync function', i) + 1)
+  const confere = /credencialDoPostgres\(/.test(corpo)
+  const usaOerro = /cred\.erro/.test(corpo)
+  const passaAoPsql = /spawnSync\('psql', \[cred\.url/.test(corpo)
+  confere && usaOerro && passaAoPsql
+    ? ok('O formato da cadeia e conferido antes do psql')
+    : falta('O formato da cadeia e conferido antes do psql',
+        'sem isso o defeito aparece como erro de socket tres passos adiante, falando de uma coisa que nao tem nada a ver')
+}
+checar('E o job do GitHub confere no passo da credencial',
+  '.github/workflows/migrar.yml', /migrar\.mjs --credencial/,
+  'o passo que diz "credencial" tem de ser o que falha quando a credencial esta errada')
+recusar('A mensagem de erro nunca imprime a cadeia',
+  'scripts/credencial-postgres.mjs', /limpo\.slice\(|\$\{limpo\}|\$\{original\}/,
+  'isto vai para log de CI, e `usuario:senha@host` poe a senha nos primeiros caracteres -- o GitHub so mascara o secret INTEIRO, um trecho passa limpo')
+
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

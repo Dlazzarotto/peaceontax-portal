@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
 
-      - name: Conferir se a credencial existe
+      - name: Conferir a credencial
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
@@ -71,7 +71,9 @@ jobs:
             echo "::error::Falta o secret SUPABASE_DB_URL. Settings → Secrets and variables → Actions."
             exit 1
           fi
-          echo "Credencial presente (o valor nunca é impresso)."
+          # Existir não basta: texto que não é URI faz o psql procurar um
+          # Postgres LOCAL e falhar falando de socket, três passos adiante.
+          node scripts/migrar.mjs --credencial
 
       - name: O que ainda não foi aplicado
         env:

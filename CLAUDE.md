@@ -752,6 +752,21 @@ middleware.ts        controle de acesso por rota
   sempre. Num sistema com dado de imposto de quase mil pessoas, não vale o
   atalho. No GitHub a credencial fica em Secrets, é usada só pelo job e o
   sistema publicado não ganha porta nenhuma.
+  **`SUPABASE_DB_URL` que não é URI faz o psql procurar um Postgres LOCAL.**
+  A primeira execução do workflow falhou com
+  `connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed`
+  **com o secret gravado**: o psql aceita, no primeiro argumento, ou uma URI
+  ou um NOME DE BANCO — e qualquer texto sem `postgresql://` ele entende como
+  nome de banco. O erro fala de socket, o defeito é o formato do texto, e
+  ninguém liga uma coisa à outra. E o texto errado é fácil de colar: o botão
+  do Supabase copia a LINHA DE COMANDO inteira (`psql "postgresql://…"`).
+  `scripts/credencial-postgres.mjs` limpa o que dá (o `psql` na frente,
+  aspas, aspas curvas do teclado, espaços) e RECUSA o resto explicando;
+  `--credencial` roda isso no passo da credencial do workflow, para o defeito
+  aparecer onde se procura por ele. A mensagem **nunca imprime a cadeia, nem
+  em pedaço**: isso vai para log de CI, `usuario:senha@host` põe a senha nos
+  primeiros caracteres, e o GitHub só mascara o secret INTEIRO — um trecho
+  passa limpo. 24 casos em `testes/credencial-postgres.mts`.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
