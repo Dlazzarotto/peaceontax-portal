@@ -1129,6 +1129,31 @@ recusar('A mensagem de erro nunca imprime a cadeia',
   + 'A primeira versao proibia `limpo.slice(` e acusou o corte do esquema, que nao imprime nada. O perigo e a INTERPOLACAO do valor num texto -- `${limpo.length}` e liberado de proposito: o TAMANHO ajuda a diagnosticar e nao revela nada.')
 
 
+titulo('CAMINHO DE ARQUIVO A PARTIR DO MODULO (Windows)')
+// `new URL(..., import.meta.url).pathname` devolve `/C:/Users/...` no
+// Windows -- com a barra na frente -- e o `join` monta `C:\C:\Users\...`.
+// Aconteceu de verdade na maquina do socio:
+//   ENOENT: no such file or directory, scandir 'C:\C:\Users\...\sql'
+// Nunca apareceu aqui porque estes scripts so tinham rodado em Linux.
+{
+  // Procura a EXPRESSAO no codigo, nao a palavra no arquivo. A primeira
+  // versao dispensava o arquivo que mencionasse `fileURLToPath` em qualquer
+  // lugar -- e o proprio comentario que explica o defeito menciona. Passou
+  // com o defeito de volta. Terceira vez que "aparece no arquivo" engana.
+  let ruins = []
+  for (const arq of [...arquivos(join(raiz, 'scripts'), ['.mjs', '.ts']),
+                     ...arquivos(join(raiz, 'testes'), ['.mjs', '.mts'])]) {
+    const codigo = readFileSync(arq, 'utf8')
+      .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (/import\.meta\.url\s*\)?\s*\.pathname/.test(codigo)) ruins.push(rel(arq))
+  }
+  ruins.length
+    ? falta('Caminho de arquivo sai de fileURLToPath, nunca de .pathname',
+        `usa .pathname: ${ruins.join(', ')} -- no Windows isso vira C:\\C:\\...`)
+    : ok('Caminho de arquivo sai de fileURLToPath, nunca de .pathname')
+}
+
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}

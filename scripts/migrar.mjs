@@ -44,9 +44,16 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { credencialDoPostgres, pistaDoErroDoPsql, conferirProjeto } from './credencial-postgres.mjs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const RAIZ = new URL('..', import.meta.url).pathname
+// `new URL(...).pathname` NAO serve para virar caminho de arquivo: no
+// Windows ele devolve `/C:/Users/...` (com a barra na frente), e o `join`
+// monta `C:\C:\Users\...`. Foi o que aconteceu de verdade:
+//   ENOENT: no such file or directory, scandir 'C:\C:\Users\...\sql'
+// Nunca apareceu antes porque o script so tinha rodado em Linux (container
+// e runner do GitHub). `fileURLToPath` e o conversor correto nos dois.
+const RAIZ = dirname(dirname(fileURLToPath(import.meta.url)))
 
 // O fetch do Node ignora HTTPS_PROXY. No Claude Code na nuvem é o proxy que
 // anexa a credencial, então sem isto a chamada sai sem token e morre em 403.

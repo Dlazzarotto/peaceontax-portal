@@ -799,6 +799,15 @@ middleware.ts        controle de acesso por rota
   versão só cobria o psql, e pela API de gestão um `SUPABASE_PROJECT_REF` de
   outro projeto passava direto — meia trava é pior que nenhuma, porque quem
   confia nela para de conferir. 64 casos em `testes/credencial-postgres.mts`.
+  **`new URL(...).pathname` não vira caminho de arquivo no Windows.** Ele
+  devolve `/C:/Users/…` — com a barra na frente — e o `join` monta
+  `C:\C:\Users\…`; o erro real foi
+  `ENOENT: scandir 'C:\C:\…\sql'`. Nunca apareceu antes porque o script só
+  tinha rodado em Linux (este container e o runner do GitHub). O conversor
+  correto é `fileURLToPath`, e a auditoria recusa o padrão antigo —
+  procurando a EXPRESSÃO no código, não a palavra no arquivo: a primeira
+  versão dispensava quem mencionasse `fileURLToPath` em qualquer lugar, e o
+  próprio comentário que explica o defeito menciona.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
