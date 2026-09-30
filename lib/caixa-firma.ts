@@ -96,3 +96,18 @@ export async function idDaFirma(db: any): Promise<string | null> {
 
 /** Esquece o id guardado — para o POST que acaba de criar o caixa. */
 export function esquecerFirma(): void { idGuardado = null }
+
+/**
+ * Qual coluna o PostgREST diz que não existe (42703), ou null.
+ *
+ * A primeira versão concluía "falta a migração do caixa" a partir de
+ * QUALQUER 42703. Se amanhã faltar outra coluna do `clients`, a tela mandaria
+ * o sócio rodar a migração errada — e ele rodaria, não acharia nada e
+ * continuaria sem saber o que está quebrado. Diagnóstico que chuta é pior
+ * que erro cru: manda consertar o que não está errado.
+ */
+export function colunaAusente(e: any): string | null {
+  if (e?.code !== '42703' && !/does not exist/i.test(String(e?.message || ''))) return null
+  const m = /column\s+(?:[\w.]*\.)?"?([\w]+)"?\s+does not exist/i.exec(String(e?.message || ''))
+  return m ? m[1] : (e?.code === '42703' ? '?' : null)
+}
