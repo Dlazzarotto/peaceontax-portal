@@ -6,7 +6,7 @@
 // procura um Postgres na própria máquina. O erro fala de socket e o defeito
 // é o formato do texto — ninguém liga uma coisa à outra sozinho.
 
-import { credencialDoPostgres, senhaParaUri } from '../scripts/credencial-postgres.mjs'
+import { credencialDoPostgres, senhaParaUri, pistaDoErroDoPsql } from '../scripts/credencial-postgres.mjs'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -114,6 +114,42 @@ eq('senha separada em branco não conta',
 eq('codifica o arroba', senhaParaUri('ab@cd'), 'ab%40cd')
 eq('codifica o porcento sem dobrar', senhaParaUri('a%b'), 'a%25b')
 eq('codifica barra, cerquilha e interrogação', senhaParaUri('a/b#c?d'), 'a%2Fb%23c%3Fd')
+
+// ── Texto de EXEMPLO colado no lugar do valor ───────────────────────────
+// Aconteceu de verdade: a instrução trazia `postgres.SEUREF` como modelo e
+// o modelo foi colado. O pooler respondeu
+//   FATAL: (ENOTFOUND) tenant/user postgres.SEUREF not found
+// depois de uma viagem ao servidor. Exemplo que parece colável é colado.
+{
+  const r = credencialDoPostgres('postgresql://postgres.SEUREF:[YOUR-PASSWORD]@aws-0.pooler.supabase.com:5432/postgres', 'senha-real')
+  eq('SEUREF é recusado MESMO com a senha em secret próprio', !!r.erro, true)
+  eq('e o erro manda copiar do painel', r.erro!.includes('Session pooler'), true)
+}
+eq('SEUREF sem senha separada também',
+  !!credencialDoPostgres('postgresql://postgres.SEUREF:abc@h:5432/postgres').erro, true)
+eq('<ref> entre sinais é recusado',
+  !!credencialDoPostgres('postgresql://postgres.<ref>:abc@h:5432/postgres').erro, true)
+eq('a palavra SENHA no lugar da senha é recusada',
+  !!credencialDoPostgres('postgresql://postgres.abc:SENHA@h:5432/postgres').erro, true)
+// O marcador do painel NÃO pode ser confundido com exemplo quando há senha
+// separada: ele é o texto que o Supabase entrega, e o caminho existe para
+// aceitar a cadeia exatamente como ela vem de lá.
+eq('o [YOUR-PASSWORD] do painel passa, com senha separada',
+  credencialDoPostgres('postgresql://postgres.abcdefgh:[YOUR-PASSWORD]@aws-0.pooler.supabase.com:5432/postgres', 'x').url,
+  'postgresql://postgres.abcdefgh@aws-0.pooler.supabase.com:5432/postgres')
+
+// ── Traduzir a recusa do servidor ───────────────────────────────────────
+eq('tenant/user aponta o USUÁRIO',
+  pistaDoErroDoPsql('FATAL:  (ENOTFOUND) tenant/user postgres.SEUREF not found')!.includes('USUÁRIO'), true)
+eq('senha recusada aponta a SENHA',
+  pistaDoErroDoPsql('FATAL: password authentication failed for user "x"')!.includes('SENHA'), true)
+eq('rede inalcançável aponta o IPv6',
+  pistaDoErroDoPsql('could not connect: Network is unreachable')!.includes('IPv6'), true)
+eq('host inexistente aponta o @ da senha',
+  pistaDoErroDoPsql('could not translate host name "cd@x"')!.includes('primeiro "@"'), true)
+eq('erro desconhecido não inventa pista',
+  pistaDoErroDoPsql('algo completamente diferente'), null)
+eq('vazio não estoura', pistaDoErroDoPsql(''), null)
 
 console.log(`credencial-postgres: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)

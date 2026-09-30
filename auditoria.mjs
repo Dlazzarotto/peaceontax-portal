@@ -1104,6 +1104,19 @@ checar('Senha com caractere especial tem saida sem codificacao',
 checar('E o workflow passa o segundo secret',
   '.github/workflows/migrar.yml', /SUPABASE_DB_PASSWORD: \$\{\{ secrets\.SUPABASE_DB_PASSWORD \}\}/,
   'sem isso a saida existe no script e nao chega ao job')
+{
+  // A trava do texto de exemplo tem de vir ANTES do atalho da senha
+  // separada: na primeira versao ela ficou depois, e no caminho
+  // RECOMENDADO nao rodava -- foi assim que `postgres.SEUREF` chegou ao
+  // servidor. Ordem, nao presenca.
+  const t = readFileSync(join(raiz, 'scripts/credencial-postgres.mjs'), 'utf8')
+  const iExemplo = t.indexOf('EXEMPLO.test(')
+  const iAtalho = t.indexOf('if (senha) {')
+  iExemplo > 0 && iAtalho > 0 && iExemplo < iAtalho
+    ? ok('Texto de exemplo e recusado antes do atalho da senha separada')
+    : falta('Texto de exemplo e recusado antes do atalho da senha separada',
+        'depois do atalho, a trava nao roda justamente no caminho recomendado')
+}
 recusar('A mensagem de erro nunca imprime a cadeia',
   'scripts/credencial-postgres.mjs', /\$\{limpo(?!\.length\})|\$\{original|\$\{cru\b|\$\{senha\b/,
   'isto vai para log de CI, e `usuario:senha@host` poe a senha nos primeiros caracteres -- o GitHub so mascara o secret INTEIRO, um trecho passa limpo. '

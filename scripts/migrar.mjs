@@ -43,7 +43,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { credencialDoPostgres } from './credencial-postgres.mjs'
+import { credencialDoPostgres, pistaDoErroDoPsql } from './credencial-postgres.mjs'
 import { join, basename } from 'node:path'
 
 const RAIZ = new URL('..', import.meta.url).pathname
@@ -90,7 +90,11 @@ function viaPsql(sql) {
   })
   if (r.error) throw new Error(`psql não pôde ser executado: ${r.error.message}`)
   const saida = (r.stdout + r.stderr).trim()
-  if (r.status !== 0) throw new Error(saida || `psql saiu com ${r.status}`)
+  if (r.status !== 0) {
+    // O texto do psql é exato e inútil para quem não vive nisso.
+    const pista = pistaDoErroDoPsql(saida)
+    throw new Error((saida || `psql saiu com ${r.status}`) + (pista ? `\n\n  → ${pista}` : ''))
+  }
   return saida
 }
 
