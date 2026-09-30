@@ -20,6 +20,18 @@
 const MARCADOR = /\[(YOUR-PASSWORD|SUA-SENHA|PASSWORD|YOUR_PASSWORD)\]/i
 
 /**
+ * Texto de EXEMPLO colado no lugar do valor real.
+ *
+ * Aconteceu: a instrução trazia `postgresql://postgres.SEUREF:SENHA@…` como
+ * modelo e o exemplo foi colado inteiro. O pooler respondeu
+ * `FATAL: (ENOTFOUND) tenant/user postgres.SEUREF not found` — claro para
+ * quem conhece, mas depois de uma viagem de ida e volta ao servidor. Um
+ * exemplo que parece colável É um exemplo que vai ser colado; recusar antes
+ * de conectar custa nada.
+ */
+const EXEMPLO = /\b(SEUREF|SEU-REF|SEU_REF|YOUR-PROJECT-REF|YOUR_PROJECT_REF|PROJECT-REF|PROJETO|REGIAO|SUASENHA|SUA-SENHA|SENHA)\b|[<>[\]]/
+
+/**
  * Como escrever uma senha com caractere especial DENTRO da URI.
  *
  * Conferido no PostgreSQL 16: o libpq corta no PRIMEIRO `@`, não no último
@@ -76,6 +88,20 @@ export function credencialDoPostgres(cru, senhaSeparada) {
         + '      Pegue o URI em Supabase → Connect → Session pooler. Ele é assim:\n'
         + '      postgresql://postgres.<ref>:SENHA@aws-0-<regiao>.pooler.supabase.com:5432/postgres\n'
         + `      ${pista} (${limpo.length} caracteres)`,
+    }
+  }
+
+  // ANTES de qualquer atalho: com a senha em secret próprio a função
+  // retornava mais acima, e a trava do texto de exemplo não rodava --
+  // justamente no caminho recomendado. Foi assim que `postgres.SEUREF`
+  // chegou ao servidor.
+  if (EXEMPLO.test(limpo.replace(MARCADOR, ''))) {
+    return {
+      erro:
+        'SUPABASE_DB_URL ainda tem texto de EXEMPLO (SEUREF, SENHA, <…>, […]).\n'
+        + '      O usuário e o servidor não se digitam à mão: copie o campo inteiro em\n'
+        + '      Supabase → Connect → Session pooler. Ele já vem com o usuário certo\n'
+        + '      (postgres.<ref do seu projeto>) e a região certa.',
     }
   }
 
@@ -150,4 +176,41 @@ function avisosDe(limpo, original) {
     avisos.push('A cadeia tinha "psql", aspas ou espaços em volta — foram removidos.')
   }
   return avisos
+}
+
+/**
+ * Traduzir a recusa do servidor para o que se faz a respeito.
+ *
+ * O texto do psql é exato e inútil para quem não vive nisso: "tenant/user
+ * não encontrado" não diz que o que está errado é o pedaço `postgres.<ref>`
+ * da cadeia. Devolve null quando não reconhece — aí o texto cru vale mais
+ * que um palpite.
+ */
+export function pistaDoErroDoPsql(saida) {
+  const t = String(saida || '')
+  if (/tenant or user not found|tenant\/user .* not found|ENOTFOUND/i.test(t)) {
+    return 'O servidor respondeu, mas não reconheceu o USUÁRIO da cadeia. No Session pooler '
+         + 'ele é `postgres.<ref do projeto>` — copie o campo inteiro em Supabase → Connect → '
+         + 'Session pooler em vez de montar à mão.'
+  }
+  if (/password authentication failed/i.test(t)) {
+    return 'Usuário certo, SENHA recusada. Se ela está em SUPABASE_DB_PASSWORD, confira o '
+         + 'valor; dá para redefinir em Project Settings → Database → Database password.'
+  }
+  if (/network is unreachable|cannot assign requested address/i.test(t)) {
+    return 'Rede inalcançável: é a conexão DIRETA (só IPv6) e o runner do GitHub é IPv4. '
+         + 'Use a cadeia do Session pooler.'
+  }
+  if (/timeout expired|could not connect to server/i.test(t)) {
+    return 'Sem resposta do servidor. Confira o host e a porta (o Session pooler é 5432 ou '
+         + '6543) e se o projeto do Supabase não está pausado.'
+  }
+  if (/database ".*" does not exist/i.test(t)) {
+    return 'O nome do banco no fim da cadeia está errado — no Supabase é /postgres.'
+  }
+  if (/could not translate host name/i.test(t)) {
+    return 'O servidor não existe com esse nome. Quase sempre é senha com caractere especial '
+         + 'dentro da URI: o psql corta no primeiro "@". Use o secret SUPABASE_DB_PASSWORD.'
+  }
+  return null
 }

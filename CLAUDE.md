@@ -775,7 +775,17 @@ middleware.ts        controle de acesso por rota
   usar o parser do Node como juiz. Duas saídas, as duas atendidas: codificar
   (`@`→`%40`, `:`→`%3A`, `/`→`%2F`, `?`→`%3F`, `#`→`%23`, `%`→`%25`) ou —
   melhor — o secret **`SUPABASE_DB_PASSWORD`** com a senha CRUA e a URI sem
-  senha, que vai por `PGPASSWORD` e não passa por parser nenhum. 42 casos em
+  senha, que vai por `PGPASSWORD` e não passa por parser nenhum.
+  **Exemplo que parece colável é colado.** A instrução trazia
+  `postgresql://postgres.SEUREF:SENHA@…` como modelo e o modelo foi colado: o
+  pooler respondeu `FATAL: (ENOTFOUND) tenant/user postgres.SEUREF not
+  found` — exato e inútil para quem não vive nisso, e só depois de uma
+  viagem ao servidor. Agora texto de exemplo (`SEUREF`, `SENHA`, `<…>`,
+  `[…]`) é recusado ANTES de conectar, e `pistaDoErroDoPsql` traduz as
+  recusas do servidor (usuário, senha, IPv6, host, banco) para o que se faz
+  a respeito. A trava do exemplo fica **antes** do atalho da senha separada:
+  a primeira versão ficou depois e não rodava justamente no caminho
+  recomendado — a auditoria confere a ORDEM, não a presença. 54 casos em
   `testes/credencial-postgres.mts`.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
