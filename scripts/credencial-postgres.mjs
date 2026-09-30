@@ -214,3 +214,47 @@ export function pistaDoErroDoPsql(saida) {
   }
   return null
 }
+
+/**
+ * O ref do projeto Supabase que a cadeia aponta, ou null.
+ *
+ * Session/Transaction pooler: o ref é o usuário (`postgres.<ref>`).
+ * Conexão direta: é o subdomínio (`db.<ref>.supabase.co`).
+ */
+export function refDaCadeia(url) {
+  const t = String(url || '')
+  const direta = /@db\.([a-z0-9]{16,})\.supabase\.co/i.exec(t)
+  if (direta) return direta[1]
+  const pooler = /:\/\/postgres\.([a-z0-9]{16,})[:@]/i.exec(t)
+  return pooler ? pooler[1] : null
+}
+
+/**
+ * A cadeia aponta para o projeto DESTE repositório?
+ *
+ * Migração aplicada no banco errado não tem desfazer: cria tabela e coluna
+ * num projeto que ninguém está olhando, e o certo continua sem elas. O caso
+ * apareceu de verdade — duas cadeias, de dois projetos, coladas na mesma
+ * semana; a errada só não passou porque o usuário estava com texto de
+ * exemplo.
+ *
+ * O ref esperado vem de `.env.example` (`NEXT_PUBLIC_SUPABASE_URL`), que
+ * está no repositório e não é segredo. Sem ele, não há o que conferir.
+ */
+export function conferirProjeto(url, refEsperado) {
+  if (!refEsperado) return { ok: true, motivo: 'o repositorio nao diz qual projeto esperar' }
+  const ref = refDaCadeia(url)
+  if (!ref) return { ok: true, motivo: 'a cadeia nao revela o projeto (host proprio?)' }
+  if (ref === refEsperado) return { ok: true, ref }
+  return {
+    ok: false,
+    ref,
+    erro:
+      `A cadeia aponta para o projeto "${ref}", e este repositório é do projeto `
+      + `"${refEsperado}" (NEXT_PUBLIC_SUPABASE_URL em .env.example).\n`
+      + '      Migração no banco errado não tem desfazer: cria as tabelas num projeto que\n'
+      + '      ninguém olha e deixa o certo sem elas.\n'
+      + '      Copie a cadeia do projeto certo em Supabase → Connect → Session pooler.\n'
+      + '      Se a intenção É outro banco (uma cópia de teste), rode com MIGRAR_OUTRO_PROJETO=1.',
+  }
+}

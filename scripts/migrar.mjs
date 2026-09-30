@@ -43,7 +43,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { credencialDoPostgres, pistaDoErroDoPsql } from './credencial-postgres.mjs'
+import { credencialDoPostgres, pistaDoErroDoPsql, conferirProjeto } from './credencial-postgres.mjs'
 import { join, basename } from 'node:path'
 
 const RAIZ = new URL('..', import.meta.url).pathname
@@ -58,6 +58,28 @@ if (process.env.HTTPS_PROXY && !process.env.NODE_USE_ENV_PROXY) {
   })
   process.exit(filho.status ?? 1)
 }
+/**
+ * Qual projeto Supabase este repositório espera. Vem de `.env.example`, que
+ * está versionado e não guarda segredo nenhum — só diz QUAL projeto é o
+ * desta aplicação.
+ */
+function refEsperadoDoRepo() {
+  try {
+    const t = readFileSync(join(RAIZ, '.env.example'), 'utf-8')
+    return (/NEXT_PUBLIC_SUPABASE_URL\s*=\s*https:\/\/([a-z0-9]{16,})\.supabase\.co/i.exec(t) || [])[1] || null
+  } catch { return null }
+}
+
+/** Recusa a cadeia que aponta para OUTRO projeto. */
+function exigirProjetoCerto(url) {
+  if (process.env.MIGRAR_OUTRO_PROJETO === '1') {
+    console.error('    aviso: MIGRAR_OUTRO_PROJETO=1 — a conferência de projeto está desligada.')
+    return
+  }
+  const r = conferirProjeto(url, refEsperadoDoRepo())
+  if (!r.ok) throw new Error(r.erro)
+}
+
 const LIVRO = `
 create table if not exists public.schema_migrations (
   arquivo     text primary key,
@@ -83,6 +105,7 @@ function viaPsql(sql) {
   for (const a of cred.avisos || []) console.error(`    aviso: ${a}`)
   // A senha separada vai por PGPASSWORD: variável de ambiente não passa por
   // parser de URI, então `@`, `#` e `%` na senha deixam de ser problema.
+  exigirProjetoCerto(cred.url)
   const ambiente = cred.senha ? { ...process.env, PGPASSWORD: cred.senha } : process.env
   // -1: o arquivo inteiro numa transação — se a conferência do fim falhar, nada fica pela metade
   const r = spawnSync('psql', [cred.url, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-1'], {
@@ -168,6 +191,12 @@ async function main() {
     // O valor nunca é impresso — só o que dá para conferir sem vazá-lo.
     const host = (cred.url.match(/@([^:/?]+)/) || [])[1] || '?'
     console.log(`Credencial no formato certo. Servidor: ${host}`)
+    // Projeto errado é o erro que não tem desfazer: confere aqui também,
+    // para aparecer no passo da CREDENCIAL e não na primeira consulta.
+    try { exigirProjetoCerto(cred.url) } catch (e) {
+      console.error(`::error::${e.message}`); process.exit(1)
+    }
+    console.log(`Projeto conferido: ${refEsperadoDoRepo() || '(o repositório não diz qual esperar)'}`)
     return
   }
 

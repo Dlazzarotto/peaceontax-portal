@@ -785,8 +785,17 @@ middleware.ts        controle de acesso por rota
   recusas do servidor (usuário, senha, IPv6, host, banco) para o que se faz
   a respeito. A trava do exemplo fica **antes** do atalho da senha separada:
   a primeira versão ficou depois e não rodava justamente no caminho
-  recomendado — a auditoria confere a ORDEM, não a presença. 54 casos em
-  `testes/credencial-postgres.mts`.
+  recomendado — a auditoria confere a ORDEM, não a presença.
+  **Cadeia de OUTRO projeto Supabase é recusada.** Apareceram duas na mesma
+  semana (dois projetos do mesmo dono); a errada só não passou porque o
+  usuário ainda era texto de exemplo. Migração no banco errado **não tem
+  desfazer**: cria as tabelas num projeto que ninguém olha e deixa o certo
+  sem elas. `conferirProjeto` compara o ref da cadeia (`postgres.<ref>` no
+  pooler, `db.<ref>.supabase.co` na direta) com o de
+  `NEXT_PUBLIC_SUPABASE_URL` em **`.env.example`** — que está versionado e
+  não é segredo, só diz QUAL projeto é o desta aplicação. Sem base de
+  comparação não se inventa recusa, e `MIGRAR_OUTRO_PROJETO=1` libera de
+  propósito (cópia de teste). 64 casos em `testes/credencial-postgres.mts`.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)

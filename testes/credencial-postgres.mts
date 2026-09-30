@@ -6,7 +6,8 @@
 // procura um Postgres na própria máquina. O erro fala de socket e o defeito
 // é o formato do texto — ninguém liga uma coisa à outra sozinho.
 
-import { credencialDoPostgres, senhaParaUri, pistaDoErroDoPsql } from '../scripts/credencial-postgres.mjs'
+import { credencialDoPostgres, senhaParaUri, pistaDoErroDoPsql, refDaCadeia, conferirProjeto }
+  from '../scripts/credencial-postgres.mjs'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -150,6 +151,34 @@ eq('host inexistente aponta o @ da senha',
 eq('erro desconhecido não inventa pista',
   pistaDoErroDoPsql('algo completamente diferente'), null)
 eq('vazio não estoura', pistaDoErroDoPsql(''), null)
+
+// ── Projeto errado: o erro que não tem desfazer ─────────────────────────
+// Duas cadeias, de dois projetos Supabase, na mesma semana. A errada só
+// não passou porque o usuário ainda era texto de exemplo. Migração no
+// banco errado cria as tabelas onde ninguém olha e deixa o certo sem elas.
+eq('ref do pooler',
+  refDaCadeia('postgresql://postgres.gaknnckgekvsgvxgvwvk@aws-1-us-east-1.pooler.supabase.com:5432/postgres'),
+  'gaknnckgekvsgvxgvwvk')
+eq('ref do pooler com senha na URI',
+  refDaCadeia('postgresql://postgres.gaknnckgekvsgvxgvwvk:s3nh4@aws-1.pooler.supabase.com:5432/postgres'),
+  'gaknnckgekvsgvxgvwvk')
+eq('ref da conexão direta',
+  refDaCadeia('postgresql://postgres:s3nh4@db.gaknnckgekvsgvxgvwvk.supabase.co:5432/postgres'),
+  'gaknnckgekvsgvxgvwvk')
+eq('host próprio não tem ref', refDaCadeia('postgresql://u:p@meubanco.exemplo.com:5432/d'), null)
+
+eq('mesmo projeto passa',
+  conferirProjeto('postgresql://postgres.abcdefghijklmnop@h:5432/d', 'abcdefghijklmnop').ok, true)
+{
+  const r = conferirProjeto('postgresql://postgres.wbljbyhdoffuyymxziqi@h:5432/d', 'gaknnckgekvsgvxgvwvk')
+  eq('projeto diferente é RECUSADO', r.ok, false)
+  eq('e o erro nomeia os dois', r.erro!.includes('wbljbyhdoffuyymxziqi') && r.erro!.includes('gaknnckgekvsgvxgvwvk'), true)
+  eq('e diz que não tem desfazer', r.erro!.includes('não tem desfazer'), true)
+}
+// Sem o que comparar, não se inventa recusa: travar sem base pararia quem
+// usa um banco próprio, e a trava existe para o engano, não para o uso.
+eq('sem ref esperado, passa', conferirProjeto('postgresql://postgres.abc@h:5432/d', null).ok, true)
+eq('cadeia sem ref, passa', conferirProjeto('postgresql://u:p@meubanco.com:5432/d', 'abcdefghijklmnop').ok, true)
 
 console.log(`credencial-postgres: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)
