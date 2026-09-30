@@ -1129,6 +1129,16 @@ recusar('A mensagem de erro nunca imprime a cadeia',
   + 'A primeira versao proibia `limpo.slice(` e acusou o corte do esquema, que nao imprime nada. O perigo e a INTERPOLACAO do valor num texto -- `${limpo.length}` e liberado de proposito: o TAMANHO ajuda a diagnosticar e nao revela nada.')
 
 
+titulo('SAIR SEM DERRUBAR O NODE (Windows)')
+// `process.exit` com a conexao HTTP da API ainda aberta aborta o Node no
+// Windows DEPOIS de imprimir a mensagem:
+//   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\\win\\async.c
+// O diagnostico aparece e o usuario leva um crash em cima. Onde ja houve
+// rede, o certo e marcar exitCode e deixar o Node fechar o que abriu.
+recusar('O fim do script nao chama process.exit',
+  'scripts/migrar.mjs', /main\(\)\.catch\([\s\S]{0,160}?process\.exit\(/,
+  'com a conexao aberta isso vira Assertion failed no Windows -- use process.exitCode')
+
 titulo('CAMINHO DE ARQUIVO A PARTIR DO MODULO (Windows)')
 // `new URL(..., import.meta.url).pathname` devolve `/C:/Users/...` no
 // Windows -- com a barra na frente -- e o `join` monta `C:\C:\Users\...`.

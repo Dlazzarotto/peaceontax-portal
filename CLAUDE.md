@@ -808,6 +808,16 @@ middleware.ts        controle de acesso por rota
   procurando a EXPRESSÃO no código, não a palavra no arquivo: a primeira
   versão dispensava quem mencionasse `fileURLToPath` em qualquer lugar, e o
   próprio comentário que explica o defeito menciona.
+  **`process.exit` com conexão HTTP aberta aborta o Node no Windows**
+  (`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c`):
+  o diagnóstico aparece e o usuário leva um crash em cima. Onde já houve
+  rede, marca-se `process.exitCode` e deixa-se o Node fechar o que abriu — o
+  código de saída continua 1, que é o que o workflow lê.
+  **Uma armadilha de regex que já custou três invariantes nesta sessão:**
+  `[^)]*` NÃO atravessa o parêntese de um argumento como `(e.message || e)`
+  ou `(l: any)`, então o padrão nunca casa e a invariante passa sempre. Use
+  `[\s\S]{0,N}?`. Invariante nova só vale depois de falhar com o defeito
+  reintroduzido.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
