@@ -45,6 +45,8 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { credencialDoPostgres, pistaDoErroDoPsql, conferirProjeto } from './credencial-postgres.mjs'
 import { ordenarPorDependencia } from './ordem-das-migracoes.mjs'
+import { lerLivro, estadoDaMigracao, ESTADOS,
+         consertoDoNomeCurto, consertoDoShaVazio } from './livro-de-migracoes.mjs'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -184,16 +186,10 @@ async function aplicados(exec) {
   await exec.run(LIVRO)
   const bruto = await exec.run(`select arquivo, sha256 from public.schema_migrations order by arquivo`)
   // psql -q devolve tabela em texto; a API devolve JSON. Aceita os dois.
-  const mapa = new Map()
-  try {
-    for (const l of JSON.parse(bruto)) mapa.set(l.arquivo, l.sha256)
-  } catch {
-    for (const l of bruto.split('\n')) {
-      const m = l.match(/^\s*(\S+\.sql)\s*\|\s*([0-9a-f]{64})/)
-      if (m) mapa.set(m[1], m[2])
-    }
-  }
-  return mapa
+  // O leitor mora em livro-de-migracoes.mjs, puro e com teste: ele ja
+  // deixou sumir linha com sha vazio, e linha que some vira PENDENTE --
+  // migracao aplicada parecendo nunca aplicada.
+  return lerLivro(bruto)
 }
 
 const anotar = (exec, nome, hash) => exec.run(
@@ -261,7 +257,12 @@ async function main() {
     console.error('    npm run migrar -- --registrar sql/<arquivo>.sql')
     process.exit(2)
   }
-  console.log(`Conexão: ${exec.nome}`)
+  // Diagnostico vai para o STDERR, nunca para o stdout: o workflow faz
+  // PENDENTES=$(... --pendentes --so-nomes) e passa CADA LINHA adiante
+  // como nome de arquivo. Com `Conexão: psql` no stdout, o aplicar
+  // automatico receberia "Conexão:" e "psql" como migracoes. Nunca tinha
+  // aparecido porque o aplicar nunca chegou a rodar ate o fim.
+  console.error(`Conexão: ${exec.nome}`)
   const livro = await aplicados(exec)
 
   if (flag('--pendentes')) {
@@ -271,19 +272,47 @@ async function main() {
     const soNomes = flag('--so-nomes')
     let n = 0
     const paraAplicar = []
+    const consertos = []
     for (const f of todos) {
       const nome = `sql/${f}`
       const hash = sha(readFileSync(join(dirSql, f), 'utf-8'))
-      const est = !livro.has(nome) ? 'PENDENTE' : livro.get(nome) !== hash ? 'MUDOU DEPOIS DE APLICADO' : 'ok'
-      if (est !== 'ok') n++
+      const est = estadoDaMigracao(nome, hash, livro)
+      if (est !== ESTADOS.OK) n++
+      // Os tres estados-problema que NAO sao PENDENTE tem conserto de uma
+      // linha. Dizer so "tem algo errado" obriga a pessoa a redescobrir o
+      // que ja esta sabido aqui.
+      if (!soNomes && est === ESTADOS.NOME_CURTO) consertos.push(consertoDoNomeCurto(nome, hash))
+      if (!soNomes && est === ESTADOS.SEM_SHA)    consertos.push(consertoDoShaVazio(nome, hash))
       // Só PENDENTE entra na lista automática. "MUDOU DEPOIS DE APLICADO" é
       // arquivo editado depois de rodar (aconteceu: a conferência de
       // permissoes-por-pessoa-v1 foi reescrita). Pode ser inofensivo, pode
       // não ser — quem decide é gente, então ele aparece no relato e fica de
       // fora do automático.
-      if (est === 'PENDENTE') paraAplicar.push(nome)
+      // SO PENDENTE entra no automatico. "MUDOU DEPOIS DE APLICADO",
+      // "REGISTRO SEM SHA" e "REGISTRADA COM NOME CURTO" sao arquivos que
+      // muito provavelmente JA ESTAO no banco -- reaplicar e o risco, nao
+      // esperar. Viram relato, com o conserto escrito.
+      if (est === ESTADOS.PENDENTE) paraAplicar.push(nome)
       if (!soNomes) console.log(`  ${est.padEnd(26)} ${nome}`)
     }
+    // --so-nomes sai NUA: o workflow passa cada linha adiante como nome
+    // de arquivo, entao qualquer cabecalho vira um "arquivo" inexistente.
+    if (!soNomes) {
+      console.log(n === 0 ? 'Nada pendente.' : `${n} arquivo(s) a decidir.`)
+      if (n > paraAplicar.length) {
+        console.log(`  (${n - paraAplicar.length} fora do automático — provavelmente já no banco; decida uma a uma)`)
+      }
+      if (consertos.length) {
+        console.log('')
+        console.log('Linhas do livro com o registro torto. O SQL que arruma cada uma:')
+        for (const c of consertos) console.log(`  ${c}`)
+      }
+    }
+
+    // A ordem vem DEPOIS do relato de proposito: a recusa abaixo sai do
+    // programa com exit(3), e rodando de verdade se viu que ela engolia o
+    // conserto de cada linha torta -- que e justamente o que falta para
+    // decidir. Relato primeiro, recusa depois.
     // ORDEM DE DEPENDENCIA, nao alfabetica. `readdirSync().sort()` poe
     // `codigo-de-autorizacao-funcao-v1` ANTES de `codigo-de-autorizacao-v1`
     // ('f' < 'v') e `recebimento-seguro-v1` antes de `status-da-fatura-v2`
@@ -301,10 +330,6 @@ async function main() {
     if (ciclos.length) process.exit(3)
 
     if (soNomes) { for (const nome of ordem) console.log(nome); return }
-    console.log(n === 0 ? 'Nada pendente.' : `${n} arquivo(s) a decidir.`)
-    if (n > paraAplicar.length) {
-      console.log(`  (${n - paraAplicar.length} mudou depois de aplicado — não entra no automático)`)
-    }
     return
   }
 
