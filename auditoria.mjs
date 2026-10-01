@@ -1036,9 +1036,20 @@ recusar('E a rota nao lanca nada por fora dela',
         'numero vindo do navegador nao pode lancar despesa nem receita')
     : ok('O valor e recalculado no banco, nunca recebido')
 }
-checar('Sincronizar duas vezes nao dobra a receita',
-  'sql/caixa-conciliacao-v1.sql', /create unique index if not exists bank_tx_um_por_recebimento[\s\S]*?payment_id/,
-  'a rotina roda a cada abertura da tela: sem o indice unico, o ano fecha com receita em dobro')
+{
+  // O indice tem de ser UNICO (senao sincronizar duas vezes dobra a receita
+  // do ano) e SIMPLES: `on conflict (payment_id)` nao infere indice PARCIAL,
+  // e o PostgREST nao tem como mandar o predicado junto. A v1 criou parcial
+  // e a tela falhou em producao com "no unique or exclusion constraint
+  // matching the ON CONFLICT specification"; a v2 troca.
+  const v2 = readFileSync(join(raiz, 'sql/caixa-conciliacao-v2.sql'), 'utf8')
+  const criaUnico = /create unique index if not exists bank_tx_um_por_recebimento[\s\S]{0,80}\(payment_id\)/.test(v2)
+  const semPredicado = !/create unique index if not exists bank_tx_um_por_recebimento[\s\S]{0,120}where/.test(v2)
+  criaUnico && semPredicado
+    ? ok('Sincronizar duas vezes nao dobra a receita (indice unico e SIMPLES)')
+    : falta('Sincronizar duas vezes nao dobra a receita (indice unico e SIMPLES)',
+        'unico, para nao dobrar a receita; simples, porque `on conflict (payment_id)` nao enxerga indice parcial')
+}
 checar('E a rotina respeita esse indice',
   'lib/caixa-recebimentos.ts', /onConflict:\s*'payment_id',\s*ignoreDuplicates:\s*true/,
   'duas abas sincronizando ao mesmo tempo nao podem lancar o mesmo recebimento duas vezes')
@@ -1172,7 +1183,8 @@ titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
 {
   const saida = 'colar-no-sql-editor/caixa-completo.sql'
   const fontes = ['sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql',
-                  'sql/caixa-conciliacao-funcao-v1.sql']
+                  'sql/caixa-conciliacao-v2.sql', 'sql/caixa-conciliacao-funcao-v1.sql',
+                  'sql/contas-a-pagar-v1.sql']
   if (!existsSync(join(raiz, saida))) {
     ver(`${saida} nao existe (nada a conferir)`)
   } else {
@@ -1184,6 +1196,62 @@ titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
           `regere: node scripts/juntar-para-colar.mjs ${saida} ${fontes.join(' ')}`)
   }
 }
+
+
+titulo('CONTAS A PAGAR (caixa diario, NAO contabilidade)')
+// O livro da firma e por regime de caixa e a despesa vem do extrato. Se a
+// conta a pagar virasse lancamento, a MESMA despesa entraria duas vezes --
+// uma na emissao e outra no pagamento -- e o P&L sairia dobrado onde
+// houvesse boleto. Pagar aqui so FECHA a conta e a amarra ao debito que ja
+// existe no banco.
+recusar('Conta a pagar nao vira lancamento contabil',
+  'app/api/caixa/contas/route.ts', /from\('bank_transactions'\)[\s\S]{0,120}\.(insert|upsert)\(/,
+  'a despesa ja vem do extrato: lancar aqui a contaria DUAS vezes no ano')
+checar('Pagar exige o debito do extrato',
+  'app/api/caixa/contas/route.ts', /acao === 'pagar'[\s\S]{0,400}?Escolha o débito do extrato/,
+  'conta marcada como paga sem debito nenhum deixa a projecao de caixa mentindo')
+checar('Um debito do banco paga UMA conta',
+  'sql/contas-a-pagar-v1.sql', /create unique index if not exists firm_bills_um_pagamento[\s\S]{0,120}paid_tx_id is not null/,
+  'sem o indice, dois cliques fazem a firma "pagar" o dobro no papel')
+{
+  // Sem os comentarios e por RAMO. Tres destas invariantes passaram com o
+  // defeito reintroduzido: uma porque `23505` estava no comentario que
+  // EXPLICA o defeito, outra porque `.eq('status','aberta')` tambem existe
+  // no ramo de cancelar, e a terceira porque trocar `camposDaConta(body)`
+  // por `body` nao casa com nenhum padrao de `...body`.
+  const t = readFileSync(join(raiz, 'app/api/caixa/contas/route.ts'), 'utf8')
+  const codigo = t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const iPagar = codigo.indexOf("b.acao === 'pagar'")
+  const ramoPagar = iPagar < 0 ? '' : codigo.slice(iPagar, codigo.indexOf("b.acao === 'cancelar'", iPagar))
+
+  // Variavel antes do teste, sempre: linha iniciada por `/` depois de `)`
+  // o JavaScript le como DIVISAO, e o arquivo nem compila.
+  const explicaOIndice = /\(error as any\)\.code === '23505'/.test(codigo)
+  const travaNoPagar   = /\.eq\('status', 'aberta'\)/.test(ramoPagar)
+  const filtraNoPost   = /camposDaConta\(body\)/.test(codigo)
+  const filtraNoEditar = /camposDaConta\(b\)/.test(codigo)
+
+  explicaOIndice
+    ? ok('E a rota explica quando esbarra nele')
+    : falta('E a rota explica quando esbarra nele',
+        'o erro cru do Postgres nao diz que o debito ja fechou outra conta')
+
+  travaNoPagar
+    ? ok('Pagar duas vezes em paralelo nao passa')
+    : falta('Pagar duas vezes em paralelo nao passa',
+        'o status no WHERE do UPDATE de PAGAR e o que faz duas abas abertas nao pagarem a mesma conta duas vezes')
+
+  filtraNoPost && filtraNoEditar
+    ? ok('O corpo do pedido nao grava status nem pagamento')
+    : falta('O corpo do pedido nao grava status nem pagamento',
+        'status ou paid_tx_id vindos de fora dariam conta "paga" sem debito no extrato -- o corpo passa por camposDaConta no POST e no editar')
+}
+checar('Cancelar preserva e pede motivo',
+  'app/api/caixa/contas/route.ts', /cancel_reason: motivo/,
+  'principio 2: nada se apaga sem rastro')
+checar('A conta a pagar e so do socio',
+  'app/api/caixa/contas/route.ts', /getStaffLevel\([\s\S]{0,40}?\)\s*!==\s*'owner'/,
+  'e o dinheiro da firma')
 
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')

@@ -7,7 +7,7 @@
 --
 -- Cada parte e idempotente: rodar duas vezes nao faz mal.
 --
--- Origem: sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql, sql/caixa-conciliacao-funcao-v1.sql
+-- Origem: sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql, sql/caixa-conciliacao-v2.sql, sql/caixa-conciliacao-funcao-v1.sql, sql/contas-a-pagar-v1.sql
 
 create table if not exists public.schema_migrations (
   arquivo     text primary key,
@@ -208,6 +208,79 @@ select name, kind, active
 
 
 -- ===================================================================
+-- sql/caixa-conciliacao-v2.sql
+-- ===================================================================
+
+-- sql/caixa-conciliacao-v2.sql
+-- O indice de "um lancamento por recebimento" tem de ser SIMPLES, nao parcial.
+--
+-- O QUE QUEBROU
+-- A sincronizacao dos recebimentos falhou na firma com:
+--   Nao foi possivel lancar os recebimentos: there is no unique or exclusion
+--   constraint matching the ON CONFLICT specification
+--
+-- A v1 criou o indice como PARCIAL (`where payment_id is not null`). Para o
+-- Postgres INFERIR um indice parcial num `on conflict (payment_id)`, o
+-- comando precisaria repetir o predicado (`on conflict (payment_id) where
+-- payment_id is not null`) -- e o PostgREST, que e por onde o servidor fala
+-- com o banco, nao tem como mandar esse `where`. Resultado: o upsert nunca
+-- encontrava o indice e a tela nao lancava recebimento nenhum.
+--
+-- POR QUE O SIMPLES RESOLVE E NAO AFROUXA NADA
+-- Em UNIQUE, o Postgres trata cada NULL como distinto: as dezenas de
+-- milhares de linhas do extrato (todas com payment_id nulo) continuam
+-- entrando sem conflito. O que o indice impede e o que a gente quer impedir
+-- -- dois lancamentos para o MESMO recebimento, que dobraria a receita do
+-- ano. Conferido no PostgreSQL 16, nos dois sentidos.
+--
+-- Roda DEPOIS de sql/caixa-conciliacao-v1.sql. Idempotente: so troca o
+-- indice quando ele ainda e o parcial.
+
+do $$
+begin
+  if exists (
+    select 1 from pg_index i
+      join pg_class c on c.oid = i.indexrelid
+     where c.relname = 'bank_tx_um_por_recebimento'
+       and i.indpred is not null)          -- indpred preenchido = indice PARCIAL
+  then
+    execute 'drop index public.bank_tx_um_por_recebimento';
+  end if;
+end $$;
+
+create unique index if not exists bank_tx_um_por_recebimento
+  on public.bank_transactions (payment_id);
+
+-- == Conferencia ===========================================================
+do $$
+begin
+  if (select count(*) from pg_index i join pg_class c on c.oid = i.indexrelid
+       where c.relname = 'bank_tx_um_por_recebimento') <> 1
+  then
+    raise exception 'o indice bank_tx_um_por_recebimento sumiu';
+  end if;
+
+  if (select i.indpred is not null from pg_index i join pg_class c on c.oid = i.indexrelid
+       where c.relname = 'bank_tx_um_por_recebimento')
+  then
+    raise exception 'o indice continua PARCIAL -- o on conflict nao vai enxerga-lo';
+  end if;
+
+  if not (select i.indisunique from pg_index i join pg_class c on c.oid = i.indexrelid
+           where c.relname = 'bank_tx_um_por_recebimento')
+  then
+    raise exception 'o indice deixou de ser UNICO -- sincronizar duas vezes dobraria a receita';
+  end if;
+
+  raise notice 'bank_tx_um_por_recebimento: unico e simples, o on conflict enxerga';
+end $$;
+
+select count(*) filter (where payment_id is not null) as lancamentos_de_recebimento,
+       count(*)                                        as lancamentos_no_total
+  from public.bank_transactions;
+
+
+-- ===================================================================
 -- sql/caixa-conciliacao-funcao-v1.sql
 -- ===================================================================
 
@@ -387,6 +460,109 @@ $function$;
 
 
 -- ===================================================================
+-- sql/contas-a-pagar-v1.sql
+-- ===================================================================
+
+-- sql/contas-a-pagar-v1.sql
+-- CONTAS A PAGAR da firma: a obrigacao ANTES de o dinheiro sair.
+--
+-- O QUE ESTA TABELA NAO E
+-- Ela NAO e contabilidade. O livro da firma e por REGIME DE CAIXA: a
+-- despesa nasce quando o dinheiro sai, e isso ja chega pelo extrato
+-- (Plaid) e e classificado pelo motor de regras. Se a conta a pagar
+-- virasse lancamento, a mesma despesa entraria DUAS vezes -- uma na
+-- emissao e outra no pagamento.
+--
+-- O QUE ELA E
+-- O caixa DIARIO: o que a firma deve, para quem e quando vence. Serve
+-- para (a) nao esquecer de pagar, (b) projetar o caixa das proximas
+-- semanas e (c) fechar o circulo quando o debito aparece no banco.
+--
+-- O ELO COM O EXTRATO
+-- `paid_tx_id` aponta o lancamento bancario que pagou a conta. E o unico
+-- vinculo entre os dois mundos: a conta FECHA, e a despesa continua sendo
+-- a do banco. O indice unico impede que um mesmo debito pague duas contas
+-- -- senao bastaria um clique a mais para a firma "pagar" o dobro no
+-- papel e a projecao passar a mentir.
+--
+-- FORNECEDOR e o cadastro que ja existe (`payees`, com `client_id` da
+-- firma e `type = 'vendor'`). Criar uma segunda lista de fornecedores
+-- seria a mesma duplicacao que o projeto ja paga caro em outros lugares.
+--
+-- Idempotente. Cria tabela: liga a RLS aqui mesmo, nao atribui variavel
+-- por consulta e nao define funcao -- as tres coisas que fazem o SQL
+-- Editor do Supabase reescrever o arquivo.
+
+create table if not exists public.firm_bills (
+  id            uuid primary key default gen_random_uuid(),
+  client_id     uuid not null,                  -- a firma (clients.is_firm)
+  payee         text not null,                  -- nome do fornecedor (payees.name)
+  description   text,
+  category      text,                           -- conta contabil sugerida
+  amount        numeric(14,2) not null check (amount > 0),
+  issue_date    date,
+  due_date      date not null,
+  status        text not null default 'aberta'
+                check (status in ('aberta', 'paga', 'cancelada')),
+  paid_tx_id    uuid,                           -- bank_transactions.id que pagou
+  paid_at       timestamptz,
+  cancel_reason text,
+  notes         text,
+  created_by    uuid,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+-- Nasce FECHADA para o navegador: quem trabalha nela e o servidor, com a
+-- service role key, que passa por cima da RLS. Sem policy, de proposito.
+alter table public.firm_bills enable row level security;
+revoke all on public.firm_bills from anon, authenticated;
+
+-- Um debito do banco paga UMA conta. Sem isto, dois cliques fazem a firma
+-- "pagar" o dobro no papel e a projecao de caixa passa a mentir.
+create unique index if not exists firm_bills_um_pagamento
+  on public.firm_bills (paid_tx_id) where paid_tx_id is not null;
+
+create index if not exists firm_bills_abertas
+  on public.firm_bills (client_id, due_date) where status = 'aberta';
+
+comment on table public.firm_bills is
+  'Contas a pagar da firma. NAO e contabilidade (o livro e por caixa, e a despesa vem do extrato): e o caixa diario -- o que se deve, para quem e quando vence.';
+comment on column public.firm_bills.paid_tx_id is
+  'bank_transactions.id do debito que pagou. Unico: um debito nao paga duas contas.';
+
+-- == Conferencia ===========================================================
+do $$
+begin
+  if to_regclass('public.firm_bills') is null then
+    raise exception 'firm_bills nao foi criada';
+  end if;
+
+  if (select count(*) from pg_indexes
+       where schemaname = 'public' and indexname = 'firm_bills_um_pagamento') <> 1
+  then
+    raise exception 'falta o indice firm_bills_um_pagamento -- um debito poderia pagar duas contas';
+  end if;
+
+  if not (select relrowsecurity from pg_class where oid = 'public.firm_bills'::regclass) then
+    raise exception 'firm_bills sem RLS -- responderia ao navegador com a anon key';
+  end if;
+
+  if exists (
+    select 1 from information_schema.role_table_grants
+     where table_schema = 'public' and table_name = 'firm_bills'
+       and grantee in ('anon', 'authenticated'))
+  then
+    raise exception 'firm_bills ainda tem privilegio para anon/authenticated';
+  end if;
+
+  raise notice 'firm_bills: tabela, indice unico de pagamento, RLS e revoke no lugar';
+end $$;
+
+select count(*) as contas_a_pagar from public.firm_bills;
+
+
+-- ===================================================================
 -- Anotar no livro de migracoes
 -- ===================================================================
 
@@ -394,11 +570,13 @@ insert into public.schema_migrations (arquivo, sha256, aplicado_por)
 values
   ('sql/caixa-da-firma-v1.sql', 'fc953f8dd2cec5ba6d64cb174c86b6f02345b9d79501a5592227bdc930191627', 'sql-editor'),
   ('sql/caixa-conciliacao-v1.sql', '64d14946e04d1bf72b79024f1d5a3493b44b8b835d81ac7181c686534dde9958', 'sql-editor'),
-  ('sql/caixa-conciliacao-funcao-v1.sql', '63dfcb7f0a702c9819572d33f736ef512cbcdefb9124f6c7624a7ee89a7ac372', 'sql-editor')
+  ('sql/caixa-conciliacao-v2.sql', '7a78894c21191dd5085f2fcd149e891a55b85992516c3bde72348a3cd0e98198', 'sql-editor'),
+  ('sql/caixa-conciliacao-funcao-v1.sql', '63dfcb7f0a702c9819572d33f736ef512cbcdefb9124f6c7624a7ee89a7ac372', 'sql-editor'),
+  ('sql/contas-a-pagar-v1.sql', '1e6dce9089104130fa61f122cbad4d09a2e31ec2e4faff414c32a690765b0ddb', 'sql-editor')
 on conflict (arquivo) do update
   set sha256 = excluded.sha256, aplicado_em = now(), aplicado_por = excluded.aplicado_por;
 
 select arquivo, left(sha256, 12) as sha, aplicado_em
   from public.schema_migrations
- where arquivo in ('sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql', 'sql/caixa-conciliacao-funcao-v1.sql')
+ where arquivo in ('sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql', 'sql/caixa-conciliacao-v2.sql', 'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql')
  order by arquivo;
