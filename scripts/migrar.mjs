@@ -281,7 +281,7 @@ async function main() {
       // Os tres estados-problema que NAO sao PENDENTE tem conserto de uma
       // linha. Dizer so "tem algo errado" obriga a pessoa a redescobrir o
       // que ja esta sabido aqui.
-      if (!soNomes && est === ESTADOS.NOME_CURTO) consertos.push(consertoDoNomeCurto(nome, hash))
+      if (!soNomes && est === ESTADOS.NOME_CURTO) consertos.push(consertoDoNomeCurto(nome))
       if (!soNomes && est === ESTADOS.SEM_SHA)    consertos.push(consertoDoShaVazio(nome, hash))
       // Só PENDENTE entra na lista automática. "MUDOU DEPOIS DE APLICADO" é
       // arquivo editado depois de rodar (aconteceu: a conferência de

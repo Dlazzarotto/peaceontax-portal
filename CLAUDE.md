@@ -960,7 +960,15 @@ middleware.ts        controle de acesso por rota
   `REGISTRO SEM SHA` e `REGISTRADA COM NOME CURTO` —, ficam **fora do
   automático** (o arquivo muito provavelmente já está no banco; reaplicar é
   o risco, esperar não é) e o relato imprime **o `update` que arruma cada
-  linha**. É a regra da casa outra vez: linha malformada não pode virar
+  linha**. O conserto do nome curto **renomeia e só**: a primeira versão
+  gravava o sha atual junto, e isso APAGA um sinal verdadeiro —
+  `permissoes-por-pessoa-v1` está no livro com `90a85f0af77f` e no disco com
+  `0bfe8dd357b4`, porque o arquivo foi editado **seis dias depois** de
+  aplicado; sobrescrever viraria um "ok" falso. Mantendo o sha gravado, o
+  próximo `--pendentes` diz a verdade e quem decide é gente. No sha vazio não
+  há o que preservar, então preencher é uma **afirmação** ("o que está no
+  repositório é o que rodou") — confira a data do arquivo contra a de
+  aplicação antes de colar. É a regra da casa outra vez: linha malformada não pode virar
   "não existe", como consulta que falha não pode virar lista vazia.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**.

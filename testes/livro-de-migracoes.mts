@@ -94,9 +94,14 @@ eq('nulo não quebra', lerLivro(null as any).size, 0)
 }
 
 // ── Os consertos ────────────────────────────────────────────────────────
-eq('conserto do nome curto',
-  consertoDoNomeCurto('sql/ach-em-transito-v1.sql', SHA),
-  `update public.schema_migrations set arquivo = 'sql/ach-em-transito-v1.sql', sha256 = '${SHA}' where arquivo = 'ach-em-transito-v1.sql';`)
+// RENOMEIA E SO. Gravar o sha atual junto apagaria um sinal verdadeiro:
+// permissoes-por-pessoa-v1 esta no livro com um sha e no disco com outro
+// (editada seis dias depois de aplicada). Sobrescrever viraria "ok" falso.
+eq('conserto do nome curto apenas renomeia',
+  consertoDoNomeCurto('sql/ach-em-transito-v1.sql'),
+  `update public.schema_migrations set arquivo = 'sql/ach-em-transito-v1.sql' where arquivo = 'ach-em-transito-v1.sql';`)
+eq('e NAO toca no sha gravado',
+  /sha256/.test(consertoDoNomeCurto('sql/ach-em-transito-v1.sql')), false)
 eq('conserto do sha vazio',
   consertoDoShaVazio('sql/permissoes-por-pessoa-v3.sql', SHA),
   `update public.schema_migrations set sha256 = '${SHA}' where arquivo = 'sql/permissoes-por-pessoa-v3.sql';`)

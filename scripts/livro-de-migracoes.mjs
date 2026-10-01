@@ -75,14 +75,35 @@ export function estadoDaMigracao(caminho, hash, livro) {
   return ESTADOS.PENDENTE
 }
 
-/** O SQL que conserta uma linha gravada com o nome curto. */
-export function consertoDoNomeCurto(caminho, hash) {
+/**
+ * O SQL que conserta uma linha gravada com o nome curto.
+ *
+ * RENOMEIA E SO. A primeira versao tambem gravava `sha256 = <hash atual>`, e
+ * isso APAGA um sinal verdadeiro: `sql/permissoes-por-pessoa-v1.sql` esta no
+ * livro com 90a85f0af77f e no disco com 0bfe8dd357b4 -- o arquivo foi
+ * editado seis dias DEPOIS de aplicado (a conferencia foi reescrita, caso
+ * que o CLAUDE.md ja registra). Sobrescrever o sha transformaria esse
+ * "MUDOU DEPOIS DE APLICADO" legitimo num "ok" falso.
+ *
+ * Mantendo o sha gravado, o proximo `--pendentes` diz a verdade: ou `ok`,
+ * ou `MUDOU DEPOIS DE APLICADO` -- e aí quem decide e gente.
+ */
+export function consertoDoNomeCurto(caminho) {
   const curto = caminho.slice(4)
-  return `update public.schema_migrations set arquivo = '${caminho}', sha256 = '${hash}'`
+  return `update public.schema_migrations set arquivo = '${caminho}'`
     + ` where arquivo = '${curto}';`
 }
 
-/** O SQL que preenche um sha que ficou em branco. */
+/**
+ * O SQL que preenche um sha que ficou em branco.
+ *
+ * Aqui NAO ha sha gravado para preservar, entao o unico valor possivel e o
+ * do arquivo de hoje -- e isso e uma AFIRMACAO: "o que esta no repositorio
+ * agora e o que rodou". Confira a data do arquivo contra a de aplicacao
+ * antes de colar. No caso real (permissoes-por-pessoa-v3) o arquivo mudou
+ * pela ultima vez tres minutos ANTES de ser aplicado, entao a afirmacao e
+ * verdadeira; nao e assim por sorte, e por conferencia.
+ */
 export function consertoDoShaVazio(caminho, hash) {
   return `update public.schema_migrations set sha256 = '${hash}' where arquivo = '${caminho}';`
 }
