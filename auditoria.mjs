@@ -1197,7 +1197,8 @@ titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
   const saida = 'colar-no-sql-editor/caixa-completo.sql'
   const fontes = ['sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql',
                   'sql/caixa-conciliacao-v2.sql', 'sql/caixa-origens-v1.sql',
-                  'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql']
+                  'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql',
+                  'sql/caixa-saldo-da-conta-v1.sql']
   if (!existsSync(join(raiz, saida))) {
     ver(`${saida} nao existe (nada a conferir)`)
   } else {
@@ -1313,6 +1314,78 @@ titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
 baks.length ? baks.forEach(b => ver(b)) : ok('nenhum')
+
+titulo('O FLUXO DE CAIXA NAO SOMA A CONTA DE PASSAGEM')
+// O livro da firma guarda, na MESMA tabela, o extrato e a conta de passagem
+// ("Recebimentos a depositar"). A passagem existe para a receita fechar pelo
+// BRUTO (e a bruta que vai no 1099-K), mas nao e dinheiro no banco: o cheque
+// recebido e ainda nao depositado ja esta la. Somar as duas conta o mesmo
+// deposito DUAS VEZES e antecipa dinheiro que nao chegou.
+//
+// Quem grava origem de passagem sao duas pecas: lib/caixa-recebimentos.ts
+// ('recebimento') e a funcao conciliar_deposito ('deposito' e 'taxa'). Se
+// uma quarta aparecer e nao entrar em ORIGENS_DE_PASSAGEM, o fluxo passa a
+// contar errado em silencio -- nada quebra, o numero so fica maior.
+{
+  const arqFluxo = join(raiz, 'lib/fluxo-de-caixa.ts')
+  if (!existsSync(arqFluxo)) {
+    falta('O fluxo de caixa nao soma a conta de passagem', 'lib/fluxo-de-caixa.ts nao existe')
+  } else {
+    const t = readFileSync(arqFluxo, 'utf8')
+    // So o ARRAY, nunca o arquivo: o cabecalho deste modulo cita as tres
+    // origens para EXPLICAR a regra, e procurar no arquivo inteiro faria a
+    // invariante passar com a origem removida da lista.
+    const i = t.indexOf('export const ORIGENS_DE_PASSAGEM')
+    const lista = i < 0 ? null : t.slice(i, t.indexOf(']', i))
+
+    // Quem de fato escreve passagem, lido das pecas que escrevem.
+    const daPassagem = new Set()
+    const recs = join(raiz, 'lib/caixa-recebimentos.ts')
+    if (existsSync(recs))
+      for (const m of readFileSync(recs, 'utf8').matchAll(/source:\s*'([a-z_]+)'/g)) daPassagem.add(m[1])
+    const func = join(raiz, 'sql/caixa-conciliacao-funcao-v1.sql')
+    if (existsSync(func)) {
+      const sql = readFileSync(func, 'utf8')
+      const del = /source\s+in\s*\(([^)]*)\)/i.exec(sql)
+      if (del) for (const m of del[1].matchAll(/'([a-z_]+)'/g)) daPassagem.add(m[1])
+    }
+
+    // O fluxo tem de FILTRAR, nao so declarar a lista.
+    const filtra = /const lista = \(txs \|\| \[\]\)\.filter\(ehDoExtrato\)/.test(t)
+    const fora = lista === null ? [] : Array.from(daPassagem).filter(o => !new RegExp(`'${o}'`).test(lista))
+
+    if (lista === null)
+      falta('O fluxo de caixa nao soma a conta de passagem',
+        'nao achei ORIGENS_DE_PASSAGEM em lib/fluxo-de-caixa.ts -- a conferencia perdeu a ancora')
+    else if (!filtra)
+      falta('O fluxo de caixa nao soma a conta de passagem',
+        'movimentoDeBanco nao filtra por ehDoExtrato -- o deposito entra duas vezes no realizado')
+    else if (fora.length)
+      falta('O fluxo de caixa nao soma a conta de passagem',
+        `fora de ORIGENS_DE_PASSAGEM: ${fora.join(', ')} -- o fluxo vai contar essas linhas como dinheiro no banco`)
+    else
+      ok(`O fluxo de caixa nao soma a conta de passagem (${daPassagem.size} origens de passagem)`)
+  }
+}
+
+
+titulo('O CAIXA DA FIRMA E SO DO SOCIO')
+// A linha da firma guarda a folha de pagamento e o resultado da casa.
+// `verEmpresas` nao serve de trava aqui: o gerente a tem POR NIVEL. Entao
+// toda rota de /api/caixa/ confere o nivel e recusa quem nao for owner --
+// uma rota nova que esqueca isso abre tudo para o gerente sem avisar.
+{
+  const semSocio = []
+  const dirCaixa = join(raiz, 'app/api/caixa')
+  for (const p of (existsSync(dirCaixa) ? arquivos(dirCaixa, ['route.ts']) : [])) {
+    const t = readFileSync(p, 'utf8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (!/getStaffLevel/.test(t) || !/'owner'/.test(t)) semSocio.push(rel(p))
+  }
+  semSocio.length
+    ? falta('O caixa da firma e so do socio', `sem conferir o nivel: ${semSocio.join(', ')}`)
+    : ok('O caixa da firma e so do socio (todas as rotas de /api/caixa/)')
+}
+
 
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [

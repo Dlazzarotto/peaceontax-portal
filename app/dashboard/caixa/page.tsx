@@ -14,6 +14,7 @@ import Script from 'next/script'
 import BookkeepingTab from '@/components/BookkeepingTab'
 import CaixaDepositos from '@/components/CaixaDepositos'
 import CaixaContas from '@/components/CaixaContas'
+import CaixaFluxo from '@/components/CaixaFluxo'
 
 declare global { interface Window { Plaid: any } }
 
@@ -284,6 +285,10 @@ export default function CaixaDaFirma() {
               )}
             </div>
           </div>
+
+          {/* Realizado pelo extrato × projetado pelo que está comprometido.
+              Vem antes do resto: é a pergunta que se faz ao abrir a tela. */}
+          <CaixaFluxo />
 
           {/* O que entrou no banco × os recebimentos que o compõem. */}
           <CaixaDepositos aoMudar={carregar} />

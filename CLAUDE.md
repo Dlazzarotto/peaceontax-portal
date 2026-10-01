@@ -322,6 +322,40 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   removido) — e **âncora perdida é FALHA, não lista vazia**: sem o
   `unnest(array[` ela não confere nada, e esse é justamente o modo de falhar
   que já passou despercebido aqui.
+- **O fluxo de caixa lê o EXTRATO, não o livro inteiro** (`lib/fluxo-de-caixa.ts`,
+  `/api/caixa/fluxo`, `components/CaixaFluxo.tsx`). A mesma tabela guarda o
+  extrato e a conta de passagem; somar as duas conta o mesmo depósito **duas
+  vezes** e antecipa o cheque recebido e ainda não depositado. `ehDoExtrato`
+  tira `recebimento · deposito · taxa` (`ORIGENS_DE_PASSAGEM`), e a auditoria
+  casa essa lista com quem de fato grava passagem — `lib/caixa-recebimentos.ts`
+  e o `source in (…)` de `desconciliar_deposito` —, além de exigir que
+  `movimentoDeBanco` FILTRE, não só declare. Transferência entre contas da
+  própria firma sai pelo PAR, nunca pela coluna: o crédito do depósito
+  conciliado também tem `transfer_match_id`, mas apontando para a passagem, e
+  cortar por "tem `transfer_match_id`" apagaria a entrada de dinheiro. O
+  fluxo **não espera classificação** — o P&L exige `approved` porque lucro
+  depende da conta certa; o débito saiu da conta de qualquer jeito, e a firma
+  tem centenas de linhas na fila. A projeção é conservadora de propósito:
+  **fatura vencida fica fora** (aparece à parte), **conta a pagar vencida
+  fica dentro** e mensalidade não faturada não entra — superestimar entrada
+  faz a firma gastar o que não tem. Toda rota de `/api/caixa/` é **só do
+  sócio** (a auditoria confere as quatro), porque o a receber é a carteira
+  inteira, inclusive as empresas que o escopo por tipo esconde.
+- **O saldo da conta vem do BANCO; o do extrato é reserva** (`saldoEmConta`,
+  `bank_accounts.current_balance`, migração `sql/caixa-saldo-da-conta-v1.sql`).
+  O `/transactions/sync` do Plaid traz a transação, **não o saldo depois
+  dela** — então quem conectou o banco (o caminho recomendado) via "saldo
+  desconhecido" para sempre e a projeção nascia sem o número de que depende.
+  O `/accounts/get`, que a sincronização já chamava, traz `balances.current`;
+  só faltava onde guardar. Na falta dele vale o saldo corrido do CSV, e a
+  tela diz **de qual fonte** veio e de quando: o do extrato só sabe até a
+  última linha importada. Não duplica o balanço — lá a pergunta é "quanto
+  tinha em 31/12", que só o corrido responde. Cartão de crédito fica fora da
+  soma (ali o saldo é dívida). **Saldo desconhecido não é zero**, e **zero
+  informado pelo banco é um saldo** — tratar a conta zerada como desconhecida
+  esconderia justamente o aperto. As colunas podem não existir ainda: a
+  sincronização e a rota caem para a consulta sem elas (`colunaAusente`), em
+  vez de derrubar o extrato inteiro entre o deploy e a migração.
 - **Contas a pagar são CAIXA DIÁRIO, nunca lançamento** (`lib/contas-a-pagar.ts`,
   `/api/caixa/contas`, migração `sql/contas-a-pagar-v1.sql`). O livro da firma
   é regime de caixa e a despesa vem do extrato: se a conta a pagar virasse
