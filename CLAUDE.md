@@ -764,6 +764,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   crescer pede `verticalAlign: 'top'` na linha inteira**, senão o campo foge
   do lugar. A faixa tem ✕ para fechar, e o campo da conta continua sendo o
   `<select>`, que tem todas as contas e o "➕ Criar nova categoria…".
+- **Lista flutuante se posiciona por conta, não na mão** (`lib/lista-flutuante.ts`,
+  `posicionarLista`). O autocomplete do payee punha a lista SEMPRE abaixo do
+  campo (`top: r.bottom + 4`), com `position: fixed` e `maxHeight` fixo. Na
+  **última linha** da tabela ela nascia fora da janela — e `fixed` fica preso
+  à JANELA, então **rolar não traz de volta**: quem lança o cheque vê a
+  sugestão pela metade, sem alcance. `fixed` é necessário (a célula tem
+  `overflow` e recortaria filho posicionado), e o preço é que não sair da
+  janela passa a ser conta nossa. Agora: ABAIXO é o padrão — é onde o olho
+  procura —, e só vira para CIMA quando embaixo não cabe a altura pedida **e**
+  em cima cabe mais (trocar de lado por qualquer sobra faria a lista pular
+  enquanto se digita); a altura é limitada ao espaço real do lado escolhido,
+  com piso para não virar fresta ilegível; o recuo é limitado nas duas bordas,
+  senão é o mesmo defeito na horizontal. E ela se **reposiciona na rolagem**
+  (`scroll` com `capture`, para pegar container interno) — sem isso ela fica
+  parada enquanto a tabela rola por baixo. 28 casos em
+  `testes/lista-flutuante.mts`, incluindo uma varredura do campo por toda a
+  altura da janela. A auditoria recusa `\w+.bottom + N` em arquivo que use
+  `getBoundingClientRect` sem passar por `posicionarLista`.
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.

@@ -1536,6 +1536,34 @@ titulo('NENHUM ARQUIVO EM sql/ E PACOTE DE OUTRAS MIGRACOES')
     ok(`Nenhum arquivo em sql/ e pacote de outras migracoes (${cabecalhos.length} conferidos)`)
 }
 
+titulo('LISTA FLUTUANTE NAO SE POSICIONA NA MAO')
+// O autocomplete do payee punha a lista SEMPRE abaixo do campo
+// (`top: r.bottom + 4`), com position:fixed e maxHeight fixo. Na ULTIMA
+// LINHA da tabela ela nascia fora da janela -- e `fixed` nao rola, entao
+// nao havia como alcanca-la. Quem lanca o cheque via a sugestao pela
+// metade. A conta passou para lib/lista-flutuante.ts, pura e com teste.
+//
+// Quem voltar a calcular na mao repete o defeito, e ele so aparece na
+// ultima linha -- ninguem olha a ultima linha ao conferir uma mudanca.
+{
+  const suspeitos = []
+  let olhados = 0
+  for (const p of [...arquivos(join(raiz, 'components'), ['.tsx']),
+                   ...arquivos(join(raiz, 'app'), ['.tsx'])]) {
+    const t = readFileSync(p, 'utf8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (!/getBoundingClientRect/.test(t)) continue
+    olhados++
+    if (/posicionarLista/.test(t)) continue
+    // `r.bottom + N` / `rect.top - N` sao a conta na mao.
+    if (/\b\w+\.(bottom|top)\s*[-+]\s*\d/.test(t)) suspeitos.push(rel(p))
+  }
+  suspeitos.length
+    ? falta('Lista flutuante nao se posiciona na mao',
+        `${suspeitos.join(', ')} -- use posicionarLista de lib/lista-flutuante.ts; na ultima linha a lista sai da janela e fixed nao rola`)
+    : ok(`Lista flutuante nao se posiciona na mao (${olhados} arquivo(s) com getBoundingClientRect)`)
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],

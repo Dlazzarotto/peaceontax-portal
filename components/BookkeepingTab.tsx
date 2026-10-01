@@ -3,7 +3,8 @@
 // Extrai transações dos extratos PDF (contas fechadas) e lista com resumo.
 // Categorização automática (regras + IA) chega no módulo 5.2.
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { posicionarLista, type PosicaoDaLista } from '@/lib/lista-flutuante'
 import { historicoDoPayee, avisoDeVariacao, type HistoricoDoPayee } from '@/lib/payee-contas'
 import { sugerirTexto } from '@/lib/regra-texto'
 import ReconcileTab from '@/components/ReconcileTab'
@@ -25,7 +26,7 @@ function PayeeCell({ value, amount, registry, onSave }: {
   const [txt, setTxt]   = useState(value || '')
   const [open, setOpen] = useState(false)
   const [hi, setHi]     = useState(0)
-  const [pos, setPos]   = useState<{ top: number; left: number; width: number } | null>(null)
+  const [pos, setPos]   = useState<PosicaoDaLista | null>(null)
   const ref = useRef<HTMLInputElement>(null)
 
   useEffect(() => { setTxt(value || '') }, [value])
@@ -39,10 +40,28 @@ function PayeeCell({ value, amount, registry, onSave }: {
   const defaultType: 'vendor' | 'customer' = Number(amount) > 0 ? 'customer' : 'vendor'
   const showNew = q.length > 1 && !exact
 
-  const place = () => {
+  // A conta mora em lib/lista-flutuante.ts, pura e com teste: a lista era
+  // SEMPRE posta abaixo do campo e, na última linha da tabela, nascia fora da
+  // janela — e `fixed` não rola, então não havia como alcançá-la.
+  const place = useCallback(() => {
     const r = ref.current?.getBoundingClientRect()
-    if (r) setPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 230) })
-  }
+    if (r) setPos(posicionarLista(r, { largura: window.innerWidth, altura: window.innerHeight }))
+  }, [])
+
+  // `fixed` fica preso à JANELA, não ao campo: sem isto a lista continua
+  // parada enquanto a tabela rola por baixo e se descola da linha. O
+  // `capture` é o que pega a rolagem de um container interno, não só a da
+  // página.
+  useEffect(() => {
+    if (!open) return
+    const refazer = () => place()
+    window.addEventListener('scroll', refazer, true)
+    window.addEventListener('resize', refazer)
+    return () => {
+      window.removeEventListener('scroll', refazer, true)
+      window.removeEventListener('resize', refazer)
+    }
+  }, [open, place])
 
   const choose = (name: string, type?: string) => {
     setTxt(name); setOpen(false)
@@ -79,7 +98,8 @@ function PayeeCell({ value, amount, registry, onSave }: {
       {open && pos && total > 0 && (
         <div style={{ position:'fixed', top:pos.top, left:pos.left, width:pos.width, zIndex:200,
           background:'#fff', border:'1.5px solid #e2e8f4', borderRadius:10,
-          boxShadow:'0 14px 40px rgba(15,35,64,0.18)', maxHeight:260, overflowY:'auto' as const }}>
+          boxShadow:'0 14px 40px rgba(15,35,64,0.18)',
+          maxHeight:pos.maxHeight, overflowY:'auto' as const }}>
           {matches.map((p2, i) => (
             <div key={p2.name}
               onMouseDown={e => { e.preventDefault(); choose(p2.name, p2.type) }}
