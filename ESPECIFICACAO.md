@@ -387,6 +387,30 @@ O sistema pergunta ao Stripe **quais cobranças** compõem cada repasse e propõ
 a seleção — escolher à mão entre dezenas de recebimentos é adivinhação, e
 adivinhar errado lança receita no cliente errado.
 
+**Contas a pagar — e por que elas não entram na contabilidade.** A firma
+registra o que deve em `/dashboard/caixa`: fornecedor, descrição, valor,
+emissão e vencimento. Isso é **caixa diário**, não livro: como a
+contabilidade é por regime de caixa e a despesa nasce no extrato, uma conta
+a pagar que virasse lançamento faria a **mesma despesa entrar duas vezes** —
+uma na emissão e outra no pagamento.
+
+O que a conta faz é: lembrar de pagar, mostrar o atraso por faixa (até 30,
+60, 90 dias e mais) e alimentar a projeção de caixa. **Pagar é ligar a conta
+ao débito que já apareceu no banco**: o sistema oferece os débitos do extrato
+com o valor exato, por volta do vencimento, e destaca os que têm o nome do
+fornecedor. A despesa continua sendo a do extrato; a conta apenas fecha.
+
+Três regras:
+
+- **Um débito paga uma conta.** Garantido no banco, não só na tela — senão
+  dois cliques fazem a firma "pagar" o dobro no papel e a projeção mente.
+- **O valor tem de bater ao centavo.** Fechar com o débito errado é pior que
+  não fechar: a conta some do radar e o erro vai junto para a projeção.
+- **Cancelar preserva, com motivo.** Conta paga com atraso não volta a
+  aparecer como vencida, e cancelada continua no histórico.
+
+O fornecedor é o cadastro que já existe (`payees`), não uma segunda lista.
+
 **Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
 
 **Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.

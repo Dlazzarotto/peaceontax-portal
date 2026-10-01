@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Script from 'next/script'
 import BookkeepingTab from '@/components/BookkeepingTab'
 import CaixaDepositos from '@/components/CaixaDepositos'
+import CaixaContas from '@/components/CaixaContas'
 
 declare global { interface Window { Plaid: any } }
 
@@ -286,6 +287,9 @@ export default function CaixaDaFirma() {
 
           {/* O que entrou no banco × os recebimentos que o compõem. */}
           <CaixaDepositos aoMudar={carregar} />
+
+          {/* O que a firma deve — caixa diário, não contabilidade. */}
+          <CaixaContas />
 
           {/* O MESMO livro dos clientes, apontado para a firma. */}
           <BookkeepingTab clientId={firma.id} clientName={firma.business_name || firma.name} />

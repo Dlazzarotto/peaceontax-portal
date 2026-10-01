@@ -279,7 +279,30 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   caminho do dinheiro** — `invoice_payments` é gravado em três lugares e
   apagado no estorno; pendurar a criação do lançamento em cada um seriam
   quatro pontos para manter em pé. O índice único em `payment_id` é o que
-  garante que rodar duas vezes não dobra a receita do ano.
+  garante que rodar duas vezes não dobra a receita do ano — e ele tem de ser
+  **SIMPLES, não parcial**: a v1 criou `where payment_id is not null`, e
+  `on conflict (payment_id)` **não infere índice parcial** (precisaria repetir
+  o predicado, que o PostgREST não tem como mandar). A tela falhou em
+  produção com `there is no unique or exclusion constraint matching the ON
+  CONFLICT specification` e nenhum recebimento entrava. `sql/caixa-conciliacao-v2.sql`
+  troca. Em UNIQUE o Postgres trata cada NULL como distinto, então as dezenas
+  de milhares de linhas do extrato (todas com `payment_id` nulo) continuam
+  entrando — conferido no PG 16 nos dois sentidos.
+- **Contas a pagar são CAIXA DIÁRIO, nunca lançamento** (`lib/contas-a-pagar.ts`,
+  `/api/caixa/contas`, migração `sql/contas-a-pagar-v1.sql`). O livro da firma
+  é regime de caixa e a despesa vem do extrato: se a conta a pagar virasse
+  lançamento, a MESMA despesa entraria duas vezes — emissão e pagamento — e o
+  P&L sairia dobrado onde houvesse boleto. **Pagar é LIGAR a conta ao débito
+  que já está no banco** (`firm_bills.paid_tx_id`), e o índice único garante
+  que um débito feche UMA conta só; a rota traduz o 23505 em vez de devolver o
+  erro cru. O candidato tem de bater ao **centavo** — fechar com o débito
+  errado é pior que não fechar, porque a conta some do radar; a data é uma
+  janela em volta do vencimento, porque boleto se paga adiantado e atrasado.
+  `chaveDoFornecedor` só ORDENA sugestão e **não é** o motor de classificação
+  (que vive em três arquivos e precisa continuar idêntico) — misturar faria a
+  quarta cópia. Cancelar preserva com motivo; paga com atraso não volta a
+  aparecer como vencida. Fornecedor é `payees`, não uma segunda lista. 38
+  casos em `testes/contas-a-pagar.mts`.
 - **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
   pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
   ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas
