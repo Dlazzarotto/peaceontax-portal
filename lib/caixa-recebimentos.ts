@@ -50,6 +50,11 @@ export async function contaDePassagem(db: any, firmaId: string): Promise<{ id: s
   return { id: data.id, erro: null }
 }
 
+/** 23505 é a violação de unicidade — aqui significa "já está lançado". */
+function ehDuplicata(e: any): boolean {
+  return e?.code === '23505' || /duplicate key value/i.test(String(e?.message || ''))
+}
+
 /** O texto que o sócio lê no registro. Nome do cliente + número da fatura. */
 export function descricaoDoRecebimento(
   cliente: string | null | undefined,
@@ -132,14 +137,39 @@ export async function sincronizarRecebimentos(
         status: 'approved',
       }
     })
+    // INSERT puro, sem `on conflict`.
+    //
+    // A versão anterior usava `upsert(..., { onConflict: 'payment_id' })` e
+    // morria em produção com
+    //   there is no unique or exclusion constraint matching the ON CONFLICT
+    //   specification
+    // porque o índice tinha sido criado PARCIAL (`where payment_id is not
+    // null`) e o Postgres não infere índice parcial sem o predicado — que o
+    // PostgREST não tem como mandar. Nenhum recebimento entrava.
+    //
+    // Depender da FORMA do índice para a rotina funcionar é frágil: já falhou
+    // uma vez e o conserto exigia migração. Aqui a lista de faltantes já foi
+    // calculada acima, então o conflito é a exceção (duas abas sincronizando
+    // ao mesmo tempo) — e a exceção se resolve linha a linha, pulando o que
+    // já existe. Funciona com índice parcial, simples, ou enquanto a
+    // migração não roda; e o índice, qualquer que seja, continua sendo quem
+    // garante que a receita não dobre.
     for (let i = 0; i < linhas.length; i += 500) {
       const bloco = linhas.slice(i, i + 500)
-      // ignoreDuplicates: duas abas abertas sincronizando ao mesmo tempo
-      // batem no índice único em vez de dobrar a receita.
-      const { error } = await db.from('bank_transactions')
-        .upsert(bloco, { onConflict: 'payment_id', ignoreDuplicates: true })
-      if (error) return { ...vazio, criados, erro: `Nao foi possivel lancar os recebimentos: ${error.message}` }
-      criados += bloco.length
+      const { error } = await db.from('bank_transactions').insert(bloco)
+      if (!error) { criados += bloco.length; continue }
+      if (!ehDuplicata(error)) {
+        return { ...vazio, criados, erro: `Nao foi possivel lancar os recebimentos: ${error.message}` }
+      }
+      // Alguém lançou parte deste bloco no meio do caminho: uma a uma, e o
+      // que já existe se ignora.
+      for (const linha of bloco) {
+        const r = await db.from('bank_transactions').insert(linha)
+        if (!r.error) criados++
+        else if (!ehDuplicata(r.error)) {
+          return { ...vazio, criados, erro: `Nao foi possivel lancar os recebimentos: ${r.error.message}` }
+        }
+      }
     }
   }
 

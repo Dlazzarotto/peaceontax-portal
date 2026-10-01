@@ -288,6 +288,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   troca. Em UNIQUE o Postgres trata cada NULL como distinto, então as dezenas
   de milhares de linhas do extrato (todas com `payment_id` nulo) continuam
   entrando — conferido no PG 16 nos dois sentidos.
+  E a rotina **deixou de depender da forma do índice**: usa `insert` puro e
+  trata o 23505 linha a linha. Depender do formato de um índice para a
+  sincronização funcionar é frágil — já derrubou tudo uma vez, e o conserto
+  exigia migração. O índice segue sendo quem garante que a receita não
+  dobre; a rotina só não pergunta como ele foi criado.
 - **Contas a pagar são CAIXA DIÁRIO, nunca lançamento** (`lib/contas-a-pagar.ts`,
   `/api/caixa/contas`, migração `sql/contas-a-pagar-v1.sql`). O livro da firma
   é regime de caixa e a despesa vem do extrato: se a conta a pagar virasse
