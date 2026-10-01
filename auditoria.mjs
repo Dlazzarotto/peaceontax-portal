@@ -1495,6 +1495,47 @@ titulo('A LISTA DE PENDENTES SAI NUA (--so-nomes)')
 }
 
 
+titulo('NENHUM ARQUIVO EM sql/ E PACOTE DE OUTRAS MIGRACOES')
+// `sql/pendentes-parte-2.sql` embalava SEIS migracoes num arquivo so, para
+// colar de uma vez no SQL Editor. Dentro de sql/ isso faz duas coisas
+// ruins: vira mais uma PENDENTE no livro, e o `aplicar` automatico roda o
+// pacote E as seis individuais. E uma COPIA, e copia que envelhece em
+// silencio e pior que copia nenhuma -- a mesma razao pela qual
+// colar-no-sql-editor/ fica fora de sql/. Movido para la.
+//
+// O sinal e CONTEUDO EMBUTIDO, nao mencao: conta quantas outras migracoes
+// tem a PRIMEIRA LINHA delas (`-- sql/x.sql`) dentro deste arquivo. Contar
+// mencoes (`/sql\/[\w-]+\.sql/`) deu falso positivo na primeira versao --
+// rls-tabelas-expostas-v1 cita tres irmas em comentario e e legitima. Pelo
+// cabecalho embutido: o pacote marca 7, a maior migracao legitima marca 1.
+{
+  const dir = join(raiz, 'sql')
+  const nomes = existsSync(dir)
+    ? readdirSync(dir).filter(f => f.endsWith('.sql')).sort()
+    : []
+  const cabecalho = (f) => readFileSync(join(dir, f), 'utf8').split('\n')[0].trim()
+  const cabecalhos = nomes
+    .map(f => [f, cabecalho(f)])
+    .filter(([, c]) => c.startsWith('-- sql/'))
+
+  const pacotes = []
+  for (const f of nomes) {
+    const t = readFileSync(join(dir, f), 'utf8')
+    const embute = cabecalhos.filter(([o, c]) => o !== f && t.includes(c)).length
+    if (embute >= 3) pacotes.push(`sql/${f} (embute ${embute})`)
+  }
+  // Sem cabecalho padronizado nao da para conferir nada -- isso precisa
+  // gritar, nao virar "tudo certo".
+  if (cabecalhos.length < 3)
+    falta('Nenhum arquivo em sql/ e pacote de outras migracoes',
+      'quase nenhum .sql comeca com `-- sql/<nome>.sql` -- a conferencia perdeu a ancora')
+  else if (pacotes.length)
+    falta('Nenhum arquivo em sql/ e pacote de outras migracoes',
+      `${pacotes.join(', ')} -- vira PENDENTE no livro e o aplicar roda o pacote E as individuais; mova para colar-no-sql-editor/`)
+  else
+    ok(`Nenhum arquivo em sql/ e pacote de outras migracoes (${cabecalhos.length} conferidos)`)
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],

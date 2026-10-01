@@ -994,6 +994,18 @@ middleware.ts        controle de acesso por rota
   `sql/`**, senão viraria mais uma migração pendente. É uma CÓPIA, e cópia
   que envelhece em silêncio é pior que cópia nenhuma: a auditoria regera em
   memória e compara.
+  **Pacote de migrações não mora em `sql/`.** `pendentes-parte-2.sql`
+  embalava SEIS migrações (`status-da-fatura-v2`, `permissoes-por-pessoa-v4`,
+  `pricing-items-ativo-v1`, `codigo-de-autorizacao-funcao-v1`,
+  `recebimento-seguro-v1`, `rls-tabelas-expostas-v1`) para colar de uma vez.
+  Dentro de `sql/` isso vira mais uma PENDENTE no livro **e** faz o `aplicar`
+  rodar o pacote E as seis individuais. Mesma razão pela qual
+  `colar-no-sql-editor/` fica fora de `sql/`; foi para lá. A auditoria conta
+  **cabeçalho embutido**, não menção: quantas outras migrações têm a primeira
+  linha delas (`-- sql/x.sql`) dentro deste arquivo. A primeira versão contava
+  menções e deu falso positivo — `rls-tabelas-expostas-v1` cita três irmãs em
+  comentário e é legítima. Pelo cabeçalho: o pacote marca 7, a maior legítima
+  marca 1. Sem cabeçalho padronizado, **falha** em vez de passar.
   **O SQL Editor do Supabase reescreve o script — e a causa não é a que
   parecia.** Ele tem um detector de "tabela criada sem RLS" e, quando acha
   uma, reescreve o script para acrescentar `enable row level security`. Esse
