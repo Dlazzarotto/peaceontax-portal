@@ -1196,8 +1196,8 @@ titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
 {
   const saida = 'colar-no-sql-editor/caixa-completo.sql'
   const fontes = ['sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql',
-                  'sql/caixa-conciliacao-v2.sql', 'sql/caixa-conciliacao-funcao-v1.sql',
-                  'sql/contas-a-pagar-v1.sql']
+                  'sql/caixa-conciliacao-v2.sql', 'sql/caixa-origens-v1.sql',
+                  'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql']
   if (!existsSync(join(raiz, saida))) {
     ver(`${saida} nao existe (nada a conferir)`)
   } else {
@@ -1265,6 +1265,40 @@ checar('Cancelar preserva e pede motivo',
 checar('A conta a pagar e so do socio',
   'app/api/caixa/contas/route.ts', /getStaffLevel\([\s\S]{0,40}?\)\s*!==\s*'owner'/,
   'e o dinheiro da firma')
+
+
+titulo('TODA ORIGEM QUE O CODIGO GRAVA CABE NO CHECK')
+// `bank_transactions.source` tem CHECK com lista fechada, e o CHECK nasceu
+// no PAINEL -- nao estava em arquivo nenhum. O caixa da firma trouxe
+// `recebimento`, `deposito` e `taxa`, e a sincronizacao morreu em producao
+// com "violates check constraint bank_transactions_source_check". Agora a
+// lista mora em sql/caixa-origens-v1.sql e isto confere que o codigo e ela
+// nao divergem.
+{
+  // So o ARRAY do CHECK, nao o arquivo: o bloco de conferencia e os
+  // comentarios tambem citam 'recebimento', e a invariante passava com o
+  // valor REMOVIDO da lista. Quarta vez nesta sessao que "aparece no
+  // arquivo" engana.
+  const arqOrigens = join(raiz, 'sql/caixa-origens-v1.sql')
+  const texto = existsSync(arqOrigens) ? readFileSync(arqOrigens, 'utf8') : ''
+  const iArray = texto.indexOf('|| array[')
+  const lista = iArray < 0 ? '' : texto.slice(iArray, texto.indexOf(']', iArray))
+  const usados = new Set()
+  for (const arq of [...arquivos(join(raiz, 'lib'), ['.ts']),
+                     ...arquivos(join(raiz, 'app'), ['.ts'])]) {
+    const t = readFileSync(arq, 'utf8')
+    if (!/from\(['"]bank_transactions['"]\)/.test(t)) continue
+    for (const m of t.matchAll(/source:\s*'([a-z_]+)'/g)) usados.add(m[1])
+  }
+  // As que a FUNCAO do banco grava tambem contam -- elas nao aparecem em .ts
+  for (const o of ['deposito', 'taxa']) usados.add(o)
+
+  const fora = Array.from(usados).filter(o => !new RegExp(`'${o}'`).test(lista))
+  fora.length
+    ? falta('Toda origem que o codigo grava cabe no CHECK de source',
+        `fora de sql/caixa-origens-v1.sql: ${fora.join(', ')} -- o insert vai falhar com "violates check constraint"`)
+    : ok(`Toda origem que o codigo grava cabe no CHECK de source (${usados.size})`)
+}
 
 
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
