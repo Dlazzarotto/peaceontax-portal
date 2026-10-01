@@ -931,6 +931,24 @@ middleware.ts        controle de acesso por rota
   ou `(l: any)`, então o padrão nunca casa e a invariante passa sempre. Use
   `[\s\S]{0,N}?`. Invariante nova só vale depois de falhar com o defeito
   reintroduzido.
+  **A ordem de aplicação é DECLARADA, não alfabética**
+  (`scripts/ordem-das-migracoes.mjs`, `DEPENDE_DE`). `readdirSync().sort()`
+  parecia inofensivo e está **invertido em dois casos reais**:
+  `codigo-de-autorizacao-funcao-v1` vinha antes de `codigo-de-autorizacao-v1`
+  (`'f' < 'v'` — a FUNÇÃO antes da TABELA que ela consome) e
+  `recebimento-seguro-v1` antes de `status-da-fatura-v2` (`'r' < 's'`, e o
+  cabeçalho do próprio arquivo diz que roda depois). Enquanto as duas
+  estavam aplicadas ninguém viu; voltaram a aparecer juntas como PENDENTE e
+  `aplicar` rodaria na ordem errada. A ordenação é **estável** (quem não
+  depende de ninguém não embaralha) e **recusa** quando a dependência não
+  está aplicada nem na lista — ela pode estar em "MUDOU DEPOIS DE APLICADO",
+  que fica fora do automático de propósito, e aplicar a dependente torcendo
+  é o erro que isto existe para impedir. Ciclo na declaração **acusa** em vez
+  de travar. Dependência é declarada, nunca adivinhada lendo o SQL: errar
+  para o lado de "achei que não dependia" é o defeito original. 24 casos em
+  `testes/ordem-das-migracoes.mts`; a auditoria recusa declaração que aponte
+  para arquivo inexistente (some em silêncio num rename e a ordem volta à
+  alfabética) e recusa o mapa vazio.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
   ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)

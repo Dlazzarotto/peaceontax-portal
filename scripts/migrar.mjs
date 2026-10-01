@@ -44,6 +44,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { credencialDoPostgres, pistaDoErroDoPsql, conferirProjeto } from './credencial-postgres.mjs'
+import { ordenarPorDependencia } from './ordem-das-migracoes.mjs'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -283,7 +284,23 @@ async function main() {
       if (est === 'PENDENTE') paraAplicar.push(nome)
       if (!soNomes) console.log(`  ${est.padEnd(26)} ${nome}`)
     }
-    if (soNomes) { for (const nome of paraAplicar) console.log(nome); return }
+    // ORDEM DE DEPENDENCIA, nao alfabetica. `readdirSync().sort()` poe
+    // `codigo-de-autorizacao-funcao-v1` ANTES de `codigo-de-autorizacao-v1`
+    // ('f' < 'v') e `recebimento-seguro-v1` antes de `status-da-fatura-v2`
+    // ('r' < 's') -- as duas invertidas, as duas em arquivo que o proprio
+    // cabecalho diz a ordem. Enquanto estavam aplicadas ninguem viu.
+    const { ordem, faltando, ciclos } = ordenarPorDependencia(paraAplicar, livro)
+    if (faltando.length) {
+      // Recusa em vez de aplicar e torcer: a dependencia pode estar em
+      // "MUDOU DEPOIS DE APLICADO", que fica fora do automatico de proposito.
+      for (const f of faltando)
+        console.error(`::error::${f.arquivo} depende de ${f.dep}, que nao esta aplicada nem na lista. Decida ela primeiro.`)
+      process.exit(3)
+    }
+    for (const c of ciclos) console.error(`::error::dependencia circular em ${c} (DEPENDE_DE esta errado)`)
+    if (ciclos.length) process.exit(3)
+
+    if (soNomes) { for (const nome of ordem) console.log(nome); return }
     console.log(n === 0 ? 'Nada pendente.' : `${n} arquivo(s) a decidir.`)
     if (n > paraAplicar.length) {
       console.log(`  (${n - paraAplicar.length} mudou depois de aplicado — não entra no automático)`)
