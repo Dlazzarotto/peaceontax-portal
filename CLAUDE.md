@@ -823,6 +823,16 @@ middleware.ts        controle de acesso por rota
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
   aparece no relato e fica FORA do automático: pode ser inofensivo, pode não
   ser, e quem decide é gente.
+  **Sem psql e sem token, sobra o SQL Editor — e aí vai UM arquivo só.**
+  `scripts/juntar-para-colar.mjs` gera
+  `colar-no-sql-editor/caixa-completo.sql`: as migrações na ORDEM, a RLS do
+  livro ligada pelo próprio arquivo (senão o detector do SQL Editor
+  reescreve) e, no fim, o `insert` em `schema_migrations` com o **mesmo
+  sha256** que `migrar.mjs` calcula — sem isso a migração aplicada à mão fica
+  PENDENTE para sempre e alguém roda de novo. O arquivo fica **fora de
+  `sql/`**, senão viraria mais uma migração pendente. É uma CÓPIA, e cópia
+  que envelhece em silêncio é pior que cópia nenhuma: a auditoria regera em
+  memória e compara.
   **O SQL Editor do Supabase reescreve o script — e a causa não é a que
   parecia.** Ele tem um detector de "tabela criada sem RLS" e, quando acha
   uma, reescreve o script para acrescentar `enable row level security`. Esse

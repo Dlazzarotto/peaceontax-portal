@@ -1,0 +1,404 @@
+-- COLE ESTE ARQUIVO INTEIRO NO SQL EDITOR DO SUPABASE E APERTE RUN.
+--
+-- GERADO por scripts/juntar-para-colar.mjs -- nao edite a mao.
+-- Junta, NA ORDEM, as migracoes abaixo e anota as tres no livro
+-- (public.schema_migrations) com o MESMO sha256 que scripts/migrar.mjs
+-- calcula: depois disso `--pendentes` diz APLICADO e ninguem roda de novo.
+--
+-- Cada parte e idempotente: rodar duas vezes nao faz mal.
+--
+-- Origem: sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql, sql/caixa-conciliacao-funcao-v1.sql
+
+create table if not exists public.schema_migrations (
+  arquivo     text primary key,
+  sha256      text not null,
+  aplicado_em timestamptz not null default now(),
+  aplicado_por text
+);
+-- A RLS vai LIGADA pelo proprio arquivo, de proposito: o SQL Editor tem um
+-- detector de "tabela criada sem RLS" que, quando acha uma, REESCREVE o
+-- script e corta blocos no meio (o erro que sai e `unterminated
+-- dollar-quoted string`, numa linha sem defeito). Sem o que acrescentar,
+-- ele nao mexe. Quem trabalha nesta tabela e o servidor, com a service role.
+alter table public.schema_migrations enable row level security;
+revoke all on public.schema_migrations from anon, authenticated;
+
+
+-- ===================================================================
+-- sql/caixa-da-firma-v1.sql
+-- ===================================================================
+
+-- sql/caixa-da-firma-v1.sql
+-- O CAIXA DA FIRMA: a Peace on Tax como cliente de si mesma.
+--
+-- POR QUE ASSIM
+-- O bookkeeping inteiro (Plaid, importacao, motor de regras, plano de contas,
+-- conciliacao, P&L, balanco) e amarrado a `clients.id`. Para a firma ter o
+-- proprio livro havia dois caminhos:
+--   a) tabelas separadas para o caixa da firma -- duplicaria o motor de
+--      classificacao, que o projeto JA carrega em tres lugares e chama de
+--      divida aceita. Seria a quarta copia.
+--   b) a firma ser uma linha em `clients`, marcada.
+-- Escolhido (b). O preco de (b) e que a firma passa a aparecer em toda tela
+-- que lista cliente -- seletor de fatura, CRM, contagens, central de
+-- bookkeeping. Por isso a marca nao e um rotulo solto: e uma FRONTEIRA.
+--
+-- O QUE A MARCA DECIDE (no codigo)
+--   . canAccessClient  -> a linha da firma e SO DO SOCIO. Nao basta ser da
+--     equipe, nem ter `verEmpresas`: o caixa da firma tem folha, honorario e
+--     o resultado do ano. Sem isto, todo gerente (que tem `verEmpresas` por
+--     nivel) abriria o livro da propria firma.
+--   . clientesOcultos  -> a firma sai das listas: seletor de fatura, de
+--     contrato, central de bookkeeping e alertas do painel. Ninguem emite
+--     fatura para a propria firma por engano.
+--   . /api/clients     -> sai da lista e das CONTAGENS. Contar a firma junto
+--     com a carteira erra o numero que o socio le no cartao.
+-- O livro dela abre em /dashboard/caixa.
+--
+-- UMA SO. O indice unico parcial e o que garante: duas linhas marcadas
+-- dariam dois caixas, e o codigo pega "a" firma.
+--
+-- A coluna NAO pode ser exigida pelo codigo antes de existir: `idDaFirma`
+-- (lib/caixa-firma.ts) trata a ausencia como "ainda nao ha caixa" em vez de
+-- derrubar o funil de acesso. Entao rodar esta migracao depois do deploy nao
+-- quebra nada -- so o /dashboard/caixa fica pedindo a migracao.
+--
+-- Idempotente. Nao cria tabela e nao define funcao, entao o detector de RLS
+-- do SQL Editor nao tem o que reescrever aqui.
+
+alter table public.clients
+  add column if not exists is_firm boolean not null default false;
+
+comment on column public.clients.is_firm is
+  'A propria Peace on Tax. Uma linha so (indice clients_uma_firma). O livro dela e /dashboard/caixa; canAccessClient so libera para o socio.';
+
+-- Uma firma, e uma so. Indice parcial: nao atrapalha os ~mil cadastros.
+create unique index if not exists clients_uma_firma
+  on public.clients (is_firm) where is_firm;
+
+-- == Conferencia ===========================================================
+do $$
+begin
+  if (select count(*) from information_schema.columns
+       where table_schema = 'public' and table_name = 'clients'
+         and column_name = 'is_firm') <> 1
+  then
+    raise exception 'clients.is_firm nao existe';
+  end if;
+
+  if (select count(*) from pg_indexes
+       where schemaname = 'public' and indexname = 'clients_uma_firma') <> 1
+  then
+    raise exception 'falta o indice clients_uma_firma -- daria para marcar duas firmas';
+  end if;
+
+  if (select count(*) from public.clients where is_firm) > 1
+  then
+    raise exception 'ha mais de um cadastro marcado como firma';
+  end if;
+
+  raise notice 'clients.is_firm: coluna e indice unico parcial no lugar';
+end $$;
+
+-- Quem e a firma hoje (zero linhas ate o socio criar o caixa em /dashboard/caixa)
+select id, name, business_name, type, active
+  from public.clients
+ where is_firm;
+
+
+-- ===================================================================
+-- sql/caixa-conciliacao-v1.sql
+-- ===================================================================
+
+-- sql/caixa-conciliacao-v1.sql
+-- CONCILIACAO DE DEPOSITO: as colunas e as contas contabeis.
+--
+-- O DESENHO (decidido com o socio)
+-- A contabilidade fiscal da firma e por REGIME DE CAIXA e a DESPESA vem
+-- direto do extrato. A RECEITA nao vem: ela nasce no RECEBIMENTO da fatura
+-- (cheque, Zelle, especie, cartao/ACH pelo Stripe) e fica numa conta de
+-- passagem -- "Recebimentos a depositar", o Undeposited Funds do QuickBooks.
+-- O deposito no banco apenas ESVAZIA essa conta.
+--
+-- POR QUE NAO LER A RECEITA DO EXTRATO
+-- Na MESMA conta caem duas coisas diferentes: o deposito de cheque e Zelle
+-- (um a um) e o REPASSE do Stripe, que junta varios pagamentos e chega
+-- LIQUIDO da taxa. Lendo so o extrato, a receita bruta nunca fecha -- e e a
+-- bruta que o Stripe informa ao IRS no 1099-K. Aqui o repasse de $970 vira
+-- $1.000 de receita (que ja entrou no recebimento) e $30 de taxa, despesa
+-- dedutivel.
+--
+-- A conta de passagem FECHA EM ZERO, e e isso que prova a conciliacao:
+--   + recebimentos (bruto)  - taxa  - transferencia para o banco  =  0
+--
+-- AS DUAS COLUNAS
+--   payment_id    -- o recebimento (invoice_payments) que originou a linha da
+--                    conta de passagem. UNICO: a sincronizacao roda de novo a
+--                    cada abertura da tela e nao pode duplicar receita.
+--   deposit_tx_id -- qual deposito bancario levou esta linha embora. Nulo =
+--                    ainda em transito (e o saldo da conta de passagem).
+--
+-- Idempotente. Nao cria tabela e nao define funcao (a funcao esta em
+-- sql/caixa-conciliacao-funcao-v1.sql), entao o detector de RLS do SQL
+-- Editor nao tem o que reescrever aqui.
+
+alter table public.bank_transactions
+  add column if not exists payment_id uuid;
+
+alter table public.bank_transactions
+  add column if not exists deposit_tx_id uuid;
+
+comment on column public.bank_transactions.payment_id is
+  'invoice_payments.id que originou esta linha da conta de passagem. Unico: a sincronizacao e idempotente.';
+comment on column public.bank_transactions.deposit_tx_id is
+  'bank_transactions.id do deposito bancario que levou esta linha. Nulo = ainda nao depositado.';
+
+-- Um recebimento, uma linha. Sem isto, sincronizar duas vezes dobraria a
+-- receita do ano -- e ninguem notaria ate o P&L.
+create unique index if not exists bank_tx_um_por_recebimento
+  on public.bank_transactions (payment_id) where payment_id is not null;
+
+create index if not exists bank_tx_por_deposito
+  on public.bank_transactions (deposit_tx_id) where deposit_tx_id is not null;
+
+-- As tres contas contabeis do fluxo. O plano de contas e GLOBAL (nao tem
+-- client_id), entao so entra o que serve a qualquer cliente -- e serve:
+-- todo mundo que recebe por cartao paga taxa.
+insert into public.bookkeeping_categories (name, kind)
+select v.name, v.kind
+  from (values
+    ('Receita de serviços',      'income'),
+    ('Taxas de processamento',   'expense'),
+    ('Depósito de recebimentos', 'non_pnl')
+  ) as v(name, kind)
+ where not exists (
+   select 1 from public.bookkeeping_categories c where c.name = v.name
+ );
+
+-- == Conferencia ===========================================================
+do $$
+begin
+  if (select count(*) from information_schema.columns
+       where table_schema = 'public' and table_name = 'bank_transactions'
+         and column_name in ('payment_id', 'deposit_tx_id')) <> 2
+  then
+    raise exception 'faltam colunas em bank_transactions';
+  end if;
+
+  if (select count(*) from pg_indexes
+       where schemaname = 'public' and indexname = 'bank_tx_um_por_recebimento') <> 1
+  then
+    raise exception 'falta o indice unico bank_tx_um_por_recebimento -- sincronizar duas vezes dobraria a receita';
+  end if;
+
+  if (select count(*) from public.bookkeeping_categories
+       where name in ('Receita de serviços','Taxas de processamento','Depósito de recebimentos')) <> 3
+  then
+    raise exception 'faltam contas contabeis do fluxo de deposito';
+  end if;
+
+  raise notice 'conciliacao de deposito: colunas, indices e contas no lugar';
+end $$;
+
+-- O que o P&L vai fazer com cada uma das tres
+select name, kind, active
+  from public.bookkeeping_categories
+ where name in ('Receita de serviços','Taxas de processamento','Depósito de recebimentos')
+ order by kind;
+
+
+-- ===================================================================
+-- sql/caixa-conciliacao-funcao-v1.sql
+-- ===================================================================
+
+-- sql/caixa-conciliacao-funcao-v1.sql
+-- Conciliar um deposito com os recebimentos que o compoem -- num passo so.
+--
+-- POR QUE NO BANCO, E NAO NA ROTA
+-- Sao cinco escritas que valem juntas ou nenhuma: a transferencia que esvazia
+-- a conta de passagem, a taxa do Stripe, a marca em cada recebimento e a
+-- classificacao do deposito. Metade gravada e livro sem conserto -- receita
+-- lancada duas vezes ou taxa que nao existe. Conferir-e-gravar em dois passos
+-- ja custou caro aqui (ver sql/recebimento-seguro-v1.sql).
+--
+-- O VALOR E RECALCULADO AQUI. A tela manda IDS; quanto isso soma e quanto
+-- sobra de taxa quem decide e o banco. Numero vindo do navegador nao lanca
+-- despesa.
+--
+-- A conta de passagem fecha em ZERO:
+--   + recebimentos (bruto)  - taxa  - transferencia para o banco  =  0
+--
+-- Roda DEPOIS de sql/caixa-conciliacao-v1.sql. Idempotente (create or replace).
+-- Nao cria tabela e nao atribui variavel por `select ... into` -- o detector
+-- de RLS do SQL Editor le isso como criacao de tabela e reescreve o arquivo.
+
+create or replace function public.conciliar_deposito(
+  p_deposito     uuid,
+  p_recebimentos uuid[],
+  p_conta_taxa   text default 'Taxas de processamento'
+) returns table (ok boolean, motivo text, bruto numeric, taxa numeric, transferencia uuid)
+language plpgsql
+as $function$
+declare
+  v_cliente uuid;
+  v_conta   uuid;
+  v_valor   numeric;
+  v_data    date;
+  v_bruto   numeric;
+  v_dif     numeric;
+  v_qtd     int;
+  v_pedidos int;
+  v_transf  uuid;
+begin
+  v_pedidos := coalesce(array_length(p_recebimentos, 1), 0);
+  if v_pedidos = 0 then
+    return query select false, 'sem_recebimentos'::text, 0::numeric, 0::numeric, null::uuid;
+    return;
+  end if;
+
+  -- Trava as duas pontas ANTES de contar: dois depositos nao podem levar o
+  -- mesmo recebimento, e o mesmo deposito nao pode ser conciliado duas vezes.
+  perform 1 from public.bank_transactions where id = p_deposito for update;
+  perform 1 from public.bank_transactions where id = any(p_recebimentos) for update;
+
+  if not exists (select 1 from public.bank_transactions where id = p_deposito) then
+    return query select false, 'deposito_nao_encontrado'::text, 0::numeric, 0::numeric, null::uuid;
+    return;
+  end if;
+
+  v_cliente := (select client_id from public.bank_transactions where id = p_deposito);
+  v_valor   := (select amount    from public.bank_transactions where id = p_deposito);
+  v_data    := (select tx_date   from public.bank_transactions where id = p_deposito);
+
+  if v_valor <= 0 then
+    return query select false, 'nao_e_deposito'::text, 0::numeric, 0::numeric, null::uuid;
+    return;
+  end if;
+
+  if exists (select 1 from public.bank_transactions where deposit_tx_id = p_deposito) then
+    return query select false, 'ja_conciliado'::text, 0::numeric, 0::numeric, null::uuid;
+    return;
+  end if;
+
+  -- Cada recebimento tem de ser do MESMO cliente, vir de um recebimento de
+  -- fatura (payment_id) e ainda nao ter sido depositado.
+  v_qtd := (select count(*) from public.bank_transactions
+             where id = any(p_recebimentos)
+               and client_id = v_cliente
+               and payment_id is not null
+               and deposit_tx_id is null);
+  if v_qtd <> v_pedidos then
+    return query select false, 'recebimento_invalido'::text, 0::numeric, 0::numeric, null::uuid;
+    return;
+  end if;
+
+  v_bruto := (select round(coalesce(sum(amount), 0), 2) from public.bank_transactions
+               where id = any(p_recebimentos));
+  v_conta := (select account_id from public.bank_transactions
+               where id = any(p_recebimentos) order by tx_date, id limit 1);
+  v_dif   := round(v_bruto - v_valor, 2);
+
+  -- Deposito MAIOR que os recebimentos e dinheiro sem recebimento lancado.
+  -- Nao e taxa negativa: e fatura recebida que ninguem baixou.
+  if v_dif < -0.005 then
+    return query select false, 'falta_recebimento'::text, v_bruto, v_dif, null::uuid;
+    return;
+  end if;
+
+  -- 1) A transferencia que esvazia a conta de passagem. Nao e despesa.
+  insert into public.bank_transactions
+    (client_id, account_id, source, tx_date, fiscal_year, description, amount,
+     category, status, deposit_tx_id)
+  values
+    (v_cliente, v_conta, 'deposito', v_data, extract(year from v_data)::int,
+     'Depósito no banco — ' || v_pedidos || ' recebimento(s)', round(-v_valor, 2),
+     'Depósito de recebimentos', 'approved', p_deposito)
+  returning id into v_transf;
+
+  -- 2) A taxa retida (Stripe). Despesa dedutivel; sem ela a receita bruta
+  --    nunca fecha com o banco e o 1099-K nao casa.
+  if v_dif > 0.005 then
+    insert into public.bank_transactions
+      (client_id, account_id, source, tx_date, fiscal_year, description, amount,
+       category, status, deposit_tx_id)
+    values
+      (v_cliente, v_conta, 'taxa', v_data, extract(year from v_data)::int,
+       'Taxa retida no repasse', round(-v_dif, 2),
+       p_conta_taxa, 'approved', p_deposito);
+  end if;
+
+  -- 3) Os recebimentos saem do saldo em transito.
+  update public.bank_transactions
+     set deposit_tx_id = p_deposito
+   where id = any(p_recebimentos);
+
+  -- 4) O deposito no extrato: nao e receita, e a outra ponta da transferencia.
+  update public.bank_transactions
+     set category = 'Depósito de recebimentos',
+         status   = 'approved',
+         transfer_match_id = v_transf
+   where id = p_deposito;
+
+  update public.bank_transactions
+     set transfer_match_id = p_deposito
+   where id = v_transf;
+
+  return query select true, 'ok'::text, v_bruto, greatest(v_dif, 0), v_transf;
+end
+$function$;
+
+-- Desfazer. O socio vai errar a selecao, e sem isto a unica saida seria SQL
+-- na mao. Apaga SO o que a conciliacao criou (transferencia e taxa), solta os
+-- recebimentos e devolve o deposito ao estado de nao classificado.
+create or replace function public.desconciliar_deposito(
+  p_deposito uuid
+) returns table (ok boolean, motivo text, soltos int)
+language plpgsql
+as $function$
+declare
+  v_soltos int;
+begin
+  perform 1 from public.bank_transactions where id = p_deposito for update;
+
+  if not exists (select 1 from public.bank_transactions where deposit_tx_id = p_deposito) then
+    return query select false, 'nao_estava_conciliado'::text, 0;
+    return;
+  end if;
+
+  -- As linhas criadas pela conciliacao (nunca as que vieram de recebimento)
+  delete from public.bank_transactions
+   where deposit_tx_id = p_deposito
+     and payment_id is null
+     and source in ('deposito', 'taxa');
+
+  update public.bank_transactions
+     set deposit_tx_id = null
+   where deposit_tx_id = p_deposito
+     and payment_id is not null;
+  get diagnostics v_soltos = row_count;
+
+  update public.bank_transactions
+     set category = null, status = 'pending', transfer_match_id = null
+   where id = p_deposito;
+
+  return query select true, 'ok'::text, v_soltos;
+end
+$function$;
+
+
+-- ===================================================================
+-- Anotar no livro de migracoes
+-- ===================================================================
+
+insert into public.schema_migrations (arquivo, sha256, aplicado_por)
+values
+  ('sql/caixa-da-firma-v1.sql', 'fc953f8dd2cec5ba6d64cb174c86b6f02345b9d79501a5592227bdc930191627', 'sql-editor'),
+  ('sql/caixa-conciliacao-v1.sql', '64d14946e04d1bf72b79024f1d5a3493b44b8b835d81ac7181c686534dde9958', 'sql-editor'),
+  ('sql/caixa-conciliacao-funcao-v1.sql', '63dfcb7f0a702c9819572d33f736ef512cbcdefb9124f6c7624a7ee89a7ac372', 'sql-editor')
+on conflict (arquivo) do update
+  set sha256 = excluded.sha256, aplicado_em = now(), aplicado_por = excluded.aplicado_por;
+
+select arquivo, left(sha256, 12) as sha, aplicado_em
+  from public.schema_migrations
+ where arquivo in ('sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql', 'sql/caixa-conciliacao-funcao-v1.sql')
+ order by arquivo;
