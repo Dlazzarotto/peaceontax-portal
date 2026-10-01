@@ -293,6 +293,23 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   sincronização funcionar é frágil — já derrubou tudo uma vez, e o conserto
   exigia migração. O índice segue sendo quem garante que a receita não
   dobre; a rotina só não pergunta como ele foi criado.
+- **`bank_transactions.source` tem CHECK, e ele nasceu no PAINEL.** A
+  sincronização dos recebimentos morreu em produção com
+  `violates check constraint "bank_transactions_source_check"`: o caixa da
+  firma trouxe três origens novas (`recebimento`, `deposito`, `taxa` — as
+  duas últimas usadas pela própria `desconciliar_deposito`, que apaga
+  `where source in ('deposito','taxa')`) e a lista fechada não as conhecia.
+  Nenhum `.sql` tinha o CHECK: é de novo o **schema que só existe no banco
+  vira folclore**. `sql/caixa-origens-v1.sql` traz a regra para o
+  repositório e recria o CHECK como a **UNIÃO** do que já está gravado na
+  tabela com o que o código grava — montar a lista "que eu acho que é a
+  certa" recusaria uma origem antiga e travaria a importação sem aviso
+  (conferido: uma origem fora do código sobreviveu). A conferência da
+  migração **tenta inserir de verdade** e desfaz: ler o texto do CHECK não
+  prova nada. A auditoria agora casa cada `source: '…'` escrito perto de
+  `bank_transactions` com a lista da migração — olhando o ARRAY, não o
+  arquivo (o bloco de conferência cita os mesmos nomes, e a primeira versão
+  passava com o valor removido).
 - **Contas a pagar são CAIXA DIÁRIO, nunca lançamento** (`lib/contas-a-pagar.ts`,
   `/api/caixa/contas`, migração `sql/contas-a-pagar-v1.sql`). O livro da firma
   é regime de caixa e a despesa vem do extrato: se a conta a pagar virasse
