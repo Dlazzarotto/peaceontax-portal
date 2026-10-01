@@ -3,6 +3,7 @@
 
 import { plaidPost } from '@/lib/plaid'
 import { applyRulesToClient } from '@/lib/apply-rules'
+import { colunaAusente } from '@/lib/caixa-firma'
 
 export async function syncPlaidItem(db: any, plaidItemRowId: string) {
   const { data: item } = await db.from('plaid_items').select('*').eq('id', plaidItemRowId).single()
@@ -12,14 +13,34 @@ export async function syncPlaidItem(db: any, plaidItemRowId: string) {
   // Contas do item → upsert em bank_accounts
   const accountsRes = await plaidPost('/accounts/get', { access_token: item.access_token })
   const accountMap: Record<string, string> = {}   // plaid account_id → bank_accounts.id
+  const agora = new Date().toISOString()
   for (const acc of accountsRes.accounts || []) {
     const name = `${item.institution_name || 'Bank'} ${acc.name}${acc.mask ? ` ...${acc.mask}` : ''}`.slice(0, 120)
     const isCC = acc.type === 'credit'
-    const { data: row } = await db.from('bank_accounts')
-      .upsert(
-        { client_id: item.client_id, name, account_hint: name, type: isCC ? 'credit_card' : (acc.subtype === 'savings' ? 'savings' : 'checking') },
-        { onConflict: 'client_id,name' }
-      ).select('id').single()
+    const base = {
+      client_id: item.client_id, name, account_hint: name,
+      type: isCC ? 'credit_card' : (acc.subtype === 'savings' ? 'savings' : 'checking'),
+    }
+    // O SALDO vem daqui e de nenhum outro lugar. O `/transactions/sync` traz
+    // a transação, não o saldo depois dela — sem isto o fluxo projetado
+    // nasce sem o número de que depende, e "saldo desconhecido" é o que
+    // todo mundo que conectou o banco veria. Em cartão de crédito o valor é
+    // DÍVIDA; quem soma caixa deixa cartão de fora (lib/fluxo-de-caixa.ts).
+    const comSaldo = {
+      ...base,
+      current_balance: acc.balances?.current ?? null,
+      available_balance: acc.balances?.available ?? null,
+      balance_as_of: agora,
+    }
+    const grava = (campos: any) => db.from('bank_accounts')
+      .upsert(campos, { onConflict: 'client_id,name' }).select('id').single()
+
+    let { data: row, error } = await grava(comSaldo)
+    // As colunas de saldo podem ainda não existir: o código sobe na Vercel
+    // a cada push e a migração roda à mão. Perder o saldo é um incômodo;
+    // derrubar a sincronização inteira do extrato por causa dele não é
+    // aceitável — é o mesmo cuidado de `idDaFirma` com `is_firm`.
+    if (error && colunaAusente(error)) ({ data: row } = await grava(base))
     if (row) accountMap[acc.account_id] = row.id
   }
 

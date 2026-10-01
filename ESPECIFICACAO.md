@@ -411,6 +411,53 @@ Três regras:
 
 O fornecedor é o cadastro que já existe (`payees`), não uma segunda lista.
 
+**Fluxo de caixa — o realizado e o projetado.** Fecha o caixa da firma: de um
+lado o que o banco já movimentou, do outro o que está comprometido dos dois
+lados. Em `/dashboard/caixa`, só o sócio.
+
+O **realizado** sai do **extrato e só dele**, mês a mês: entradas, saídas,
+líquido e a média mensal. O livro guarda, na mesma tabela, o extrato e a
+conta de passagem ("Recebimentos a depositar") — e somar as duas contaria o
+mesmo depósito **duas vezes**, além de antecipar o cheque recebido e ainda
+não depositado. Transferência entre contas da própria firma também sai: o
+líquido já daria zero, mas as colunas de entradas e saídas inchariam, e é
+por elas que se olha quanto a firma gasta por mês.
+
+Uma diferença deliberada em relação ao P&L: o fluxo **não espera
+classificação**. Lucro é resultado contábil e depende da conta certa, então
+o P&L só conta o que está aprovado. Caixa não: o débito saiu da conta mesmo
+sem ninguém ter dito em que categoria ele entra. Exigir aprovação aqui
+mostraria um caixa que não existe.
+
+O **projetado** parte do saldo de hoje e desce por faixa de vencimento
+(vencido, 7, 30, 60 dias e mais), somando fatura em aberto e descontando
+conta a pagar em aberto. Três decisões, e todas pelo mesmo motivo —
+**superestimar entrada faz a firma gastar o que não tem**:
+
+- **Fatura vencida fica FORA da projeção.** Dinheiro que já era para ter
+  entrado não é previsão, é cobrança, e é justamente quando o caixa aperta
+  que o atrasado não chega. Aparece à parte, somado, para ninguém achar que
+  foi esquecida.
+- **Conta a pagar vencida fica DENTRO**, na primeira faixa. Atrasada ou não,
+  ela vai ser paga.
+- **Mensalidade ainda não faturada fica de fora.** Contrato recorrente é
+  expectativa, não compromisso com data; misturar previsão de venda com
+  caixa comprometido é como um fluxo deixa de servir para decidir.
+
+Quando a projeção fica negativa, a tela diz **em qual faixa** e **quanto
+falta** — e ressalva o vencido a receber, sem somá-lo.
+
+**O saldo tem duas fontes, nesta ordem.** Primeiro o que o **banco**
+informou (`bank_accounts.current_balance`, lido no `/accounts/get` do Plaid
+a cada sincronização); na falta dele, o saldo corrido que alguns extratos em
+CSV trazem por linha. A ordem não é preferência, é precisão: o saldo do
+extrato só sabe até a última linha importada. A tela diz de qual fonte veio
+e de quando. Isso não duplica o balanço, que pergunta outra coisa — "quanto
+tinha em 31/12" — e para a qual só o saldo corrido serve.
+
+**Saldo desconhecido não vira zero.** Sem saldo, a tela diz que não sabe e
+não projeta: zero, numa tela, é uma afirmação, e aqui seria a pior possível.
+
 **Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
 
 **Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.

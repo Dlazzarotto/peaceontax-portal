@@ -7,7 +7,7 @@
 --
 -- Cada parte e idempotente: rodar duas vezes nao faz mal.
 --
--- Origem: sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql, sql/caixa-conciliacao-v2.sql, sql/caixa-origens-v1.sql, sql/caixa-conciliacao-funcao-v1.sql, sql/contas-a-pagar-v1.sql
+-- Origem: sql/caixa-da-firma-v1.sql, sql/caixa-conciliacao-v1.sql, sql/caixa-conciliacao-v2.sql, sql/caixa-origens-v1.sql, sql/caixa-conciliacao-funcao-v1.sql, sql/contas-a-pagar-v1.sql, sql/caixa-saldo-da-conta-v1.sql
 
 create table if not exists public.schema_migrations (
   arquivo     text primary key,
@@ -667,6 +667,77 @@ select count(*) as contas_a_pagar from public.firm_bills;
 
 
 -- ===================================================================
+-- sql/caixa-saldo-da-conta-v1.sql
+-- ===================================================================
+
+-- sql/caixa-saldo-da-conta-v1.sql
+-- O SALDO da conta bancaria, vindo do banco.
+--
+-- POR QUE
+-- O fluxo de caixa projetado parte do saldo de hoje. Ate aqui o unico saldo
+-- que o sistema guardava era `bank_transactions.balance` -- o saldo CORRIDO
+-- que alguns extratos em CSV trazem por linha. A sincronizacao do Plaid
+-- nunca gravou isso, e nao tem como: o `/transactions/sync` traz a
+-- transacao, nao o saldo depois dela.
+--
+-- Resultado: para quem conectou o banco (que e o caminho recomendado), o
+-- saldo era SEMPRE desconhecido, e a projecao nascia sem o numero de que
+-- depende. O `/accounts/get` que a sincronizacao JA chama traz
+-- `balances.current` -- so faltava onde guardar.
+--
+-- SAO DUAS PERGUNTAS DIFERENTES, E E POR ISSO QUE SAO DUAS COLUNAS
+--   · `bank_accounts.current_balance` -> "quanto tem na conta HOJE"
+--     (o banco diz; e o que o fluxo projetado usa)
+--   · `bank_transactions.balance`     -> "quanto tinha em 31/12"
+--     (o saldo corrido do extrato; e o que o balanco usa)
+-- Nao e duplicacao: um saldo historico nao responde pelo de hoje, e o de
+-- hoje nao responde por 31 de dezembro do ano passado.
+--
+-- Cartao de credito tambem recebe saldo, mas ali ele e DIVIDA -- quem soma
+-- caixa (lib/fluxo-de-caixa.ts) deixa cartao de fora de proposito.
+--
+-- Idempotente. Nao cria tabela, nao define funcao e nao atribui variavel
+-- por consulta -- o detector de RLS do SQL Editor nao tem o que reescrever.
+
+alter table public.bank_accounts
+  add column if not exists current_balance numeric(14,2);
+
+alter table public.bank_accounts
+  add column if not exists available_balance numeric(14,2);
+
+alter table public.bank_accounts
+  add column if not exists balance_as_of timestamptz;
+
+comment on column public.bank_accounts.current_balance is
+  'Saldo informado pelo banco (Plaid /accounts/get). Em cartao de credito e divida.';
+comment on column public.bank_accounts.balance_as_of is
+  'Quando o saldo foi lido. Saldo sem data nao se mostra como "hoje".';
+
+-- == Conferencia ===========================================================
+-- Confere o SCHEMA, sem escrever nada. A conferencia de
+-- sql/caixa-origens-v1.sql inseriu numa tabela real para testar um CHECK,
+-- bateu numa coluna NOT NULL que ela nao conhecia e derrubou a migracao
+-- inteira (o SQL Editor roda tudo numa transacao). Conferencia nao toca em
+-- dado de producao.
+do $$
+begin
+  if (select count(*) from information_schema.columns
+       where table_schema = 'public' and table_name = 'bank_accounts'
+         and column_name in ('current_balance', 'available_balance', 'balance_as_of')) <> 3
+  then
+    raise exception 'faltam colunas de saldo em bank_accounts';
+  end if;
+  raise notice 'bank_accounts: current_balance, available_balance e balance_as_of prontos';
+end $$;
+
+select column_name, data_type, is_nullable
+  from information_schema.columns
+ where table_schema = 'public' and table_name = 'bank_accounts'
+   and column_name in ('current_balance', 'available_balance', 'balance_as_of')
+ order by column_name;
+
+
+-- ===================================================================
 -- Anotar no livro de migracoes
 -- ===================================================================
 
@@ -677,11 +748,12 @@ values
   ('sql/caixa-conciliacao-v2.sql', '7a78894c21191dd5085f2fcd149e891a55b85992516c3bde72348a3cd0e98198', 'sql-editor'),
   ('sql/caixa-origens-v1.sql', '4edee9addb76cec1976d5fc1a1ecf5d78156a982eeb433020b38dcd904604a02', 'sql-editor'),
   ('sql/caixa-conciliacao-funcao-v1.sql', '63dfcb7f0a702c9819572d33f736ef512cbcdefb9124f6c7624a7ee89a7ac372', 'sql-editor'),
-  ('sql/contas-a-pagar-v1.sql', '1e6dce9089104130fa61f122cbad4d09a2e31ec2e4faff414c32a690765b0ddb', 'sql-editor')
+  ('sql/contas-a-pagar-v1.sql', '1e6dce9089104130fa61f122cbad4d09a2e31ec2e4faff414c32a690765b0ddb', 'sql-editor'),
+  ('sql/caixa-saldo-da-conta-v1.sql', 'e77bcc4bcb5ad46d2781ef60a5080ad5e612eb630ce7aacc322f4c0177ba58ce', 'sql-editor')
 on conflict (arquivo) do update
   set sha256 = excluded.sha256, aplicado_em = now(), aplicado_por = excluded.aplicado_por;
 
 select arquivo, left(sha256, 12) as sha, aplicado_em
   from public.schema_migrations
- where arquivo in ('sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql', 'sql/caixa-conciliacao-v2.sql', 'sql/caixa-origens-v1.sql', 'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql')
+ where arquivo in ('sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql', 'sql/caixa-conciliacao-v2.sql', 'sql/caixa-origens-v1.sql', 'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql', 'sql/caixa-saldo-da-conta-v1.sql')
  order by arquivo;
