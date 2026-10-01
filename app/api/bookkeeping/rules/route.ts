@@ -231,207 +231,252 @@ export async function DELETE(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const auth = await getAuth()
-  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
-  if (!(await requireManager(auth.userId))) {
-    return NextResponse.json({ error: 'Somente manager/owner editam regras' }, { status: 403 })
-  }
+  try {
+    const auth = await getAuth()
+    if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+    if (!(await requireManager(auth.userId))) {
+      return NextResponse.json({ error: 'Somente manager/owner editam regras' }, { status: 403 })
+    }
 
-  const b = await req.json()
-  if (!b.id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
+    const b = await req.json()
+    if (!b.id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
-  const db = serviceDb()
-  const { data: existing } = await db.from('bookkeeping_rules').select('*').eq('id', b.id).single()
-  if (!existing) return NextResponse.json({ error: 'Regra não encontrada' }, { status: 404 })
+    const db = serviceDb()
+    const { data: existing } = await db.from('bookkeeping_rules').select('*').eq('id', b.id).single()
+    if (!existing) return NextResponse.json({ error: 'Regra não encontrada' }, { status: 404 })
 
-  // Conta (fundo) da regra: usa a enviada; se não vier, mantém a atual
-  const ruleAccountP: string | null =
-    b.accountId !== undefined ? (b.accountId || null) : (existing.account_id ?? null)
+    // Conta (fundo) da regra: usa a enviada; se não vier, mantém a atual
+    const ruleAccountP: string | null =
+      b.accountId !== undefined ? (b.accountId || null) : (existing.account_id ?? null)
 
-  const name = String(b.name ?? existing.name ?? '').trim()
-  const pattern = b.pattern !== undefined
-    ? (String(b.pattern).split('|').map((x: string) => x.trim().toLowerCase()).filter((x: string) => x.length >= 2).join('|') || null)
-    : existing.pattern
-  const category = String(b.category ?? existing.category).trim()
-  const direction = ['in','out','both'].includes(b.direction) ? b.direction : existing.direction
-  const matchType = ['contains','starts_with'].includes(b.matchType) ? b.matchType : existing.match_type
-  const amountOp = b.amountOp === '' ? null : (['gt','lt','eq'].includes(b.amountOp) ? b.amountOp : existing.amount_op)
-  const amountValue = amountOp ? Number(b.amountValue ?? existing.amount_value) : null
-  const payee = b.payee !== undefined ? (String(b.payee).trim() || null) : existing.payee
+    const name = String(b.name ?? existing.name ?? '').trim()
+    const pattern = b.pattern !== undefined
+      ? (String(b.pattern).split('|').map((x: string) => x.trim().toLowerCase()).filter((x: string) => x.length >= 2).join('|') || null)
+      : existing.pattern
+    const category = String(b.category ?? existing.category).trim()
+    const direction = ['in','out','both'].includes(b.direction) ? b.direction : existing.direction
+    const matchType = ['contains','starts_with'].includes(b.matchType) ? b.matchType : existing.match_type
+    const amountOp = b.amountOp === '' ? null : (['gt','lt','eq'].includes(b.amountOp) ? b.amountOp : existing.amount_op)
+    const amountValue = amountOp ? Number(b.amountValue ?? existing.amount_value) : null
+    const payee = b.payee !== undefined ? (String(b.payee).trim() || null) : existing.payee
 
-  if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
-  if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
+    if (!pattern && !amountOp) return NextResponse.json({ error: 'Defina ao menos uma condição' }, { status: 400 })
+    if (pattern && textoGenerico(pattern)) return NextResponse.json({ error: MOTIVO_GENERICO }, { status: 400 })
 
-  // ── Escopo: geral (todos os clientes) × só este cliente ──
-  // A tela manda `scope` em toda edição. Sem ler aqui, trocar de Global para
-  // Cliente respondia ok e não gravava nada: o formulário mudava e o banco
-  // continuava igual. Omitir `scope` mantém o escopo atual.
-  let global = b.scope !== undefined ? b.scope === 'global' : existing.client_id === null
-  const clienteAlvo = b.clientId || existing.client_id
+    // ── Escopo: geral (todos os clientes) × só este cliente ──
+    // A tela manda `scope` em toda edição. Sem ler aqui, trocar de Global para
+    // Cliente respondia ok e não gravava nada: o formulário mudava e o banco
+    // continuava igual. Omitir `scope` mantém o escopo atual.
+    let global = b.scope !== undefined ? b.scope === 'global' : existing.client_id === null
+    const clienteAlvo = b.clientId || existing.client_id
 
-  // Non-profit: a regra é SEMPRE da própria entidade (mesma trava do POST)
-  if (global && clienteAlvo) {
-    const { data: cliPatch } = await db.from('clients')
-      .select('business_kind').eq('id', clienteAlvo).maybeSingle()
-    if (cliPatch?.business_kind === 'nonprofit') {
+    // Non-profit: a regra é SEMPRE da própria entidade (mesma trava do POST)
+    if (global && clienteAlvo) {
+      const { data: cliPatch } = await db.from('clients')
+        .select('business_kind').eq('id', clienteAlvo).maybeSingle()
+      if (cliPatch?.business_kind === 'nonprofit') {
+        return NextResponse.json({
+          error: 'Este cliente é uma organização sem fins lucrativos — as regras valem apenas para ela. Escolha "Só este cliente".',
+        }, { status: 400 })
+      }
+    }
+    if (!global && !clienteAlvo) {
+      return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
+    }
+    const novoClientId: string | null = global ? null : clienteAlvo
+    // A conta bancária pertence a um cliente: regra geral não fica presa a uma conta
+    const contaFinal: string | null = global ? null : ruleAccountP
+    const mudouEscopo = (existing.client_id === null) !== global
+
+    // Trocou de escopo? A mesma trava de duplicata do POST, agora no escopo novo
+    if (mudouEscopo && pattern) {
+      let eq = db.from('bookkeeping_rules')
+        .select('id, name, pattern, direction, account_id').neq('id', b.id)
+      eq = global ? eq.is('client_id', null) : eq.eq('client_id', novoClientId)
+      const { data: irmas } = await eq
+      const norm = (p2: string | null) => (p2 || '').split('|').map((x: string) => x.trim()).filter(Boolean).sort().join('|')
+      const dup = (irmas || []).find((r: any) =>
+        (r.direction === direction || r.direction === 'both' || direction === 'both') &&
+        norm(r.pattern) === norm(pattern) &&
+        String(r.account_id || '') === String(contaFinal || ''))
+      if (dup) {
+        return NextResponse.json({
+          error: `Já existe uma regra ${global ? 'geral' : 'deste cliente'} com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.`,
+        }, { status: 409 })
+      }
+    }
+
+    const { error } = await db.from('bookkeeping_rules').update({
+      client_id: novoClientId,
+      account_id: contaFinal,
+      name, pattern, category, direction,
+      match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
+    }).eq('id', b.id)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    const targetClient = b.clientId || existing.client_id
+
+    // UMA definição de "esta transação casa com a regra". A fila e o registro
+    // comparavam por CÓPIA, lado a lado — e cópia diverge: bastava alguém
+    // ajustar um dos dois para a reclassificação passar a pegar um conjunto
+    // diferente do que a fila pega, sem nada acusar.
+    const casaARegra = (tx: { description: string; amount: number; account_id?: string | null }) => {
+      if (contaFinal && tx.account_id !== contaFinal) return false
+      const desc = limparRuido(String(tx.description).toLowerCase())
+      const amount = Number(tx.amount)
+      if (direction === 'in' && amount <= 0) return false
+      if (direction === 'out' && amount >= 0) return false
+      if (pattern) {
+        const variants = pattern.split('|')
+        if (!variants.some((v: string) => casaTexto(desc, v, matchType))) return false
+      }
+      if (amountOp) {
+        const abs = Math.abs(amount)
+        if (amountOp === 'gt' && !(abs > amountValue!)) return false
+        if (amountOp === 'lt' && !(abs < amountValue!)) return false
+        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) return false
+      }
+      return true
+    }
+
+    // Lê TODAS as linhas, em páginas. `.limit(5000)` era truncamento SILENCIOSO:
+    // o PostgREST tem teto próprio (1000 por padrão) e a consulta não tinha
+    // `order`, então nem dava para saber QUAIS mil voltaram. Num cliente com
+    // muitos lançamentos, parte do registro simplesmente não era visitada — e a
+    // resposta dizia ok.
+    const PAGINA = 1000
+    const lerTudo = async (status: string[]) => {
+      const linhas: { id: string; description: string; amount: number; account_id?: string | null }[] = []
+      for (let de = 0; ; de += PAGINA) {
+        const { data, error } = await db.from('bank_transactions')
+          .select('id, description, amount, account_id')
+          .eq('client_id', targetClient)
+          .in('status', status)
+          .order('id')
+          .range(de, de + PAGINA - 1)
+        // Consulta que falha não pode virar lista vazia: aqui isso seria
+        // "nenhuma transação casou", com a tela dizendo que deu certo.
+        if (error) throw new Error(`não foi possível ler os lançamentos: ${error.message}`)
+        linhas.push(...((data || []) as typeof linhas))
+        if (!data || data.length < PAGINA) break
+      }
+      return linhas
+    }
+
+    // Reaplica retroativamente (pending + auto do cliente atual)
+    let applied = 0
+    let filaFalhou = 0
+    if (targetClient) {
+      for (const tx of await lerTudo(['pending', 'auto'])) {
+        if (!casaARegra(tx)) continue
+        const upd: Record<string, unknown> = {
+          category, category_confidence: 100, categorized_by: 'rule',
+          status: 'auto', updated_at: new Date().toISOString(),
+        }
+        if (payee) upd.payee = payee
+        // `applied++` era incondicional: contava como aplicada a linha que o
+        // banco recusou. O número na tela virava ficção.
+        const { error: fErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
+        if (fErr) filaFalhou++
+        else applied++
+      }
+    }
+
+    // ── RECLASSIFICAR O REGISTRO (aprovadas) — owner/manager + SENHA + MOTIVO ──
+    let registerChanged = 0
+    let registerCasou = 0
+    let registerFalhou = 0
+    let primeiraFalha = ''
+    // Pedir a reclassificação e não ter cliente alvo era PULADO em silêncio: a
+    // senha foi digitada, o motivo foi escrito, a resposta saía ok e nada
+    // acontecia. Se não dá para fazer, tem de recusar.
+    if (b.applyToRegister === true && !targetClient) {
       return NextResponse.json({
-        error: 'Este cliente é uma organização sem fins lucrativos — as regras valem apenas para ela. Escolha "Só este cliente".',
+        error: 'Para reclassificar o registro é preciso dizer de qual cliente. Abra a regra pela tela do cliente.',
       }, { status: 400 })
     }
-  }
-  if (!global && !clienteAlvo) {
-    return NextResponse.json({ error: 'clientId obrigatório para regra do cliente' }, { status: 400 })
-  }
-  const novoClientId: string | null = global ? null : clienteAlvo
-  // A conta bancária pertence a um cliente: regra geral não fica presa a uma conta
-  const contaFinal: string | null = global ? null : ruleAccountP
-  const mudouEscopo = (existing.client_id === null) !== global
-
-  // Trocou de escopo? A mesma trava de duplicata do POST, agora no escopo novo
-  if (mudouEscopo && pattern) {
-    let eq = db.from('bookkeeping_rules')
-      .select('id, name, pattern, direction, account_id').neq('id', b.id)
-    eq = global ? eq.is('client_id', null) : eq.eq('client_id', novoClientId)
-    const { data: irmas } = await eq
-    const norm = (p2: string | null) => (p2 || '').split('|').map((x: string) => x.trim()).filter(Boolean).sort().join('|')
-    const dup = (irmas || []).find((r: any) =>
-      (r.direction === direction || r.direction === 'both' || direction === 'both') &&
-      norm(r.pattern) === norm(pattern) &&
-      String(r.account_id || '') === String(contaFinal || ''))
-    if (dup) {
-      return NextResponse.json({
-        error: `Já existe uma regra ${global ? 'geral' : 'deste cliente'} com este texto: "${dup.name || dup.pattern}". Edite-a em vez de criar outra.`,
-      }, { status: 409 })
-    }
-  }
-
-  const { error } = await db.from('bookkeeping_rules').update({
-    client_id: novoClientId,
-    account_id: contaFinal,
-    name, pattern, category, direction,
-    match_type: matchType, amount_op: amountOp, amount_value: amountValue, payee,
-  }).eq('id', b.id)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
-  // Reaplica retroativamente (pending + auto do cliente atual)
-  let applied = 0
-  const targetClient = b.clientId || existing.client_id
-  if (targetClient) {
-    const { data: txs } = await db.from('bank_transactions')
-      .select('id, description, amount, account_id')
-      .eq('client_id', targetClient)
-      .in('status', ['pending', 'auto'])
-      .limit(5000)
-    for (const tx of (txs || [])) {
-      if (contaFinal && (tx as any).account_id !== contaFinal) continue
-      const desc = limparRuido(String(tx.description).toLowerCase())
-      const amount = Number(tx.amount)
-      if (direction === 'in' && amount <= 0) continue
-      if (direction === 'out' && amount >= 0) continue
-      if (pattern) {
-        const variants = pattern.split('|')
-        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
-        if (!hit) continue
+    if (b.applyToRegister === true && targetClient) {
+      const reason = String(b.reason || '').trim()
+      if (reason.length < 5) {
+        return NextResponse.json({ error: 'Motivo obrigatório (mín. 5 caracteres) para reclassificar o registro' }, { status: 400 })
       }
-      if (amountOp) {
-        const abs = Math.abs(amount)
-        if (amountOp === 'gt' && !(abs > amountValue!)) continue
-        if (amountOp === 'lt' && !(abs < amountValue!)) continue
-        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
+      const password = String(b.password || '')
+      if (!password) return NextResponse.json({ error: 'Senha obrigatória para reclassificar o registro' }, { status: 400 })
+
+      // Re-autenticação: valida a senha do próprio usuário logado
+      const authClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        { auth: { persistSession: false } }
+      )
+      // getAuth() devolve só userId/isStaff — o e-mail vem do próprio auth.
+      // (Antes usava auth.email, que não existe: a senha era sempre recusada.)
+      const { data: quem } = await db.auth.admin.getUserById(auth.userId)
+      const emailLogado = quem?.user?.email
+      if (!emailLogado) {
+        return NextResponse.json({ error: 'Não foi possível identificar seu login para confirmar a senha.' }, { status: 400 })
       }
-      const upd: Record<string, unknown> = {
-        category, category_confidence: 100, categorized_by: 'rule',
-        status: 'auto', updated_at: new Date().toISOString(),
+
+      const { error: pwErr } = await authClient.auth.signInWithPassword({
+        email: emailLogado, password: password.trim(),
+      })
+      if (pwErr) {
+        const m = pwErr.message || ''
+        if (/rate|too many|429/i.test(m)) {
+          return NextResponse.json({ error: 'Muitas tentativas em pouco tempo. Aguarde 1 minuto.' }, { status: 429 })
+        }
+        return NextResponse.json({
+          error: `Senha não confere para ${emailLogado}. Use a mesma senha com que você entra no sistema.`,
+        }, { status: 403 })
       }
-      if (payee) upd.payee = payee
-      await db.from('bank_transactions').update(upd).eq('id', tx.id)
-      applied++
-    }
-  }
 
-  // ── RECLASSIFICAR O REGISTRO (aprovadas) — owner/manager + SENHA + MOTIVO ──
-  let registerChanged = 0
-  if (b.applyToRegister === true && targetClient) {
-    const reason = String(b.reason || '').trim()
-    if (reason.length < 5) {
-      return NextResponse.json({ error: 'Motivo obrigatório (mín. 5 caracteres) para reclassificar o registro' }, { status: 400 })
-    }
-    const password = String(b.password || '')
-    if (!password) return NextResponse.json({ error: 'Senha obrigatória para reclassificar o registro' }, { status: 400 })
+      for (const tx of await lerTudo(['approved', 'reviewed'])) {
+        if (!casaARegra(tx)) continue
+        registerCasou++
+        const upd: Record<string, unknown> = {
+          category, categorized_by: 'rule', updated_at: new Date().toISOString(),
+        }
+        if (payee) upd.payee = payee
+        // status permanece: continua no registro, apenas reclassificado
+        const { error: uErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
+        // O erro era DESCARTADO (`if (!uErr) registerChanged++`): com todas as
+        // escritas recusadas a resposta saía ok, com 0, e a tela nem mostrava
+        // o 0 — quem pediu a reclassificação não tinha como saber que nada
+        // mudou. Agora a falha viaja.
+        if (uErr) { registerFalhou++; if (!primeiraFalha) primeiraFalha = uErr.message }
+        else registerChanged++
+      }
 
-    // Re-autenticação: valida a senha do próprio usuário logado
-    const authClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { auth: { persistSession: false } }
-    )
-    // getAuth() devolve só userId/isStaff — o e-mail vem do próprio auth.
-    // (Antes usava auth.email, que não existe: a senha era sempre recusada.)
-    const { data: quem } = await db.auth.admin.getUserById(auth.userId)
-    const emailLogado = quem?.user?.email
-    if (!emailLogado) {
-      return NextResponse.json({ error: 'Não foi possível identificar seu login para confirmar a senha.' }, { status: 400 })
+      await db.from('bookkeeping_reclass_log').insert({
+        rule_id: b.id, client_id: targetClient,
+        changed_by: auth.userId, changed_by_email: emailLogado,
+        reason, affected_register: registerChanged,
+        new_category: category, new_payee: payee || null,
+      })
     }
 
-    const { error: pwErr } = await authClient.auth.signInWithPassword({
-      email: emailLogado, password: password.trim(),
+    return NextResponse.json({
+      ok: true, applied, registerChanged,
+      // O que a tela precisa para não mentir: quantas CASARAM, quantas o banco
+      // recusou, e o texto da primeira recusa. Sem isso "0 reclassificadas" e
+      // "20 recusadas pelo banco" ficam indistinguíveis.
+      registerCasou, registerFalhou, filaFalhou,
+      falhaExemplo: primeiraFalha || undefined,
+      // Regra geral editada pela tela de um cliente só reclassifica o registro
+      // DAQUELE cliente. Dizer isso evita a conclusão de que "não funcionou".
+      escopoDoRegistro: b.applyToRegister === true
+        ? (global ? 'apenas o cliente aberto (a regra vale para todos, a reclassificação não)' : 'este cliente')
+        : undefined,
+      scope: global ? 'global' : 'client',
+      aviso: mudouEscopo
+        ? (global
+            ? 'A regra passou a valer para todos os clientes.'
+            : 'A regra passou a valer só para este cliente — deixa de ser aplicada aos demais. O que já foi classificado nos outros continua como está.')
+        : undefined,
     })
-    if (pwErr) {
-      const m = pwErr.message || ''
-      if (/rate|too many|429/i.test(m)) {
-        return NextResponse.json({ error: 'Muitas tentativas em pouco tempo. Aguarde 1 minuto.' }, { status: 429 })
-      }
-      return NextResponse.json({
-        error: `Senha não confere para ${emailLogado}. Use a mesma senha com que você entra no sistema.`,
-      }, { status: 403 })
-    }
-
-    const { data: regTxs } = await db.from('bank_transactions')
-      .select('id, description, amount, account_id')
-      .eq('client_id', targetClient)
-      .in('status', ['approved', 'reviewed'])
-      .limit(5000)
-    for (const tx of (regTxs || [])) {
-      if (contaFinal && (tx as any).account_id !== contaFinal) continue
-      const desc = limparRuido(String(tx.description).toLowerCase())
-      const amount = Number(tx.amount)
-      if (direction === 'in' && amount <= 0) continue
-      if (direction === 'out' && amount >= 0) continue
-      if (pattern) {
-        const variants = pattern.split('|')
-        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
-        if (!hit) continue
-      }
-      if (amountOp) {
-        const abs = Math.abs(amount)
-        if (amountOp === 'gt' && !(abs > amountValue!)) continue
-        if (amountOp === 'lt' && !(abs < amountValue!)) continue
-        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
-      }
-      const upd: Record<string, unknown> = {
-        category, categorized_by: 'rule', updated_at: new Date().toISOString(),
-      }
-      if (payee) upd.payee = payee
-      // status permanece: continua no registro, apenas reclassificado
-      const { error: uErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
-      if (!uErr) registerChanged++
-    }
-
-    await db.from('bookkeeping_reclass_log').insert({
-      rule_id: b.id, client_id: targetClient,
-      changed_by: auth.userId, changed_by_email: emailLogado,
-      reason, affected_register: registerChanged,
-      new_category: category, new_payee: payee || null,
-    })
+  } catch (e) {
+    // `lerTudo` lanca quando a leitura do extrato falha. Sem isto a rota
+    // devolveria 500 sem corpo e a tela diria so "Servidor respondeu 500".
+    return NextResponse.json({ error: `Regra salva, mas ${(e as Error).message}` }, { status: 500 })
   }
-
-  return NextResponse.json({
-    ok: true, applied, registerChanged,
-    scope: global ? 'global' : 'client',
-    aviso: mudouEscopo
-      ? (global
-          ? 'A regra passou a valer para todos os clientes.'
-          : 'A regra passou a valer só para este cliente — deixa de ser aplicada aos demais. O que já foi classificado nos outros continua como está.')
-      : undefined,
-  })
 }

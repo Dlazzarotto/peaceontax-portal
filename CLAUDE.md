@@ -371,6 +371,32 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   quarta cópia. Cancelar preserva com motivo; paga com atraso não volta a
   aparecer como vencida. Fornecedor é `payees`, não uma segunda lista. 38
   casos em `testes/contas-a-pagar.mts`.
+- **Reclassificar o registro pela regra não pode falhar calado**
+  (`PATCH /api/bookkeeping/rules`). Mudar uma regra marcando "aplicar aos já
+  aprovados" pedia senha e motivo, respondia `ok` e **não mudava o
+  relatório** — por quatro caminhos, todos mudos:
+  **1.** `.limit(5000)` sem `order`: o PostgREST tem teto próprio (1000 por
+  padrão), então num cliente com muitos lançamentos parte do registro nunca
+  era visitada — e nem dá para saber QUAIS mil voltaram. Agora lê em páginas
+  de 1000 com `order('id')`, até acabar.
+  **2.** O erro do `select` era descartado: consulta que falha virava "nenhuma
+  casou", com a tela dizendo que deu certo. Agora a leitura lança e a rota
+  responde o motivo.
+  **3.** `if (!uErr) registerChanged++` **descartava a recusa do banco**; na
+  fila era pior, `applied++` era incondicional e contava como aplicada a
+  linha que o banco recusou. Agora conta `casou`/`mudou`/`falhou` e devolve o
+  texto da primeira recusa.
+  **4.** `applyToRegister` sem cliente alvo era PULADO em silêncio — senha
+  digitada, motivo escrito, resposta `ok`, nada feito. Agora recusa.
+  E a tela escondia o pior caso: `r.registerChanged ? …` **omitia o trecho
+  inteiro quando era zero**, então "reclassifiquei e nada mudou" era
+  indistinguível de "não pedi reclassificação". **Zero é informação.**
+  A condição de casamento virou UMA função (`casaARegra`): a fila e o
+  registro comparavam por cópia lado a lado, e cópia diverge.
+  **Regra GERAL editada pela tela de um cliente reclassifica só o registro
+  DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
+  retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
+  é "não funcionou".
 - **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
   pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
   ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas

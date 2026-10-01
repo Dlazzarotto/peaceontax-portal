@@ -701,7 +701,19 @@ export default function BookkeepingTab({ clientId }: Props) {
           body: JSON.stringify({ clientId, name: rPayee.trim(), type: rPayeeType }),
         })
       }
-      setMsg(`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações${r.registerChanged ? ` · 🔒 ${r.registerChanged} do REGISTRO reclassificadas` : ''}.${r.aviso ? ` ${r.aviso}` : ''}`)
+      // A mensagem antiga escondia o caso que mais confunde: pediu-se a
+      // reclassificação do registro, ela rodou e mudou ZERO — `r.registerChanged
+      // ? …` omitia o trecho inteiro, então a tela dizia só "aplicada a N
+      // transações" e parecia que tinha dado certo. Zero é informação.
+      const partes = [`✓ Regra "${rName.trim()}" ${editRuleId ? 'atualizada' : 'gravada'} e aplicada a ${r.applied ?? 0} transações`]
+      if (reclassOn) {
+        partes.push(r.registerChanged
+          ? `🔒 ${r.registerChanged} do REGISTRO reclassificadas (${r.escopoDoRegistro})`
+          : `🔒 nenhuma do REGISTRO mudou — ${r.registerCasou ? `${r.registerCasou} casaram mas o banco recusou` : 'nenhuma aprovada casou com o texto da regra'}`)
+      }
+      if (r.registerFalhou) partes.push(`⚠️ ${r.registerFalhou} recusadas pelo banco${r.falhaExemplo ? `: ${r.falhaExemplo}` : ''}`)
+      if (r.filaFalhou) partes.push(`⚠️ ${r.filaFalhou} da fila recusadas pelo banco`)
+      setMsg(`${partes.join(' · ')}.${r.aviso ? ` ${r.aviso}` : ''}`)
       setReclassOn(false); setReclassPwd(''); setReclassReason('')
       setView('banking')
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRAccount(''); setEditRuleId(null)
