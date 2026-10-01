@@ -1435,6 +1435,37 @@ titulo('O WORKFLOW DA MIGRACAO LEVA AS DUAS CREDENCIAIS EM TODO PASSO')
 }
 
 
+titulo('A ORDEM DAS MIGRACOES APONTA PARA ARQUIVO QUE EXISTE')
+// `migrar.mjs` aplicava as pendentes em ordem ALFABETICA, e ela esta
+// invertida em dois casos reais: a funcao do codigo de autorizacao vinha
+// antes da tabela ('f' < 'v'), e recebimento-seguro-v1 antes de
+// status-da-fatura-v2 ('r' < 's'), que o proprio arquivo diz vir primeiro.
+// Agora a ordem e DECLARADA em scripts/ordem-das-migracoes.mjs.
+//
+// Declaracao que aponta para arquivo inexistente e PIOR que nenhuma: some
+// em silencio quando alguem renomeia um .sql, e a ordem volta a ser a
+// alfabetica sem ninguem notar.
+{
+  const { DEPENDE_DE } = await import(`file://${join(raiz, 'scripts/ordem-das-migracoes.mjs')}`)
+  const pares = Object.entries(DEPENDE_DE)
+  const sumidos = []
+  for (const [arq, deps] of pares) {
+    if (!existsSync(join(raiz, arq))) sumidos.push(arq)
+    for (const d of deps) if (!existsSync(join(raiz, d))) sumidos.push(`${d} (exigida por ${arq})`)
+  }
+  // Zero declaracoes tambem e falha: o mapa vazio nao ordena nada, e as duas
+  // inversoes reais voltariam a passar.
+  if (pares.length === 0)
+    falta('A ordem das migracoes aponta para arquivo que existe',
+      'DEPENDE_DE esta vazio -- a ordem voltou a ser a alfabetica, que esta invertida em dois casos reais')
+  else if (sumidos.length)
+    falta('A ordem das migracoes aponta para arquivo que existe',
+      `nao existem: ${sumidos.join(', ')} -- a dependencia some em silencio e a ordem volta a alfabetica`)
+  else
+    ok(`A ordem das migracoes aponta para arquivo que existe (${pares.length} declaracoes)`)
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],
