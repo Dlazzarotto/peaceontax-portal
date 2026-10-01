@@ -36,13 +36,24 @@ begin
     'alter table public.bank_transactions add constraint bank_transactions_source_check '
     || 'check (source is null or source = any (%L::text[]))',
     (
-      -- o que ja existe na tabela...
-      select array(select distinct source
-                     from public.bank_transactions
-                    where source is not null)
-      -- ...mais o que o codigo grava hoje (o caixa trouxe os tres ultimos)
-          || array['plaid', 'csv', 'pdf', 'quickbooks', 'manual', 'historico',
-                   'regra', 'recebimento', 'deposito', 'taxa']
+      -- A UNIAO, sem repetir e em ordem fixa: `union` ja elimina a duplicata
+      -- (um `||` cru deixava `plaid` duas vezes no texto do CHECK) e o
+      -- `order by` faz a regra sair igual em toda rodada -- sem isso,
+      -- comparar o CHECK de dois bancos acusa diferenca que nao existe.
+      select array(
+        select distinct origem from (
+          -- o que ja esta gravado na tabela...
+          select source as origem
+            from public.bank_transactions
+           where source is not null
+          union
+          -- ...mais o que o codigo grava hoje (o caixa trouxe os tres ultimos)
+          select unnest(array['plaid', 'csv', 'pdf', 'quickbooks', 'manual',
+                              'historico', 'regra', 'recebimento', 'deposito',
+                              'taxa'])
+        ) u
+        order by origem
+      )
     )
   );
 end $$;
@@ -58,20 +69,24 @@ begin
     raise exception 'o CHECK de source nao foi recriado';
   end if;
 
-  -- As tres do caixa precisam caber. Testa de verdade, numa transacao que
-  -- volta atras: conferir o texto do CHECK nao prova nada.
-  begin
-    insert into public.bank_transactions (client_id, tx_date, amount, source)
-    values (gen_random_uuid(), current_date, 1, 'recebimento'),
-           (gen_random_uuid(), current_date, 1, 'deposito'),
-           (gen_random_uuid(), current_date, 1, 'taxa');
-    raise exception 'conferencia_ok';   -- desfaz o insert de propósito
-  exception
-    when check_violation then
-      raise exception 'o CHECK ainda recusa recebimento/deposito/taxa';
-    when others then
-      if sqlerrm <> 'conferencia_ok' then raise; end if;
-  end;
+  -- As tres do caixa precisam caber. Conferir o TEXTO do CHECK nao prova
+  -- nada, mas inserir na tabela de verdade tambem nao serve: a primeira
+  -- versao desta conferencia fez `insert into bank_transactions` com tres
+  -- colunas e bateu em
+  --   null value in column "description" violates not-null constraint
+  -- derrubando a migracao INTEIRA (o SQL Editor roda tudo numa transacao,
+  -- entao o CHECK novo voltou atras junto). Conferencia nao pode depender
+  -- de colunas que ela nao conhece.
+  --
+  -- Entao: copia-se o CHECK real para uma tabela TEMPORARIA de uma coluna e
+  -- testa-se nela. Mesmo predicado, nenhuma dependencia do resto do schema,
+  -- e nada tocado em bank_transactions.
+  execute format('create temp table _conferir_origem (source text, constraint c %s)',
+    (select pg_get_constraintdef(oid) from pg_constraint
+      where conname = 'bank_transactions_source_check'
+        and conrelid = 'public.bank_transactions'::regclass));
+  insert into _conferir_origem (source) values ('recebimento'), ('deposito'), ('taxa');
+  drop table _conferir_origem;
 
   raise notice 'bank_transactions.source: recebimento, deposito e taxa cabem no CHECK';
 end $$;

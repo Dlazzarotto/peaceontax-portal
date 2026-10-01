@@ -304,12 +304,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   repositório e recria o CHECK como a **UNIÃO** do que já está gravado na
   tabela com o que o código grava — montar a lista "que eu acho que é a
   certa" recusaria uma origem antiga e travaria a importação sem aviso
-  (conferido: uma origem fora do código sobreviveu). A conferência da
-  migração **tenta inserir de verdade** e desfaz: ler o texto do CHECK não
-  prova nada. A auditoria agora casa cada `source: '…'` escrito perto de
-  `bank_transactions` com a lista da migração — olhando o ARRAY, não o
-  arquivo (o bloco de conferência cita os mesmos nomes, e a primeira versão
-  passava com o valor removido).
+  (conferido: uma origem fora do código sobreviveu). A lista sai pelo `union`,
+  ordenada: `||` cru repetia `plaid` e a ordem mudava a cada rodada, o que
+  faz comparar o CHECK de dois bancos acusar diferença que não existe.
+  **A conferência testa o CHECK de verdade, mas numa tabela TEMPORÁRIA** —
+  `pg_get_constraintdef` copia o predicado real para uma tabela de uma coluna
+  e o insert de teste vai lá. Ler o texto do CHECK não prova nada; inserir em
+  `bank_transactions` também não serve, e foi o que derrubou a migração em
+  produção: a primeira versão inseria com quatro colunas e bateu em
+  `null value in column "description" violates not-null constraint` —
+  **conferência não pode depender de colunas que ela não conhece.** Como o
+  SQL Editor roda tudo numa transação, o CHECK novo voltou atrás junto e a
+  migração inteira não valeu (reproduzido no PG 16, nos dois sentidos).
+  A auditoria casa cada `source: '…'` escrito perto de `bank_transactions`
+  com a lista da migração — olhando o ARRAY, não o arquivo (o bloco de
+  conferência cita os mesmos nomes, e a primeira versão passava com o valor
+  removido) — e **âncora perdida é FALHA, não lista vazia**: sem o
+  `unnest(array[` ela não confere nada, e esse é justamente o modo de falhar
+  que já passou despercebido aqui.
 - **Contas a pagar são CAIXA DIÁRIO, nunca lançamento** (`lib/contas-a-pagar.ts`,
   `/api/caixa/contas`, migração `sql/contas-a-pagar-v1.sql`). O livro da firma
   é regime de caixa e a despesa vem do extrato: se a conta a pagar virasse

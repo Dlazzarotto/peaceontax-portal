@@ -322,13 +322,24 @@ begin
     'alter table public.bank_transactions add constraint bank_transactions_source_check '
     || 'check (source is null or source = any (%L::text[]))',
     (
-      -- o que ja existe na tabela...
-      select array(select distinct source
-                     from public.bank_transactions
-                    where source is not null)
-      -- ...mais o que o codigo grava hoje (o caixa trouxe os tres ultimos)
-          || array['plaid', 'csv', 'pdf', 'quickbooks', 'manual', 'historico',
-                   'regra', 'recebimento', 'deposito', 'taxa']
+      -- A UNIAO, sem repetir e em ordem fixa: `union` ja elimina a duplicata
+      -- (um `||` cru deixava `plaid` duas vezes no texto do CHECK) e o
+      -- `order by` faz a regra sair igual em toda rodada -- sem isso,
+      -- comparar o CHECK de dois bancos acusa diferenca que nao existe.
+      select array(
+        select distinct origem from (
+          -- o que ja esta gravado na tabela...
+          select source as origem
+            from public.bank_transactions
+           where source is not null
+          union
+          -- ...mais o que o codigo grava hoje (o caixa trouxe os tres ultimos)
+          select unnest(array['plaid', 'csv', 'pdf', 'quickbooks', 'manual',
+                              'historico', 'regra', 'recebimento', 'deposito',
+                              'taxa'])
+        ) u
+        order by origem
+      )
     )
   );
 end $$;
@@ -344,20 +355,24 @@ begin
     raise exception 'o CHECK de source nao foi recriado';
   end if;
 
-  -- As tres do caixa precisam caber. Testa de verdade, numa transacao que
-  -- volta atras: conferir o texto do CHECK nao prova nada.
-  begin
-    insert into public.bank_transactions (client_id, tx_date, amount, source)
-    values (gen_random_uuid(), current_date, 1, 'recebimento'),
-           (gen_random_uuid(), current_date, 1, 'deposito'),
-           (gen_random_uuid(), current_date, 1, 'taxa');
-    raise exception 'conferencia_ok';   -- desfaz o insert de propósito
-  exception
-    when check_violation then
-      raise exception 'o CHECK ainda recusa recebimento/deposito/taxa';
-    when others then
-      if sqlerrm <> 'conferencia_ok' then raise; end if;
-  end;
+  -- As tres do caixa precisam caber. Conferir o TEXTO do CHECK nao prova
+  -- nada, mas inserir na tabela de verdade tambem nao serve: a primeira
+  -- versao desta conferencia fez `insert into bank_transactions` com tres
+  -- colunas e bateu em
+  --   null value in column "description" violates not-null constraint
+  -- derrubando a migracao INTEIRA (o SQL Editor roda tudo numa transacao,
+  -- entao o CHECK novo voltou atras junto). Conferencia nao pode depender
+  -- de colunas que ela nao conhece.
+  --
+  -- Entao: copia-se o CHECK real para uma tabela TEMPORARIA de uma coluna e
+  -- testa-se nela. Mesmo predicado, nenhuma dependencia do resto do schema,
+  -- e nada tocado em bank_transactions.
+  execute format('create temp table _conferir_origem (source text, constraint c %s)',
+    (select pg_get_constraintdef(oid) from pg_constraint
+      where conname = 'bank_transactions_source_check'
+        and conrelid = 'public.bank_transactions'::regclass));
+  insert into _conferir_origem (source) values ('recebimento'), ('deposito'), ('taxa');
+  drop table _conferir_origem;
 
   raise notice 'bank_transactions.source: recebimento, deposito e taxa cabem no CHECK';
 end $$;
@@ -660,7 +675,7 @@ values
   ('sql/caixa-da-firma-v1.sql', 'fc953f8dd2cec5ba6d64cb174c86b6f02345b9d79501a5592227bdc930191627', 'sql-editor'),
   ('sql/caixa-conciliacao-v1.sql', '64d14946e04d1bf72b79024f1d5a3493b44b8b835d81ac7181c686534dde9958', 'sql-editor'),
   ('sql/caixa-conciliacao-v2.sql', '7a78894c21191dd5085f2fcd149e891a55b85992516c3bde72348a3cd0e98198', 'sql-editor'),
-  ('sql/caixa-origens-v1.sql', 'adcff925fb888832aa8233fb81394d6f5c7d7fec30bd671bfd3446accc93fae9', 'sql-editor'),
+  ('sql/caixa-origens-v1.sql', '4edee9addb76cec1976d5fc1a1ecf5d78156a982eeb433020b38dcd904604a02', 'sql-editor'),
   ('sql/caixa-conciliacao-funcao-v1.sql', '63dfcb7f0a702c9819572d33f736ef512cbcdefb9124f6c7624a7ee89a7ac372', 'sql-editor'),
   ('sql/contas-a-pagar-v1.sql', '1e6dce9089104130fa61f122cbad4d09a2e31ec2e4faff414c32a690765b0ddb', 'sql-editor')
 on conflict (arquivo) do update
