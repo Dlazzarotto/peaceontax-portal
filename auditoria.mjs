@@ -1466,6 +1466,35 @@ titulo('A ORDEM DAS MIGRACOES APONTA PARA ARQUIVO QUE EXISTE')
 }
 
 
+titulo('A LISTA DE PENDENTES SAI NUA (--so-nomes)')
+// O workflow faz PENDENTES=$(node scripts/migrar.mjs --pendentes --so-nomes)
+// e passa CADA LINHA adiante como nome de arquivo. Qualquer coisa que o
+// script escreva no STDOUT ali vira uma "migracao" inexistente.
+//
+// Era o caso de `Conexao: psql`, que ia por console.log. Nunca tinha
+// aparecido porque o aplicar automatico nunca chegou a rodar ate o fim --
+// o defeito esperava a primeira vez que alguem apertasse o botao.
+{
+  const arq = join(raiz, 'scripts/migrar.mjs')
+  const t = existsSync(arq)
+    ? readFileSync(arq, 'utf8').split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
+    : ''
+  // A linha da conexao e o caso conhecido; ela tem de ir para o stderr.
+  const porStdout = /console\.log\(`Conexão: /.test(t)
+  const porStderr = /console\.error\(`Conexão: /.test(t)
+  if (!t)
+    falta('A lista de pendentes sai nua', 'scripts/migrar.mjs nao existe')
+  else if (porStdout)
+    falta('A lista de pendentes sai nua',
+      '`Conexão:` vai por console.log -- entra na lista que o workflow passa como nome de arquivo')
+  else if (!porStderr)
+    falta('A lista de pendentes sai nua',
+      'nao achei a linha `Conexão:` -- a conferencia perdeu a ancora e nao esta conferindo nada')
+  else
+    ok('A lista de pendentes sai nua (--so-nomes nao leva diagnostico)')
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],

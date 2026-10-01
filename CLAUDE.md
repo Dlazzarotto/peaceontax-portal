@@ -949,8 +949,30 @@ middleware.ts        controle de acesso por rota
   `testes/ordem-das-migracoes.mts`; a auditoria recusa declaração que aponte
   para arquivo inexistente (some em silêncio num rename e a ordem volta à
   alfabética) e recusa o mapa vazio.
+  **O livro tem três jeitos de estar torto, e os três faziam migração
+  APLICADA parecer NUNCA APLICADA** — o lado que leva a rodar de novo em
+  produção (`scripts/livro-de-migracoes.mjs`, puro e com teste). O leitor
+  exigia `[0-9a-f]{64}`, então **linha com sha em branco sumia do mapa** e
+  era anunciada como PENDENTE (`sql/permissoes-por-pessoa-v3.sql`, no banco
+  real). E **nome curto ficava invisível**: a chave é o CAMINHO, quatro
+  linhas foram gravadas como `x.sql`, ninguém consulta por essa chave, e as
+  quatro apareciam como PENDENTE. Agora são estados próprios —
+  `REGISTRO SEM SHA` e `REGISTRADA COM NOME CURTO` —, ficam **fora do
+  automático** (o arquivo muito provavelmente já está no banco; reaplicar é
+  o risco, esperar não é) e o relato imprime **o `update` que arruma cada
+  linha**. É a regra da casa outra vez: linha malformada não pode virar
+  "não existe", como consulta que falha não pode virar lista vazia.
   `--pendentes --so-nomes` devolve só os caminhos, para o workflow consumir;
-  ele lista apenas **PENDENTE**. "MUDOU DEPOIS DE APLICADO" (arquivo editado
+  ele lista apenas **PENDENTE**.
+  **E sai NUA: diagnóstico vai para o stderr.** O workflow faz
+  `PENDENTES=$(… --so-nomes)` e passa CADA LINHA adiante como nome de
+  arquivo — `Conexão: psql` ia por `console.log` e viraria duas "migrações"
+  inexistentes. Nunca apareceu porque o `aplicar` automático nunca tinha
+  chegado ao fim; o defeito esperava o primeiro clique no botão. A auditoria
+  recusa a linha por `console.log`, e **âncora perdida é FALHA**.
+  Corolário do mesmo caso: **relato antes de recusa**. A recusa por
+  dependência sai com `exit(3)`, e na primeira versão ela engolia justamente
+  o `update` que a pessoa precisava para decidir. "MUDOU DEPOIS DE APLICADO" (arquivo editado
   depois de rodar — aconteceu com a conferência da `permissoes-por-pessoa-v1`)
   aparece no relato e fica FORA do automático: pode ser inofensivo, pode não
   ser, e quem decide é gente.
