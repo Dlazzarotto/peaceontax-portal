@@ -18,10 +18,24 @@
 #     acao = aplicar  → aplica o que falta, na ordem dos arquivos
 #
 # O QUE PRECISA ESTAR CONFIGURADO (uma vez só)
-#   Settings → Secrets and variables → Actions → New repository secret
-#     Nome:  SUPABASE_DB_URL
-#     Valor: a cadeia de conexão do Postgres do projeto
-#            (Supabase → Project Settings → Database → Connection string)
+# Settings → Secrets and variables → Actions → New repository secret.
+# Há DOIS caminhos; basta UM.
+#
+# CAMINHO A — token de acesso (mais simples, e é o recomendado)
+#     SUPABASE_ACCESS_TOKEN   token pessoal do Supabase (Account → Access Tokens)
+#     SUPABASE_PROJECT_REF    o ref do projeto (o `xxxx` de https://xxxx.supabase.co)
+#   Vai pela API de gestão, por HTTPS. Não tem cadeia de conexão para digitar
+#   errado, não tem senha para escapar e não tem IPv6 para dar "network
+#   unreachable" — os três defeitos que já custaram tempo neste repositório.
+#   Crie o token ESCOPADO (começa com `sbp_fc`), com a permissão **Database**
+#   em **Read-write** — é a que libera o endpoint "Run a query" — e escopado
+#   AO PROJETO DESTE repositório. Token clássico carrega a conta inteira:
+#   toda organização e todo projeto, inclusive os que você criar depois.
+#   Token expira: se o do painel tem data, o job para de funcionar nela, sem
+#   aviso nenhum antes.
+#
+# CAMINHO B — cadeia de conexão do Postgres
+#     SUPABASE_DB_URL   (Supabase → Project Settings → Database → Connection string)
 #   Use a do **Session pooler**: o runner do GitHub só tem IPv4, e a conexão
 #   direta de vários projetos hoje é só IPv6 — daria "network unreachable".
 #
@@ -31,6 +45,11 @@
 #   e deixe a URI sem senha. Dentro de uma URI o psql corta no PRIMEIRO `@`
 #   (conferido no PG 16), então `ab@cd` faria o servidor virar outra coisa e
 #   o erro falaria de "host name". Por PGPASSWORD não há parser nenhum.
+#
+# COM OS DOIS DEFINIDOS, O PSQL VENCE e o token nem é tentado
+# (`escolherExecutor` em scripts/migrar.mjs). O passo da credencial DIZ isso,
+# porque senão quem acabou de criar um token vê o job falhar na cadeia antiga
+# sem entender por quê. Para ir pela API, apague o secret SUPABASE_DB_URL.
 #
 # NUNCA roda sozinho no push: migração é ato consciente, como enviar documento
 # ao cliente. Quem decide é quem aperta.
@@ -74,9 +93,15 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
-          if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "::error::Falta o secret SUPABASE_DB_URL. Settings → Secrets and variables → Actions."
+          if [ -z "$SUPABASE_DB_URL" ] && [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "::error::Falta credencial. Defina SUPABASE_ACCESS_TOKEN (+ SUPABASE_PROJECT_REF) ou SUPABASE_DB_URL em Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          if [ -z "$SUPABASE_DB_URL" ] && [ -z "$SUPABASE_PROJECT_REF" ]; then
+            echo "::error::Com SUPABASE_ACCESS_TOKEN falta SUPABASE_PROJECT_REF: o token diz QUEM esta mexendo, o ref diz EM QUE projeto."
             exit 1
           fi
           # Existir não basta: texto que não é URI faz o psql procurar um
@@ -87,6 +112,8 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: node scripts/migrar.mjs --pendentes
 
       - name: Aplicar
@@ -94,6 +121,8 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           # As pendentes, na ordem em que --pendentes as lista (ordem do
           # arquivo em sql/, que é a ordem de dependência que a entrega diz).
@@ -112,4 +141,6 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: node scripts/migrar.mjs --pendentes
