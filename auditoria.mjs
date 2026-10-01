@@ -1164,6 +1164,28 @@ titulo('CAMINHO DE ARQUIVO A PARTIR DO MODULO (Windows)')
 }
 
 
+titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
+// `colar-no-sql-editor/caixa-completo.sql` e uma COPIA das migracoes, para
+// quem nao tem psql nem token. Copia que envelhece em silencio e pior que
+// copia nenhuma: alguem cola uma versao antiga achando que aplicou a nova.
+// Aqui ela e regerada em memoria e comparada.
+{
+  const saida = 'colar-no-sql-editor/caixa-completo.sql'
+  const fontes = ['sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql',
+                  'sql/caixa-conciliacao-funcao-v1.sql']
+  if (!existsSync(join(raiz, saida))) {
+    ver(`${saida} nao existe (nada a conferir)`)
+  } else {
+    const { montar } = await import(`file://${join(raiz, 'scripts/juntar-para-colar.mjs')}`)
+    const esperado = montar(fontes, (a) => readFileSync(join(raiz, a), 'utf8'))
+    readFileSync(join(raiz, saida), 'utf8') === esperado
+      ? ok('O arquivo de colar esta em dia com as migracoes')
+      : falta('O arquivo de colar esta em dia com as migracoes',
+          `regere: node scripts/juntar-para-colar.mjs ${saida} ${fontes.join(' ')}`)
+  }
+}
+
+
 titulo('ARQUIVOS .bak VERSIONADOS (nao deviam ir para o Git)')
 let baks = []
 try { baks = execSync('git ls-files', { cwd: raiz, encoding: 'utf8' }).split('\n').filter(f => f.endsWith('.bak')) } catch {}
