@@ -1050,9 +1050,22 @@ recusar('E a rota nao lanca nada por fora dela',
     : falta('Sincronizar duas vezes nao dobra a receita (indice unico e SIMPLES)',
         'unico, para nao dobrar a receita; simples, porque `on conflict (payment_id)` nao enxerga indice parcial')
 }
-checar('E a rotina respeita esse indice',
-  'lib/caixa-recebimentos.ts', /onConflict:\s*'payment_id',\s*ignoreDuplicates:\s*true/,
-  'duas abas sincronizando ao mesmo tempo nao podem lancar o mesmo recebimento duas vezes')
+{
+  // A rotina NAO pode depender da FORMA do indice. Ela dependia: usava
+  // `on conflict (payment_id)`, que nao infere indice PARCIAL, e em
+  // producao nenhum recebimento entrava. Agora e insert puro + 23505
+  // tratado linha a linha -- funciona com indice parcial, simples, ou
+  // enquanto a migracao nao roda. O indice segue sendo quem garante que a
+  // receita nao dobre; a rotina so nao depende do formato dele.
+  const t = readFileSync(join(raiz, 'lib/caixa-recebimentos.ts'), 'utf8')
+  const codigo = t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const semOnConflict = !/onConflict/.test(codigo)
+  const trataDuplicata = /ehDuplicata\(/.test(codigo) && /23505/.test(codigo)
+  semOnConflict && trataDuplicata
+    ? ok('A sincronizacao nao depende da forma do indice')
+    : falta('A sincronizacao nao depende da forma do indice',
+        '`on conflict (payment_id)` nao infere indice parcial: ja derrubou a sincronizacao inteira em producao. Use insert puro e trate 23505.')
+}
 checar('Estorno DEPOIS do deposito nao se apaga em silencio',
   'lib/caixa-recebimentos.ts', /podeApagar\s*=\s*sobrando\.filter\([\s\S]{0,60}?!\s*\w+\.deposit_tx_id/,
   'o dinheiro ja entrou no banco: apagar a linha deixaria o deposito sem explicacao -- a lista do delete tem de excluir o que ja foi depositado')
