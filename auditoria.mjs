@@ -1281,8 +1281,12 @@ titulo('TODA ORIGEM QUE O CODIGO GRAVA CABE NO CHECK')
   // arquivo" engana.
   const arqOrigens = join(raiz, 'sql/caixa-origens-v1.sql')
   const texto = existsSync(arqOrigens) ? readFileSync(arqOrigens, 'utf8') : ''
-  const iArray = texto.indexOf('|| array[')
-  const lista = iArray < 0 ? '' : texto.slice(iArray, texto.indexOf(']', iArray))
+  // A ancora e o `unnest(array[...])` da UNIAO -- a lista que o codigo grava.
+  // Se ela sumir, isto precisa GRITAR, nao virar lista vazia: sem ancora a
+  // conferencia nao confere nada, e esse e justamente o modo de falhar que
+  // ja passou despercebido aqui.
+  const iArray = texto.indexOf('unnest(array[')
+  const lista = iArray < 0 ? null : texto.slice(iArray, texto.indexOf(']', iArray))
   const usados = new Set()
   for (const arq of [...arquivos(join(raiz, 'lib'), ['.ts']),
                      ...arquivos(join(raiz, 'app'), ['.ts'])]) {
@@ -1293,11 +1297,15 @@ titulo('TODA ORIGEM QUE O CODIGO GRAVA CABE NO CHECK')
   // As que a FUNCAO do banco grava tambem contam -- elas nao aparecem em .ts
   for (const o of ['deposito', 'taxa']) usados.add(o)
 
-  const fora = Array.from(usados).filter(o => !new RegExp(`'${o}'`).test(lista))
-  fora.length
-    ? falta('Toda origem que o codigo grava cabe no CHECK de source',
-        `fora de sql/caixa-origens-v1.sql: ${fora.join(', ')} -- o insert vai falhar com "violates check constraint"`)
-    : ok(`Toda origem que o codigo grava cabe no CHECK de source (${usados.size})`)
+  const fora = lista === null ? [] : Array.from(usados).filter(o => !new RegExp(`'${o}'`).test(lista))
+  if (lista === null)
+    falta('Toda origem que o codigo grava cabe no CHECK de source',
+      'nao achei o `unnest(array[` em sql/caixa-origens-v1.sql -- a conferencia perdeu a ancora e nao esta conferindo nada')
+  else if (fora.length)
+    falta('Toda origem que o codigo grava cabe no CHECK de source',
+      `fora de sql/caixa-origens-v1.sql: ${fora.join(', ')} -- o insert vai falhar com "violates check constraint"`)
+  else
+    ok(`Toda origem que o codigo grava cabe no CHECK de source (${usados.size})`)
 }
 
 
