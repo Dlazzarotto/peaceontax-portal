@@ -213,6 +213,15 @@ async function main() {
       console.log('Sem SUPABASE_DB_URL; vai pela API de gestão.')
       return
     }
+    // AS DUAS definidas: o psql VENCE (escolherExecutor), e o token fica
+    // sem uso. Isso precisa ser DITO: quem acabou de criar um token e vê o
+    // job falhar na cadeia antiga não tem como adivinhar que o token nem
+    // chegou a ser tentado.
+    if (process.env.SUPABASE_DB_URL && process.env.SUPABASE_ACCESS_TOKEN) {
+      console.log('aviso: SUPABASE_DB_URL e SUPABASE_ACCESS_TOKEN estao definidos.')
+      console.log('       Vai pelo psql (SUPABASE_DB_URL vence); o token NAO sera usado.')
+      console.log('       Para ir pela API, apague o secret SUPABASE_DB_URL.')
+    }
     const cred = credencialDoPostgres(process.env.SUPABASE_DB_URL, process.env.SUPABASE_DB_PASSWORD)
     if (cred.erro) { console.error(`::error::${cred.erro}`); process.exit(1) }
     if (cred.senha) console.log('Senha vem de SUPABASE_DB_PASSWORD (fora da URI).')

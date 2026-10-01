@@ -831,11 +831,33 @@ middleware.ts        controle de acesso por rota
   A entrega sempre diz qual migração precisa rodar.
   **Do celular (ou de qualquer lugar), a migração roda pelo GitHub:**
   Actions → *Migrações do banco* → Run workflow, com `acao = listar` (só
-  mostra) ou `acao = aplicar`. Precisa do secret `SUPABASE_DB_URL` em
-  Settings → Secrets and variables → Actions, com a cadeia do **Session
-  pooler** — o runner do GitHub só tem IPv4 e a conexão direta de muitos
-  projetos hoje é só IPv6. Nunca roda sozinho no push: migração é ato
+  mostra) ou `acao = aplicar`. Nunca roda sozinho no push: migração é ato
   consciente, como enviar documento ao cliente.
+  **São DOIS caminhos de credencial, e basta um** (`escolherExecutor` em
+  `migrar.mjs`). O recomendado é o **token**: `SUPABASE_ACCESS_TOKEN` +
+  `SUPABASE_PROJECT_REF`, que vai pela API de gestão por HTTPS e não tem
+  cadeia para digitar errado, senha para escapar nem IPv6 para dar
+  `network unreachable` — os três defeitos que já custaram tempo aqui. O
+  token tem de ser **escopado** (começa com `sbp_fc`), com a permissão
+  **Database** em **Read-write** (é ela que libera o endpoint *Run a query*,
+  que é o que `viaApi` chama) e **escopado a ESTE projeto**; token clássico
+  carrega a conta inteira, toda organização e todo projeto, inclusive os
+  criados depois. **Token expira**: no dia da data o job para, sem aviso
+  antes. O outro caminho é `SUPABASE_DB_URL` com a cadeia do **Session
+  pooler** — o runner do GitHub só tem IPv4 e a conexão direta de muitos
+  projetos hoje é só IPv6.
+  **Com os dois definidos o psql VENCE e o token nem é tentado** — quem
+  acabou de criar um token e vê o job falhar na cadeia antiga não tem como
+  adivinhar isso, então `--credencial` diz em voz alta qual vai ser usado.
+  Para ir pela API, apague o secret `SUPABASE_DB_URL`.
+  **Passo que roda `migrar.mjs` leva as QUATRO variáveis.** Esquecer uma não
+  quebra: o passo troca de caminho no meio do job, ou fica sem credencial —
+  `--pendentes` diria uma coisa e `aplicar` outra, aplicando migração em
+  produção. A auditoria confere os quatro passos, e **âncora perdida é
+  FALHA** (nenhum passo encontrado = não está conferindo nada). Ela tira os
+  COMENTÁRIOS antes de casar: o cabeçalho do workflow explica o `migrar.mjs`,
+  a explicação cai dentro do passo seguinte, e a primeira versão acusou dois
+  "passos" que eram só comentário.
   **Por que NÃO é um botão dentro do sistema:** a ideia era uma tela em
   Settings chamando `aplicar_sql(text)` no banco. Isso é execução de SQL
   arbitrário exposta por HTTP — mesmo travada no `service_role` e mesmo

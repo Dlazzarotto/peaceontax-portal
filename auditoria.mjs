@@ -1387,6 +1387,54 @@ titulo('O CAIXA DA FIRMA E SO DO SOCIO')
 }
 
 
+titulo('O WORKFLOW DA MIGRACAO LEVA AS DUAS CREDENCIAIS EM TODO PASSO')
+// scripts/migrar.mjs aceita dois caminhos: psql (SUPABASE_DB_URL) e a API de
+// gestao (SUPABASE_ACCESS_TOKEN + SUPABASE_PROJECT_REF). `escolherExecutor`
+// decide pelo que ESTA NO AMBIENTE -- entao um passo que esqueca uma das
+// variaveis nao quebra: ele muda de caminho, ou fica sem credencial nenhuma,
+// no meio do job. "--pendentes" diria uma coisa e "aplicar" outra.
+// Falha silenciosa num job que aplica migracao em banco de producao.
+{
+  const arq = join(raiz, '.github/workflows/migrar.yml')
+  const PRECISA = ['SUPABASE_DB_URL', 'SUPABASE_DB_PASSWORD',
+                   'SUPABASE_ACCESS_TOKEN', 'SUPABASE_PROJECT_REF']
+  if (!existsSync(arq)) {
+    falta('O workflow da migracao leva as duas credenciais', '.github/workflows/migrar.yml nao existe')
+  } else {
+    // Corta por passo (`      - name:` / `      - uses:`) e olha so os que
+    // rodam o migrar.mjs. Ancora perdida (nenhum passo encontrado) e FALHA,
+    // nunca "tudo certo": sem passo nenhum isto nao estaria conferindo nada.
+    // Tira os COMENTARIOS antes de casar: o cabecalho deste workflow explica
+    // o migrar.mjs, e as explicacoes caem dentro do passo seguinte. A
+    // primeira versao desta invariante acusou dois "passos" que eram so
+    // comentario -- a mesma armadilha de sempre: a palavra esta no arquivo,
+    // nao no codigo.
+    const semComentario = readFileSync(arq, 'utf8')
+      .split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
+    // O primeiro pedaco e tudo o que vem ANTES do primeiro passo (name do
+    // workflow, on:, concurrency:) -- nao e passo, entao sai com slice(1).
+    const passos = semComentario.split(/\n {6}- (?=name:|uses:)/).slice(1)
+    const comScript = passos.filter(b => b.includes('node scripts/migrar.mjs'))
+    const incompletos = comScript
+      .map(b => {
+        const nome = (/name:\s*(.+)/.exec(b) || [, '?'])[1].trim()
+        const faltando = PRECISA.filter(v => !new RegExp(`${v}:\\s*\\$\\{\\{`).test(b))
+        return faltando.length ? `${nome} (sem ${faltando.join(', ')})` : null
+      })
+      .filter(Boolean)
+
+    if (comScript.length === 0)
+      falta('O workflow da migracao leva as duas credenciais',
+        'nenhum passo com migrar.mjs encontrado -- a conferencia perdeu a ancora e nao esta conferindo nada')
+    else if (incompletos.length)
+      falta('O workflow da migracao leva as duas credenciais',
+        `${incompletos.join(' · ')} -- o passo muda de caminho no meio do job, sem erro`)
+    else
+      ok(`O workflow da migracao leva as duas credenciais em todo passo (${comScript.length})`)
+  }
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],
