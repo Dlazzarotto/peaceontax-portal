@@ -71,6 +71,29 @@ export default function BillingPage() {
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  // Cobrança no balcão: o QR fica num quadro, e a tela pergunta sozinha se
+  // já caiu. Sem isso quem atende fica olhando para o telefone do cliente
+  // sem saber se pode liberar.
+  const [qrBalcao, setQrBalcao] = useState<any>(null)
+
+  // Enquanto o quadro está aberto, pergunta de 3 em 3 segundos se a fatura
+  // já recebeu. Quem dá a baixa é o webhook do Stripe — esta tela só OLHA;
+  // ela nunca registra pagamento, senão haveria dois caminhos para o mesmo
+  // dinheiro. Para de perguntar assim que cai, e some ao fechar.
+  useEffect(() => {
+    if (!qrBalcao || qrBalcao.pago) return
+    let vivo = true
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/billing/cobranca-balcao?invoiceId=${qrBalcao.id}`)
+        const d = await r.json().catch(() => null)
+        if (!vivo || !d?.ok) return
+        if (d.pago) { setQrBalcao((q: any) => q && { ...q, pago: true }); load() }
+      } catch { /* rede oscilando no balcão não é erro para mostrar */ }
+    }, 3000)
+    return () => { vivo = false; clearInterval(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrBalcao?.id, qrBalcao?.pago])
   const [filtroDoc, setFiltroDoc] = useState('')
   const [filtroStatus, setFiltroStatus] = useState('')
   const [busca, setBusca] = useState('')
@@ -557,6 +580,21 @@ export default function BillingPage() {
     padding: '10px 16px', background: off ? '#E2E8F4' : bg, color: off ? '#9AAAB0' : '#fff',
     border: 'none', borderRadius: 9, fontSize: 14, fontWeight: 700, cursor: off ? 'not-allowed' : 'pointer',
   })
+  const abrirQrBalcao = async (inv: any) => {
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch('/api/billing/cobranca-balcao', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ invoiceId: inv.id }),
+      })
+      const d = await r.json().catch(() => ({ error: `Servidor respondeu ${r.status}` }))
+      if (!r.ok || !d.ok) { setMsg(`Erro: ${d.error || 'não foi possível gerar a cobrança'}`); return }
+      setQrBalcao({ ...d, id: inv.id, pago: false })
+    } catch (e) {
+      setMsg(`Erro de rede: ${(e as Error).message}`)
+    } finally { setBusy(false) }
+  }
+
   const acaoBtn = (cor: string): React.CSSProperties => ({
     background: 'none', border: 'none', color: cor, fontSize: 13, fontWeight: 700, cursor: 'pointer', marginRight: 10,
   })
@@ -929,6 +967,11 @@ export default function BillingPage() {
                             disabled={busy} style={acaoBtn(vencida(inv) ? '#B02020' : '#C06010')}>
                             {vencida(inv) ? 'Cobrar' : 'Lembrete'}
                           </button>
+                          {/* Balcão: o cliente paga ali, com o próprio
+                              telefone. Mesma chave das outras duas — pôr a
+                              cobrança diante do cliente é ENVIAR. */}
+                          <button onClick={() => abrirQrBalcao(inv)} disabled={busy}
+                            style={acaoBtn('#5B3FB5')}>QR no balcão</button>
                         </>)}
                         {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#1A6B4A')}>Receber</button>
@@ -1564,6 +1607,64 @@ export default function BillingPage() {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Cobrança no balcão ──────────────────────────────────────────
+          O cliente aponta o telefone, paga no Stripe e o webhook dá baixa.
+          Nenhuma integração nova: é o mesmo Checkout do portal. */}
+      {qrBalcao && (
+        <div onClick={() => setQrBalcao(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 420,
+                     width: '100%', textAlign: 'center' }}>
+            <div style={{ fontWeight: 800, color: '#0f2340', fontSize: 17 }}>
+              {qrBalcao.numero} — {qrBalcao.cliente}
+            </div>
+            <div style={{ fontSize: 30, fontWeight: 800, color: '#1A6B4A', margin: '6px 0 2px' }}>
+              {money(qrBalcao.saldo)}
+            </div>
+
+            {qrBalcao.pago ? (
+              <div style={{ background: '#e8f5ee', border: '1.5px solid #1A6B4A', borderRadius: 12,
+                            padding: '26px 18px', margin: '16px 0', color: '#14563b' }}>
+                <div style={{ fontSize: 40 }}>✓</div>
+                <div style={{ fontWeight: 800, fontSize: 16 }}>Pagamento recebido</div>
+                <div style={{ fontSize: 12.5, marginTop: 4 }}>
+                  A fatura já deu baixa sozinha. Nada a registrar à mão.
+                </div>
+              </div>
+            ) : (<>
+              <p style={{ fontSize: 13, color: '#6a7a9a', margin: '2px 0 12px' }}>
+                Peça ao cliente para apontar a câmera do telefone. Cartão, Apple Pay,
+                Google Pay ou débito em conta.
+              </p>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qrBalcao.qr} alt={`QR de pagamento da fatura ${qrBalcao.numero}`}
+                style={{ width: 260, height: 260, display: 'block', margin: '0 auto' }} />
+              <div style={{ fontSize: 12, color: '#6a7a9a', marginTop: 10 }}>
+                Esperando o pagamento…
+              </div>
+              {/* Nem todo cliente consegue usar a câmera — é justamente o caso
+                  comum aqui. O link vai por e-mail ou SMS pelos botões de
+                  sempre; copiar serve para colar onde for preciso. */}
+              <button onClick={() => { navigator.clipboard?.writeText(qrBalcao.url); setMsg('✓ Link copiado.') }}
+                style={{ marginTop: 10, padding: '7px 13px', borderRadius: 9, fontSize: 12.5,
+                         fontWeight: 700, border: '1.5px solid #cfdaea', background: '#fff',
+                         color: '#2D3278', cursor: 'pointer' }}>
+                Copiar o link
+              </button>
+            </>)}
+
+            <button onClick={() => setQrBalcao(null)}
+              style={{ marginTop: 14, padding: '10px 18px', borderRadius: 10, border: 'none',
+                       fontSize: 14, fontWeight: 800, color: '#fff',
+                       background: qrBalcao.pago ? '#1A6B4A' : '#6a7a9a', cursor: 'pointer' }}>
+              {qrBalcao.pago ? 'Pronto' : 'Fechar'}
+            </button>
           </div>
         </div>
       )}

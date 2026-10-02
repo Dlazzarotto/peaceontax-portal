@@ -397,6 +397,31 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
+- **Cobrar no balcão é um QR, não um leitor** (`lib/cobranca-balcao.ts`,
+  `/api/billing/cobranca-balcao`, quadro em `app/dashboard/billing`). O leitor
+  comprado foi o **Stripe Reader M2**, que é **Bluetooth**: só funciona com um
+  app móvel feito sobre o SDK do Terminal, e o app do Dashboard do Stripe
+  **não** o aciona (conferido no suporte do Stripe). Sistema web não fala
+  Bluetooth — então, sem leitor de internet, o balcão mostra um QR, o cliente
+  aponta o próprio telefone e paga.
+  **Não há integração nova com o Stripe:** é o MESMO Checkout do portal, com o
+  MESMO `metadata.invoice_id`, passando pelo mesmo `sessaoComFormasDisponiveis`.
+  O webhook que já existe (`payment_intent.succeeded` / `checkout.session.completed`,
+  com a idempotência das duas chaves) dá a baixa; o recebimento entra na conta
+  de passagem do caixa da firma e concilia no repasse. **A tela nunca registra
+  pagamento** — ela só PERGUNTA de 3 em 3 segundos se já caiu, senão haveria
+  dois caminhos para o mesmo dinheiro.
+  A chave é `enviar`, a mesma de Enviar/Reenviar/Cobrar: pôr a cobrança diante
+  do cliente é enviar, não receber. Duas regras puras, com teste (20 casos):
+  o valor é o **SALDO**, nunca o total (cobrar o total de fatura com entrada
+  paga cobra a entrada duas vezes), e **rascunho não é cobrável** — nunca
+  chegou ao cliente, e receber por ele deixaria a fatura rascunho depois de
+  paga. `PAGAVEL` é lista FECHADA: status novo nasce não cobrável.
+  **Para leitor de verdade, o caminho é um de INTERNET** (WisePOS E $249,
+  S700 $299), com a integração *server-driven* — sem SDK no navegador, e
+  testável com leitor simulado (`simulated-wpe`). App móvel com o M2 é a opção
+  cara: conta de desenvolvedor, loja, pareamento, e **não dá para conferir
+  deste container**.
 - **Conferir QUEM chama não é conferir QUAL cliente.** `isStaff` diz que a
   pessoa é da firma; o escopo por TIPO é `canAccessClient`. Nove rotas
   ficavam só no `isStaff` e recebiam um `clientId` de fora — entre elas
