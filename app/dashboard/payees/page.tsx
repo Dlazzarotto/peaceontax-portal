@@ -4,6 +4,20 @@
 // escopo (geral × de um cliente), tipo (vendor/customer) e conta contábil.
 // Trocar a conta aqui move os lançamentos em aberto e ajusta a regra que
 // classifica o nome — é ela que vale nas próximas importações.
+//
+// POR QUE A LINHA NÃO TRAZ A LISTA DE CLIENTES
+// Esta tela derrubava a aba do navegador (`RESULT_CODE_HUNG`): cada linha
+// montava um <select> com TODOS os clientes da firma. São quase mil, e o
+// cadastro de fornecedores passa dos milhares — 500 linhas já são 532 mil
+// <option> construídos de uma vez, e o Chrome mata a aba muito antes disso.
+// O custo não é da lista: é do PRODUTO linhas × clientes, e por isso filtrar
+// não salvava (quem abre a tela vê tudo antes de filtrar).
+// Duas travas, e as duas precisam existir:
+//   · o seletor de escopo só nasce na linha que está sendo editada — trocar
+//     escopo é raro e pede confirmação; manter mil opções em cada linha para
+//     um clique por mês é o que custou a aba;
+//   · a tabela desenha POR_PAGINA linhas por vez. Sem isto, bastaria o
+//     cadastro crescer para o mesmo travamento voltar por outro caminho.
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
@@ -17,6 +31,10 @@ interface Payee {
 interface ClienteRef { id: string; nome: string }
 interface Conta { name: string; kind: string }
 
+// Quantas linhas a tabela desenha por vez. O teto é do RENDER, não da busca:
+// filtrar e contar continuam valendo sobre o cadastro inteiro.
+const POR_PAGINA = 100
+
 export default function PayeesPage() {
   const [payees, setPayees] = useState<Payee[]>([])
   const [clientes, setClientes] = useState<ClienteRef[]>([])
@@ -28,6 +46,10 @@ export default function PayeesPage() {
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  const [mostrar, setMostrar] = useState(POR_PAGINA)
+  // id da linha cujo escopo está sendo editado — e só ela monta o seletor
+  // com a lista de clientes.
+  const [editandoEscopo, setEditandoEscopo] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -53,17 +75,18 @@ export default function PayeesPage() {
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${aviso}${d.message ? ` — ${d.message}` : ''}`)
+    setEditandoEscopo(null)
     load()
   }
 
   // Escopo: "" = geral (todos os clientes); id = só aquele cliente
   const trocarEscopo = (p: Payee, valor: string) => {
-    if (valor === (p.clientId || '')) return
+    if (valor === (p.clientId || '')) { setEditandoEscopo(null); return }
     const nomeDestino = valor ? (clientes.find(c => c.id === valor)?.nome || 'esse cliente') : null
     const aviso = nomeDestino
       ? `Deixar "${p.name}" só para ${nomeDestino}?\n\nO cadastro sai da lista geral. Os lançamentos que já usam esse nome em outros clientes continuam como estão — o nome é texto no lançamento.`
       : `Tornar "${p.name}" um fornecedor geral, válido para todos os clientes?`
-    if (!confirm(aviso)) { load(); return }
+    if (!confirm(aviso)) { setEditandoEscopo(null); return }
     patch(p, valor ? { scope: 'client', targetClientId: valor } : { scope: 'global' }, 'Escopo atualizado')
   }
 
@@ -85,12 +108,20 @@ export default function PayeesPage() {
     load()
   }
 
+  // Filtro novo, contagem nova: sem isto quem já tinha expandido a lista
+  // continuaria desenhando centenas de linhas do resultado seguinte.
+  useEffect(() => { setMostrar(POR_PAGINA); setEditandoEscopo(null) }, [busca, cliente, tipo])
+
   const nomesClientes = Array.from(new Set(payees.filter(p => p.escopo === 'client').map(p => p.cliente))).sort()
   const q = busca.trim().toLowerCase()
   const lista = payees
     .filter(p => cliente === 'all' || (cliente === '__global' ? p.escopo === 'global' : p.cliente === cliente))
     .filter(p => tipo === 'all' || p.type === tipo)
     .filter(p => !q || p.name.toLowerCase().includes(q) || p.cliente.toLowerCase().includes(q))
+
+  // O teto é do desenho. `lista` continua inteira para contar e para o botão
+  // saber quanto falta.
+  const naTela = lista.slice(0, mostrar)
 
   const card: React.CSSProperties = { background: '#fff', border: '1px solid #E2E8F4', borderRadius: 16, padding: '18px 20px', marginBottom: 16 }
   const inp: React.CSSProperties = { padding: '10px 12px', border: '1.5px solid #E2E8F4', borderRadius: 9, fontSize: 14.5, outline: 'none' }
@@ -149,20 +180,38 @@ export default function PayeesPage() {
                 ))}
               </tr></thead>
               <tbody>
-                {lista.map(p => (
+                {naTela.map(p => (
                   <tr key={p.id} style={{ borderBottom: '1px solid #F0F4FA' }}>
                     <td style={{ padding: '10px', fontSize: 15, fontWeight: 700, color: '#0F2340' }}>{p.name}</td>
 
                     <td style={{ padding: '10px' }}>
-                      <select value={p.clientId || ''} disabled={busy || !podeEscopo}
-                        title={podeEscopo ? 'Geral (todos os clientes) ou só de um cliente' : 'Só gerente ou sócio troca o escopo'}
-                        onChange={e => trocarEscopo(p, e.target.value)}
-                        style={{ ...sel, cursor: podeEscopo ? 'pointer' : 'not-allowed',
-                          color: p.escopo === 'global' ? '#8A5A00' : '#0F2340',
-                          background: p.escopo === 'global' ? '#FFF7E6' : '#fff' }}>
-                        <option value="">🌐 Todos os clientes</option>
-                        {clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-                      </select>
+                      {/* A lista de clientes só é montada na linha em edição:
+                          era ela, repetida em cada linha, que travava a aba. */}
+                      {editandoEscopo === p.id ? (
+                        <select value={p.clientId || ''} disabled={busy} autoFocus
+                          onChange={e => trocarEscopo(p, e.target.value)}
+                          // Fechar no blur SEM espera perde a escolha: em
+                          // celular o `change` às vezes chega depois do blur,
+                          // e o <select> já teria sido desmontado. É a mesma
+                          // espera do autocomplete do payee, pelo mesmo motivo.
+                          onBlur={() => setTimeout(() => setEditandoEscopo(null), 200)}
+                          style={{ ...sel, cursor: 'pointer' }}>
+                          <option value="">🌐 Todos os clientes</option>
+                          {clientes.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                        </select>
+                      ) : (
+                        <button type="button" disabled={busy || !podeEscopo}
+                          onClick={() => setEditandoEscopo(p.id)}
+                          title={podeEscopo ? 'Geral (todos os clientes) ou só de um cliente' : 'Só gerente ou sócio troca o escopo'}
+                          style={{ ...sel, fontFamily: 'inherit', textAlign: 'left' as const,
+                            whiteSpace: 'nowrap' as const, overflow: 'hidden' as const,
+                            textOverflow: 'ellipsis' as const,
+                            cursor: podeEscopo ? 'pointer' : 'not-allowed',
+                            color: p.escopo === 'global' ? '#8A5A00' : '#0F2340',
+                            background: p.escopo === 'global' ? '#FFF7E6' : '#fff' }}>
+                          {p.escopo === 'global' ? '🌐 Todos os clientes' : p.cliente}{podeEscopo ? ' ▾' : ''}
+                        </button>
+                      )}
                       {p.clientId && (
                         <Link href={`/clients/${p.clientId}`} style={{ display: 'block', marginTop: 4, fontSize: 11.5, color: '#2D3278', fontWeight: 700, textDecoration: 'none' }}>
                           abrir cliente →
@@ -211,6 +260,19 @@ export default function PayeesPage() {
                 ))}
               </tbody>
             </table>
+          )}
+
+          {lista.length > naTela.length && (
+            <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' as const }}>
+              <button onClick={() => setMostrar(m => m + POR_PAGINA)}
+                style={{ padding: '10px 18px', borderRadius: 9, border: '1.5px solid #2D3278',
+                  background: '#fff', color: '#2D3278', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                Mostrar mais {Math.min(POR_PAGINA, lista.length - naTela.length)}
+              </button>
+              <span style={{ fontSize: 13.5, color: '#6A7A9A' }}>
+                mostrando {naTela.length} de {lista.length} — use a busca para chegar direto ao nome
+              </span>
+            </div>
           )}
         </div>
       )}

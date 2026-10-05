@@ -833,6 +833,41 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `testes/lista-flutuante.mts`, incluindo uma varredura do campo por toda a
   altura da janela. A auditoria recusa `\w+.bottom + N` em arquivo que use
   `getBoundingClientRect` sem passar por `posicionarLista`.
+- **Linha de tabela não carrega lista grande — o custo é o PRODUTO.** A tela
+  Listas → Fornecedores e clientes derrubava a aba do navegador
+  (`RESULT_CODE_HUNG`, o Chrome matando o renderizador): cada linha montava um
+  `<select>` com TODOS os clientes da firma. Medido em Chromium: **22,7 ms por
+  mil `<option>`**, linear. São quase mil clientes e o cadastro de
+  fornecedores passa dos milhares — 500 linhas já são 532 mil `<option>` e
+  **~12 s** de thread principal travada; 2.000 linhas, ~48 s. O Chrome mata a
+  aba muito antes. Filtrar não salvava: quem abre a tela vê tudo ANTES de
+  filtrar. Duas travas, e as duas precisam existir, senão o defeito volta pelo
+  outro caminho: **o seletor pesado só nasce na linha em edição** (trocar
+  escopo é raro e já pede confirmação — manter mil opções em cada linha para
+  um clique por mês foi o que custou a aba) e **a tabela desenha `POR_PAGINA`
+  linhas por vez**, com o teto no DESENHO, nunca na busca nem na contagem.
+  Depois: 161 ms. Fechar o editor no `blur` tem de ESPERAR (200 ms, o mesmo do
+  autocomplete do payee): em celular o `change` às vezes chega depois do blur,
+  e desmontar antes perde a escolha em silêncio.
+  **Não há invariante de auditoria para isto, e é decisão, não esquecimento:**
+  a forma do código corrigido — o `.map` de `<option>` dentro do `.map` da
+  linha, agora sob `editandoEscopo === p.id` — é a MESMA do defeito. Uma
+  conferência estrutural acusaria o conserto, e invariante que reprova código
+  certo ensina a cadastrar exceção. A regra fica escrita; a conta é
+  `linhas × opções`, e acima de ~50 mil `<option>` num render a aba congela.
+  **Dívida medida e aberta**: `components/BookkeepingTab.tsx` tem a mesma
+  forma na linha do lançamento (conta contábil + contas bancárias, ~60-80
+  `<option>` por linha, até 8.000 linhas = ~560 mil, ~12 s). Não foi mexida
+  junto porque é a mesa de trabalho diária e paginar ali mexe no "selecionar
+  tudo" e nas ações em lote — é decisão do sócio, não conserto de passagem.
+- **A escolha da regra do payee é uma só, o caminho até ela é que mudou.**
+  `regraDoPayee` era chamada DENTRO do laço dos fornecedores e varria a lista
+  inteira de regras a cada volta: com o teto de 5.000 dos dois lados são 25
+  milhões de comparações, cada uma com `trim`/`toLowerCase`, só para abrir
+  Listas → Fornecedores. `indexarRegras` monta o índice uma vez e
+  `regraNoIndice` faz a MESMA escolha (a regra do próprio cliente ganha da
+  geral) numa consulta. `regraDoPayee` continua existindo e delega — duas
+  telas nunca devem decidir a mesma coisa de jeitos diferentes.
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.
