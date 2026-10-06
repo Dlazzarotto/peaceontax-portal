@@ -397,6 +397,54 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
+- **Contrato recorrente: editar e encerrar pedem senha, motivo e trilha —
+  e a aba parou de prometer o que o sistema não faz**
+  (`lib/contrato-recorrente.ts`, `/api/billing/recurring`, migração
+  `sql/contrato-recorrente-auditoria-v1.sql`). A aba só tinha
+  Pausar/Reativar, e o PATCH que já aceitava valor, dia e cobrança
+  automática **não pedia senha, não pedia motivo, não deixava rastro e não
+  conferia de qual cliente era o contrato** — `isStaff` diz QUEM chama, não
+  QUAL cliente, e bastava mandar o `id` de um contrato de empresa. Editar
+  uma FATURA, documento único, exige as três primeiras; o contrato exigia
+  zero. A fatura erra uma vez, **o contrato erra todo mês**.
+  **Encerrar ≠ pausar.** Pausar é reversível e não mexe no acordo: segue em
+  um clique, mas vai para a trilha. Encerrar grava `end_date`, desliga e
+  **não volta** — `situacaoDoContrato` olha o `end_date` ANTES do `active`,
+  senão um contrato acabado apareceria como "pausado", com botão de
+  Reativar, ressuscitando um acordo que as duas partes desfizeram.
+  **A trilha vem ANTES da alteração** (`recurring_plan_audit`): se o insert
+  falhar, a edição é RECUSADA e a mensagem diz qual migração falta. Mudança
+  sem rastro é pior que mudança não feita (princípio 2). O preço é uma linha
+  de trilha sobrando se o update seguinte falhar — esse lado é o barato.
+  **A próxima cobrança tinha dois defeitos mudos**, agora em módulo puro com
+  59 casos: somava **um mês sempre**, qualquer que fosse o intervalo (o
+  trimestral tinha data de mensal), e usava o dia do **servidor em UTC**, não
+  o do escritório — o mesmo defeito já corrigido na lista de faturas e no
+  relatório. A régua é **ancorada no início**, não em hoje: trimestral que
+  começou em 10/jan cobra jan · abr · jul · out; recalcular a partir de hoje
+  daria outra régua a cada edição e a data andaria sozinha. Mexer em dia,
+  início ou intervalo **recalcula `next_run`** — trocar o dia deixava a
+  próxima data na antiga, em silêncio.
+  Três armadilhas na comparação do que mudou, cada uma marcando "mudou" sem
+  nada ter mudado e enchendo a trilha de ruído: `350` × `'350.00'`,
+  `auto_charge` nulo × `false`, e `date` devolvido com hora. A quarta é o
+  oposto: **campo de data VAZIO é "não mexi nisso", não "data inválida"** —
+  contrato sem `start_date` fazia quem só queria trocar o VALOR levar um erro
+  falando de data.
+  **E a aba mentia.** O texto dizia "Gera fatura sozinho no dia escolhido".
+  **Nada no repositório lê `recurring_plans`** além da própria rota: não há
+  cron para ela (o único é o aviso de cobrança), não há geração de fatura,
+  não há Stripe — e o relatório de receita recorrente lê `payment_plans`,
+  outra tabela. Como há pelo menos um gatilho nessa tabela que **só existe no
+  banco** (o que recusa auto-cobrança sem cartão), não dá para afirmar daqui
+  que não exista um `pg_cron`; então a tela não afirma nada: ela marca
+  **⚠ a data passou e nada foi gerado** quando `next_run` ficou para trás com
+  o contrato ativo. É auto-evidente — quem gerasse a fatura teria movido o
+  `next_run`. Gerar a fatura de verdade é decisão aberta, junto com a
+  duplicação Plans × `recurring_plans`.
+  O GET passou a filtrar os contratos por `clientesOcultos`: filtrava a lista
+  de CLIENTES e não a de contratos, então o nome das empresas (e o caixa da
+  firma) aparecia para quem não pode abri-las.
 - **Cobrar no balcão é um QR, não um leitor** (`lib/cobranca-balcao.ts`,
   `/api/billing/cobranca-balcao`, quadro em `app/dashboard/billing`). O leitor
   comprado foi o **Stripe Reader M2**, que é **Bluetooth**: só funciona com um

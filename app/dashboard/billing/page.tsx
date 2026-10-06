@@ -126,6 +126,15 @@ export default function BillingPage() {
   const [cCliente, setCCliente] = useState(''); const [cDesc, setCDesc] = useState('')
   const [cValor, setCValor] = useState(''); const [cDia, setCDia] = useState('5')
   const [cAuto, setCAuto] = useState(false)
+  const [cIntervalo, setCIntervalo] = useState<'monthly' | 'quarterly' | 'annual'>('monthly')
+  // Editar e encerrar: UM contrato por vez. O formulário pesado (que traz o
+  // catálogo de serviços) só existe para a linha aberta — a lição da tela de
+  // fornecedores, onde um <select> por linha derrubava a aba.
+  const [editando, setEditando] = useState<any>(null)
+  const [edForm, setEdForm] = useState<any>({})
+  const [edMotivo, setEdMotivo] = useState(''); const [edSenha, setEdSenha] = useState('')
+  const [encerrando, setEncerrando] = useState<any>(null)
+  const [encMotivo, setEncMotivo] = useState(''); const [encSenha, setEncSenha] = useState('')
 
   // formulário
   const [abrirNovo, setAbrirNovo] = useState(false)
@@ -315,7 +324,7 @@ export default function BillingPage() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         clientId: cCliente, description: cDesc, amount: Number(cValor),
-        interval: 'monthly', dayOfMonth: Number(cDia), autoCharge: cAuto,
+        interval: cIntervalo, dayOfMonth: Number(cDia), autoCharge: cAuto,
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
@@ -333,12 +342,63 @@ export default function BillingPage() {
   }
 
   const alternarContrato = async (pl: any) => {
+    setBusy(true); setMsg('')
     const d = await fetch('/api/billing/recurring', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: pl.id, active: !pl.active }),
+      body: JSON.stringify({ id: pl.id, action: pl.active ? 'pause' : 'resume' }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`); loadPlanos()
+  }
+
+  // Abrir a edição é só carregar o que está gravado: o formulário começa
+  // igual ao acordo atual, e a rota recusa se nada mudar.
+  const abrirEdicaoContrato = (pl: any) => {
+    setEditando(pl)
+    setEdForm({
+      description: pl.description || '',
+      amount: String(pl.amount ?? ''),
+      interval: pl.interval || 'monthly',
+      dayOfMonth: String(pl.day_of_month ?? 1),
+      startDate: String(pl.start_date || '').slice(0, 10),
+      autoCharge: !!pl.auto_charge,
+    })
+    setEdMotivo(''); setEdSenha(''); setMsg('')
+  }
+
+  const salvarEdicaoContrato = async () => {
+    if (!editando) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/recurring', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: editando.id, action: 'edit',
+        description: edForm.description, amount: Number(edForm.amount),
+        interval: edForm.interval, dayOfMonth: Number(edForm.dayOfMonth),
+        startDate: edForm.startDate, autoCharge: !!edForm.autoCharge,
+        motivo: edMotivo, password: edSenha,
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false); setEdSenha('')
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    // Dizer O QUE mudou e para quando: 'atualizado' sozinho não distingue
+    // o que foi feito do que não foi.
+    setMsg(`✓ ${d.message} Próxima cobrança: ${dataUS(d.proxima)}.`)
+    setEditando(null); loadPlanos()
+  }
+
+  const encerrarContrato = async () => {
+    if (!encerrando) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/recurring', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: encerrando.id, action: 'end', motivo: encMotivo, password: encSenha }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false); setEncSenha('')
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setEncerrando(null); setEncMotivo(''); loadPlanos()
   }
 
   // Prévia das parcelas, calculada na tela antes de gravar
@@ -1017,8 +1077,10 @@ export default function BillingPage() {
                 Novo contrato
               </h2>
               <p style={{ fontSize: 13, color: '#6A7A9A', margin: '0 0 12px' }}>
-                Gera fatura sozinho no dia escolhido. Cobrança automática exige cartão ou ACH
-                autorizado pelo cliente — sem isso, a fatura é emitida e a baixa é manual.
+                O acordo com o cliente: o quê, quanto, com que frequência e em que dia.
+                A coluna <strong>Próxima</strong> avisa quando a data chega. Se a data passar
+                e nada tiver sido faturado, a linha marca <strong>⚠ a data passou</strong> —
+                confira antes de fechar o mês.
               </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <select value={cCliente} onChange={e => setCCliente(e.target.value)} style={{ ...inp, flex: '2 1 220px', cursor: 'pointer' }}>
@@ -1039,8 +1101,15 @@ export default function BillingPage() {
                   style={{ ...inp, flex: '2 1 170px' }} />
                 <input type="number" step="0.01" value={cValor} onChange={e => setCValor(e.target.value)}
                   placeholder="Valor" style={{ ...inp, width: 120 }} />
+                <select value={cIntervalo} onChange={e => setCIntervalo(e.target.value as any)}
+                  style={{ ...inp, width: 140, cursor: 'pointer' }}>
+                  <option value="monthly">mensal</option>
+                  <option value="quarterly">trimestral</option>
+                  <option value="annual">anual</option>
+                </select>
                 <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
                   Dia{' '}
+                  {/* Até 28 de propósito: 29, 30 e 31 não existem em todo mês. */}
                   <input type="number" min={1} max={28} value={cDia} onChange={e => setCDia(e.target.value)}
                     style={{ ...inp, width: 80 }} />
                 </label>
@@ -1059,31 +1128,65 @@ export default function BillingPage() {
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 720 }}>
                 <thead><tr>
-                  {['Cliente', 'Serviço', 'Valor', 'Dia', 'Próxima', 'Cobrança', 'Situação', ''].map(h => (
+                  {['Cliente', 'Serviço', 'Valor', 'Repete', 'Dia', 'Próxima', 'Cobrança', 'Situação', ''].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
                       color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4', whiteSpace: 'nowrap' as const }}>{h}</th>
                   ))}
                 </tr></thead>
                 <tbody>
                   {planos.map((pl: any) => (
-                    <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA', opacity: pl.active ? 1 : 0.55 }}>
+                    <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA',
+                      opacity: pl.situacao === 'ativo' ? 1 : 0.55, verticalAlign: 'top' as const }}>
                       <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{pl.cliente}</td>
                       <td style={{ padding: '10px', fontSize: 14 }}>{pl.description}</td>
                       <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>{money(pl.amount)}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5 }}>
+                        {pl.interval === 'quarterly' ? 'trimestral' : pl.interval === 'annual' ? 'anual' : 'mensal'}
+                      </td>
                       <td style={{ padding: '10px', fontSize: 13.5 }}>{pl.day_of_month}</td>
-                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>{dataUS(pl.next_run)}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
+                        {dataUS(pl.next_run)}
+                        {/* A data passou e o contrato continua ativo: quem gerasse a
+                            fatura teria movido o next_run. Como ele não andou, nada
+                            gerou — e isso o cliente não vê, a firma não cobra e
+                            ninguém é avisado. */}
+                        {pl.atrasado && (
+                          <div style={{ fontSize: 11, color: '#B02020', fontWeight: 700, marginTop: 2 }}>
+                            ⚠ a data passou e nada foi gerado
+                          </div>
+                        )}
+                      </td>
                       <td style={{ padding: '10px', fontSize: 13 }}>
                         {pl.auto_charge
                           ? <span style={{ color: '#1A6B4A', fontWeight: 700 }}>automática</span>
                           : <span style={{ color: '#6A7A9A' }}>manual</span>}
                       </td>
-                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700,
-                        color: pl.active ? '#1A6B4A' : '#9AAAB0' }}>{pl.active ? 'ativo' : 'pausado'}</td>
-                      <td style={{ padding: '10px' }}>
-                        {perms?.receber && (
-                          <button onClick={() => alternarContrato(pl)} style={acaoBtn(pl.active ? '#C06010' : '#1A6B4A')}>
-                            {pl.active ? 'Pausar' : 'Reativar'}
-                          </button>
+                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' as const,
+                        color: pl.situacao === 'ativo' ? '#1A6B4A' : pl.situacao === 'encerrado' ? '#B02020' : '#C06010' }}>
+                        {pl.situacao}
+                        {pl.situacao === 'encerrado' && pl.end_date && (
+                          <div style={{ fontSize: 11, fontWeight: 400, color: '#9AAAB0' }}>
+                            em {dataUS(pl.end_date)}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
+                        {/* Contrato encerrado não oferece botão: reativar um acordo
+                            que as duas partes desfizeram seria recriá-lo sem acordo. */}
+                        {perms?.receber && pl.situacao !== 'encerrado' && (
+                          <>
+                            <button onClick={() => abrirEdicaoContrato(pl)} disabled={busy} style={acaoBtn('#2D3278')}>
+                              Editar
+                            </button>
+                            <button onClick={() => alternarContrato(pl)} disabled={busy}
+                              style={{ ...acaoBtn(pl.active ? '#C06010' : '#1A6B4A'), marginLeft: 8 }}>
+                              {pl.active ? 'Pausar' : 'Reativar'}
+                            </button>
+                            <button onClick={() => { setEncerrando(pl); setEncMotivo(''); setEncSenha(''); setMsg('') }}
+                              disabled={busy} style={{ ...acaoBtn('#B02020'), marginLeft: 8 }}>
+                              Encerrar
+                            </button>
+                          </>
                         )}
                       </td>
                     </tr>
@@ -1614,6 +1717,152 @@ export default function BillingPage() {
       {/* ── Cobrança no balcão ──────────────────────────────────────────
           O cliente aponta o telefone, paga no Stripe e o webhook dá baixa.
           Nenhuma integração nova: é o mesmo Checkout do portal. */}
+      {/* EDITAR o contrato. Senha e motivo porque isto muda quanto e quando o
+          cliente paga — princípio 3. A trilha fica em recurring_plan_audit. */}
+      {editando && (
+        <div onClick={() => !busy && setEditando(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, overflowY: 'auto' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 520, width: '100%' }}>
+            <div style={{ fontWeight: 800, color: '#0f2340', fontSize: 17 }}>Editar contrato</div>
+            <div style={{ fontSize: 13.5, color: '#6A7A9A', margin: '2px 0 14px' }}>
+              {editando.cliente}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
+              {/* O catálogo preenche descrição e valor de uma vez — é o mesmo
+                  seletor da criação. Pesado? Não: só existe nesta linha. */}
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>TROCAR PELO SERVIÇO DO CATÁLOGO</span>
+                <select onChange={e => {
+                    const sv = (dados.services || []).find((x: any) => x.id === e.target.value)
+                    if (sv) setEdForm({ ...edForm, description: sv.nome, amount: String(sv.preco) })
+                  }}
+                  style={{ ...inp, cursor: 'pointer' }}>
+                  <option value="">— manter o que está —</option>
+                  {(dados.services || []).map((sv: any) => (
+                    <option key={sv.id} value={sv.id}>{sv.nome} · {money(sv.preco)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>SERVIÇO</span>
+                <input value={edForm.description || ''}
+                  onChange={e => setEdForm({ ...edForm, description: e.target.value })}
+                  placeholder="Bookkeeping mensal + Payroll" style={inp} />
+              </label>
+
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const }}>
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>VALOR $</span>
+                  <input type="number" step="0.01" value={edForm.amount || ''}
+                    onChange={e => setEdForm({ ...edForm, amount: e.target.value })}
+                    style={{ ...inp, width: 130 }} />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>REPETE</span>
+                  <select value={edForm.interval || 'monthly'}
+                    onChange={e => setEdForm({ ...edForm, interval: e.target.value })}
+                    style={{ ...inp, cursor: 'pointer', width: 140 }}>
+                    <option value="monthly">mensal</option>
+                    <option value="quarterly">trimestral</option>
+                    <option value="annual">anual</option>
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>DIA</span>
+                  <input type="number" min={1} max={28} value={edForm.dayOfMonth || ''}
+                    onChange={e => setEdForm({ ...edForm, dayOfMonth: e.target.value })}
+                    style={{ ...inp, width: 90 }} />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>INÍCIO</span>
+                  <input type="date" value={edForm.startDate || ''}
+                    onChange={e => setEdForm({ ...edForm, startDate: e.target.value })}
+                    style={{ ...inp, width: 170 }} />
+                </label>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#9AAAB0', marginTop: -4 }}>
+                A régua é ancorada no início: um trimestral que começou em 10/jan cobra
+                jan · abr · jul · out. Mexer no dia, no início ou na frequência recalcula a
+                próxima data.
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, color: '#4A5A70', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!edForm.autoCharge}
+                  onChange={e => setEdForm({ ...edForm, autoCharge: e.target.checked })} />
+                Cobrar automaticamente (exige cartão ou ACH autorizado pelo cliente)
+              </label>
+
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>O QUE ESTÁ MUDANDO E POR QUÊ</span>
+                <input value={edMotivo} onChange={e => setEdMotivo(e.target.value)}
+                  placeholder="cliente pediu Payroll junto, reajuste combinado em 09/2026" style={inp} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>SUA SENHA</span>
+                <input type="password" value={edSenha} onChange={e => setEdSenha(e.target.value)}
+                  autoComplete="off" style={{ ...inp, maxWidth: 240 }} />
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, marginTop: 18, justifyContent: 'flex-end' }}>
+              <button onClick={() => setEditando(null)} disabled={busy}
+                style={{ padding: '10px 16px', borderRadius: 9, border: '1.5px solid #CFDAEA',
+                         background: '#fff', color: '#4A5A70', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                Voltar
+              </button>
+              <button onClick={salvarEdicaoContrato} disabled={busy} style={btn('#1A6B4A', busy)}>
+                Salvar alteração
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ENCERRAR preserva: grava a data do fim e desliga. Apagar seria perder
+          o histórico de quanto este cliente pagou e por quê — princípio 2. */}
+      {encerrando && (
+        <div onClick={() => !busy && setEncerrando(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 440, width: '100%' }}>
+            <div style={{ fontWeight: 800, color: '#B02020', fontSize: 17 }}>Encerrar contrato</div>
+            <div style={{ fontSize: 13.5, color: '#4A5A70', margin: '8px 0 14px', lineHeight: 1.5 }}>
+              <strong>{encerrando.cliente}</strong> — {encerrando.description} · {money(encerrando.amount)}
+              <br />
+              O contrato sai do ar com a data de hoje e <strong>não volta</strong>: para
+              recomeçar com este cliente, crie um novo. O registro fica no histórico.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>POR QUE ESTÁ SENDO ENCERRADO</span>
+                <input value={encMotivo} onChange={e => setEncMotivo(e.target.value)}
+                  placeholder="cliente encerrou o bookkeeping em 09/2026" style={inp} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>SUA SENHA</span>
+                <input type="password" value={encSenha} onChange={e => setEncSenha(e.target.value)}
+                  autoComplete="off" style={{ ...inp, maxWidth: 240 }} />
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 18, justifyContent: 'flex-end' }}>
+              <button onClick={() => setEncerrando(null)} disabled={busy}
+                style={{ padding: '10px 16px', borderRadius: 9, border: '1.5px solid #CFDAEA',
+                         background: '#fff', color: '#4A5A70', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                Voltar
+              </button>
+              <button onClick={encerrarContrato} disabled={busy} style={btn('#B02020', busy)}>
+                Encerrar contrato
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {qrBalcao && (
         <div onClick={() => setQrBalcao(null)}
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
