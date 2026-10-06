@@ -26,6 +26,7 @@ export const DEPENDE_DE = {
   // arquivo que cria tabela não pode definir função).
   'sql/codigo-de-autorizacao-funcao-v1.sql': ['sql/codigo-de-autorizacao-v1.sql'],
   'sql/caixa-conciliacao-funcao-v1.sql':     ['sql/caixa-conciliacao-v1.sql'],
+  'sql/contrato-recorrente-itens-funcao-v1.sql': ['sql/contrato-recorrente-itens-v1.sql'],
   // A v2 troca um índice que a v1 criou.
   'sql/caixa-conciliacao-v2.sql':            ['sql/caixa-conciliacao-v1.sql'],
   // A v4 substitui o CHECK da tabela que a v1 cria.

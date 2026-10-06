@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
+import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
 import { formatar as formatarCodigo, formatoValido as codigoBemFormado,
          relogio, segundosRestantes, MINUTOS_DE_VIDA } from '@/lib/codigo-autorizacao'
 
@@ -123,16 +124,27 @@ export default function BillingPage() {
   const [ePass, setEPass] = useState(''); const [eMotivo, setEMotivo] = useState('')
   // contratos recorrentes
   const [planos, setPlanos] = useState<any[]>([])
-  const [cCliente, setCCliente] = useState(''); const [cDesc, setCDesc] = useState('')
-  const [cValor, setCValor] = useState(''); const [cDia, setCDia] = useState('5')
+  const [planosDados, setPlanosDados] = useState<any>({})
+  // `cDesc` e `cValor` saíram: o serviço e o valor vivem nas LINHAS do
+  // contrato, e o total é derivado delas.
+  const [cCliente, setCCliente] = useState(''); const [cDia, setCDia] = useState('5')
   const [cAuto, setCAuto] = useState(false)
   const [cIntervalo, setCIntervalo] = useState<'monthly' | 'quarterly' | 'annual'>('monthly')
+  // O contrato virou o molde de uma fatura: linhas, desconto e prazo.
+  const [cItens, setCItens] = useState<LinhaDoContrato[]>([{ ...LINHA_VAZIA }])
+  const [cDesconto, setCDesconto] = useState('0'); const [cPrazo, setCPrazo] = useState('0')
+  // Quem pode mexer em contrato vem PRONTO do servidor (`podeContrato`): a
+  // tela não recalcula a regra, senão botão e trava divergem -- foi a falha
+  // de método que custou mais caro neste projeto.
+  const podeContrato = !!planosDados.podeContrato
   // Editar e encerrar: UM contrato por vez. O formulário pesado (que traz o
   // catálogo de serviços) só existe para a linha aberta — a lição da tela de
   // fornecedores, onde um <select> por linha derrubava a aba.
   const [editando, setEditando] = useState<any>(null)
   const [edForm, setEdForm] = useState<any>({})
   const [edMotivo, setEdMotivo] = useState(''); const [edSenha, setEdSenha] = useState('')
+  const [edItens, setEdItens] = useState<LinhaDoContrato[]>([{ ...LINHA_VAZIA }])
+  const [edDesconto, setEdDesconto] = useState('0'); const [edPrazo, setEdPrazo] = useState('0')
   const [encerrando, setEncerrando] = useState<any>(null)
   const [encMotivo, setEncMotivo] = useState(''); const [encSenha, setEncSenha] = useState('')
 
@@ -191,8 +203,11 @@ export default function BillingPage() {
   }
   const loadPlanos = async () => {
     const d = await jsonSeguro(await fetch('/api/billing/recurring'))
-    if (d?.plans) setPlanos(d.plans)
-    else if (d?.error) setMsg(`⚠️ ${d.error}`)
+    // O erro vem PRIMEIRO: lista vazia na tela é uma afirmação ("não há
+    // contrato"), e consulta que falha não pode virar afirmação.
+    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
+    if (d?.plans) { setPlanos(d.plans); setPlanosDados(d) }
+    else setMsg('⚠️ Resposta inesperada ao carregar os contratos.')
   }
   useEffect(() => { load() }, [filtroDoc, filtroStatus])
   useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
@@ -318,12 +333,13 @@ export default function BillingPage() {
   }
 
   const criarContrato = async () => {
-    if (!cCliente || !cDesc.trim() || !Number(cValor)) { setMsg('⚠️ Preencha cliente, descrição e valor.'); return }
+    if (!cCliente) { setMsg('⚠️ Escolha o cliente.'); return }
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/recurring', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        clientId: cCliente, description: cDesc, amount: Number(cValor),
+        clientId: cCliente, itens: cItens, desconto: Number(cDesconto) || 0,
+        dueDays: Number(cPrazo) || 0,
         interval: cIntervalo, dayOfMonth: Number(cDia), autoCharge: cAuto,
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
@@ -338,7 +354,9 @@ export default function BillingPage() {
       }
       return
     }
-    setMsg(`✓ ${d.message}`); setCDesc(''); setCValor(''); loadPlanos()
+    setMsg(`✓ ${d.message}`)
+    setCItens([{ ...LINHA_VAZIA }]); setCDesconto('0'); setCPrazo('0')
+    loadPlanos()
   }
 
   const alternarContrato = async (pl: any) => {
@@ -356,9 +374,17 @@ export default function BillingPage() {
   // igual ao acordo atual, e a rota recusa se nada mudar.
   const abrirEdicaoContrato = (pl: any) => {
     setEditando(pl)
+    setEdItens((pl.itens || []).length
+      ? pl.itens.map((i: any) => ({
+          description: i.description || '', quantity: Number(i.quantity) || 1,
+          unit_price: Number(i.unit_price) || 0,
+        }))
+      // Contrato de antes da migração: abre com uma linha feita do que
+      // existia, em vez de abrir vazio e apagar o acordo ao salvar.
+      : [{ description: pl.description || 'Serviço', quantity: 1, unit_price: Number(pl.amount) || 0 }])
+    setEdDesconto(String(Number(pl.discount) || 0))
+    setEdPrazo(String(Number(pl.due_days) || 0))
     setEdForm({
-      description: pl.description || '',
-      amount: String(pl.amount ?? ''),
       interval: pl.interval || 'monthly',
       dayOfMonth: String(pl.day_of_month ?? 1),
       startDate: String(pl.start_date || '').slice(0, 10),
@@ -374,7 +400,7 @@ export default function BillingPage() {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         id: editando.id, action: 'edit',
-        description: edForm.description, amount: Number(edForm.amount),
+        itens: edItens, desconto: Number(edDesconto) || 0, dueDays: Number(edPrazo) || 0,
         interval: edForm.interval, dayOfMonth: Number(edForm.dayOfMonth),
         startDate: edForm.startDate, autoCharge: !!edForm.autoCharge,
         motivo: edMotivo, password: edSenha,
@@ -384,7 +410,7 @@ export default function BillingPage() {
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     // Dizer O QUE mudou e para quando: 'atualizado' sozinho não distingue
     // o que foi feito do que não foi.
-    setMsg(`✓ ${d.message} Próxima cobrança: ${dataUS(d.proxima)}.`)
+    setMsg(`✓ ${d.message} ${money(d.total)} · próxima cobrança ${dataUS(d.proxima)}.`)
     setEditando(null); loadPlanos()
   }
 
@@ -1071,7 +1097,7 @@ export default function BillingPage() {
 
       {aba === 'contratos' && (
         <>
-          {perms?.receber && (
+          {podeContrato && (
             <section style={card}>
               <h2 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
                 Novo contrato
@@ -1087,20 +1113,6 @@ export default function BillingPage() {
                   <option value="">— cliente —</option>
                   {(dados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
                 </select>
-                <select onChange={e => {
-                    const sv = (dados.services || []).find((x: any) => x.id === e.target.value)
-                    if (sv) { setCDesc(sv.nome); setCValor(String(sv.preco)) }
-                  }}
-                  style={{ ...inp, flex: '2 1 190px', cursor: 'pointer' }}>
-                  <option value="">— serviço do catálogo —</option>
-                  {(dados.services || []).map((sv: any) => (
-                    <option key={sv.id} value={sv.id}>{sv.nome} · {money(sv.preco)}</option>
-                  ))}
-                </select>
-                <input value={cDesc} onChange={e => setCDesc(e.target.value)} placeholder="Descrição"
-                  style={{ ...inp, flex: '2 1 170px' }} />
-                <input type="number" step="0.01" value={cValor} onChange={e => setCValor(e.target.value)}
-                  placeholder="Valor" style={{ ...inp, width: 120 }} />
                 <select value={cIntervalo} onChange={e => setCIntervalo(e.target.value as any)}
                   style={{ ...inp, width: 140, cursor: 'pointer' }}>
                   <option value="monthly">mensal</option>
@@ -1117,6 +1129,19 @@ export default function BillingPage() {
                   <input type="checkbox" checked={cAuto} onChange={e => setCAuto(e.target.checked)} />
                   Cobrar automaticamente
                 </label>
+              </div>
+
+              {/* As linhas do acordo. O total é a soma menos o desconto — um
+                  total digitado à parte discordaria das linhas no primeiro
+                  item acrescentado. */}
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #E2E8F4' }}>
+                <ContratoItens itens={cItens} setItens={setCItens}
+                  desconto={cDesconto} setDesconto={setCDesconto}
+                  dueDays={cPrazo} setDueDays={setCPrazo}
+                  servicos={dados.services || []} />
+              </div>
+
+              <div style={{ marginTop: 14 }}>
                 <button onClick={criarContrato} disabled={busy} style={btn('#1A6B4A', busy)}>Criar contrato</button>
               </div>
             </section>
@@ -1128,7 +1153,7 @@ export default function BillingPage() {
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 720 }}>
                 <thead><tr>
-                  {['Cliente', 'Serviço', 'Valor', 'Repete', 'Dia', 'Próxima', 'Cobrança', 'Situação', ''].map(h => (
+                  {['Cliente', 'Serviço', 'Valor', 'Repete', 'Dia', 'Próxima', 'Vence', 'Cobrança', 'Situação', ''].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
                       color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4', whiteSpace: 'nowrap' as const }}>{h}</th>
                   ))}
@@ -1138,8 +1163,20 @@ export default function BillingPage() {
                     <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA',
                       opacity: pl.situacao === 'ativo' ? 1 : 0.55, verticalAlign: 'top' as const }}>
                       <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{pl.cliente}</td>
-                      <td style={{ padding: '10px', fontSize: 14 }}>{pl.description}</td>
-                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>{money(pl.amount)}</td>
+                      <td style={{ padding: '10px', fontSize: 14 }}>
+                        {pl.description}
+                        {(pl.itens || []).length > 1 && (
+                          <div style={{ fontSize: 11.5, color: '#9AAAB0' }}>{pl.itens.length} itens</div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>
+                        {money(pl.amount)}
+                        {Number(pl.discount) > 0 && (
+                          <div style={{ fontSize: 11.5, fontWeight: 400, color: '#9AAAB0' }}>
+                            já com −{money(pl.discount)}
+                          </div>
+                        )}
+                      </td>
                       <td style={{ padding: '10px', fontSize: 13.5 }}>
                         {pl.interval === 'quarterly' ? 'trimestral' : pl.interval === 'annual' ? 'anual' : 'mensal'}
                       </td>
@@ -1154,6 +1191,12 @@ export default function BillingPage() {
                           <div style={{ fontSize: 11, color: '#B02020', fontWeight: 700, marginTop: 2 }}>
                             ⚠ a data passou e nada foi gerado
                           </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
+                        {pl.vencimento ? dataUS(pl.vencimento) : '—'}
+                        {Number(pl.due_days) > 0 && (
+                          <div style={{ fontSize: 11, color: '#9AAAB0' }}>{pl.due_days} dias</div>
                         )}
                       </td>
                       <td style={{ padding: '10px', fontSize: 13 }}>
@@ -1173,7 +1216,7 @@ export default function BillingPage() {
                       <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
                         {/* Contrato encerrado não oferece botão: reativar um acordo
                             que as duas partes desfizeram seria recriá-lo sem acordo. */}
-                        {perms?.receber && pl.situacao !== 'encerrado' && (
+                        {podeContrato && pl.situacao !== 'encerrado' && (
                           <>
                             <button onClick={() => abrirEdicaoContrato(pl)} disabled={busy} style={acaoBtn('#2D3278')}>
                               Editar
@@ -1731,36 +1774,17 @@ export default function BillingPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
-              {/* O catálogo preenche descrição e valor de uma vez — é o mesmo
-                  seletor da criação. Pesado? Não: só existe nesta linha. */}
-              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>TROCAR PELO SERVIÇO DO CATÁLOGO</span>
-                <select onChange={e => {
-                    const sv = (dados.services || []).find((x: any) => x.id === e.target.value)
-                    if (sv) setEdForm({ ...edForm, description: sv.nome, amount: String(sv.preco) })
-                  }}
-                  style={{ ...inp, cursor: 'pointer' }}>
-                  <option value="">— manter o que está —</option>
-                  {(dados.services || []).map((sv: any) => (
-                    <option key={sv.id} value={sv.id}>{sv.nome} · {money(sv.preco)}</option>
-                  ))}
-                </select>
-              </label>
+              {/* As linhas do acordo: acrescentar, trocar, apagar. O total é
+                  a soma menos o desconto, calculado pela MESMA função que a
+                  rota usa — e recalculado no banco na hora de gravar. */}
+              <ContratoItens itens={edItens} setItens={setEdItens}
+                desconto={edDesconto} setDesconto={setEdDesconto}
+                dueDays={edPrazo} setDueDays={setEdPrazo}
+                servicos={dados.services || []}
+                emissao={editando.next_run ? String(editando.next_run).slice(0, 10) : null} />
 
-              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>SERVIÇO</span>
-                <input value={edForm.description || ''}
-                  onChange={e => setEdForm({ ...edForm, description: e.target.value })}
-                  placeholder="Bookkeeping mensal + Payroll" style={inp} />
-              </label>
-
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const }}>
-                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>VALOR $</span>
-                  <input type="number" step="0.01" value={edForm.amount || ''}
-                    onChange={e => setEdForm({ ...edForm, amount: e.target.value })}
-                    style={{ ...inp, width: 130 }} />
-                </label>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const,
+                            borderTop: '1px solid #E2E8F4', paddingTop: 12 }}>
                 <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>REPETE</span>
                   <select value={edForm.interval || 'monthly'}

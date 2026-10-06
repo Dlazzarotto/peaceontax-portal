@@ -133,12 +133,20 @@ export function situacaoDoContrato(
 }
 
 /**
- * Campos que o formulário de edição aceita, e o nome deles na tabela.
- * Lista FECHADA: corpo de requisição nunca vai inteiro para o banco.
+ * Campos ESCALARES que o formulário de edição aceita, e o nome deles na
+ * tabela. Lista FECHADA: corpo de requisição nunca vai inteiro para o banco.
+ *
+ * `amount` e `description` NÃO estão aqui, e isso é a regra, não um
+ * esquecimento: os dois são DERIVADOS das linhas (`montarContrato` e a RPC
+ * `salvar_itens_do_contrato`). Aceitar os dois caminhos deixaria o
+ * cabeçalho discordar das linhas no primeiro item acrescentado — o mesmo
+ * defeito que a impressão de fatura já teve aqui.
+ *
+ * `discount` e `due_days` também ficam de fora: o desconto anda junto com
+ * os itens (muda o total do mesmo jeito) e o prazo é validado por
+ * `prazoValido`. Os dois são tratados à parte, na rota.
  */
 export const CAMPOS_EDITAVEIS = {
-  description: 'description',
-  amount: 'amount',
   interval: 'interval',
   dayOfMonth: 'day_of_month',
   startDate: 'start_date',
@@ -172,10 +180,7 @@ export function mudancasDoContrato(
     const coluna = CAMPOS_EDITAVEIS[c]
     const atual = antes?.[coluna]
     let igual: boolean
-    if (coluna === 'amount') {
-      // 350, '350.00' e 350.0 são o mesmo dinheiro.
-      igual = Math.round(Number(atual || 0) * 100) === Math.round(Number(valor as number) * 100)
-    } else if (coluna === 'auto_charge') {
+    if (coluna === 'auto_charge') {
       // null no banco é "não cobra", igual a false. Sem isto, abrir a edição
       // de um contrato antigo e salvar já marcava auto_charge como alterado.
       igual = !!atual === !!valor
@@ -191,16 +196,6 @@ export function mudancasDoContrato(
     campos.push(c)
   }
 
-  if (pedido.description !== undefined) {
-    const t = String(pedido.description).trim()
-    if (!t) return { campos: [], update: {}, erro: 'Descreva o serviço do contrato.' }
-    poe('description', t)
-  }
-  if (pedido.amount !== undefined) {
-    const v = Math.round(Number(pedido.amount) * 100) / 100
-    if (!Number.isFinite(v) || v <= 0) return { campos: [], update: {}, erro: 'Informe o valor do contrato.' }
-    poe('amount', v)
-  }
   if (pedido.interval !== undefined) {
     if (!ehIntervalo(pedido.interval)) return { campos: [], update: {}, erro: 'Intervalo inválido.' }
     poe('interval', pedido.interval)
@@ -217,4 +212,116 @@ export function mudancasDoContrato(
   if (pedido.autoCharge !== undefined) poe('autoCharge', !!pedido.autoCharge)
 
   return { campos, update }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// O CONTRATO É O MOLDE DE UMA FATURA: itens, desconto, total e vencimento.
+//
+// Antes era uma descrição e um valor, e não dava para escrever o acordo
+// real — "Bookkeeping 350 + Payroll 120, menos 50, vence 15 dias depois".
+//
+// O total é DERIVADO. Um total digitado à parte deixaria o cabeçalho
+// discordar das linhas, que é exatamente o defeito que a impressão de
+// fatura já teve aqui: itens que falhavam iam embora com o total inteiro.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface ItemDoContrato {
+  description: string
+  quantity: number
+  unit_price: number
+}
+
+const cents = (v: number) => Math.round(v * 100) / 100
+
+/** Quantas casas o dinheiro tem. Quantidade aceita fração (0,5 hora). */
+function numero(v: unknown, padrao = 0): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : padrao
+}
+
+/**
+ * Prazo em DIAS, não em dia do mês. "Emite no dia 1 e vence no dia 10"
+ * desmonta quando a emissão é no dia 25: o vencimento cairia ANTES da
+ * emissão. "Vence em N dias" atravessa a virada do mês sozinho, e é como o
+ * mundo contábil já escreve (Net 15, Net 30).
+ */
+export const PRAZO_MAXIMO = 365
+
+export function prazoValido(v: unknown): number {
+  const n = Math.trunc(numero(v, 0))
+  return Math.max(0, Math.min(PRAZO_MAXIMO, n))
+}
+
+/** O vencimento da cobrança emitida em `emissao`. Meio-dia UTC: somar dias
+ *  em cima da meia-noite escorrega um dia nas viradas de horário de verão. */
+export function vencimentoDaCobranca(emissao: string, dias: unknown): string {
+  const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(emissao || '').slice(0, 10))
+  if (!p) return String(emissao || '').slice(0, 10)
+  const d = new Date(Date.UTC(Number(p[1]), Number(p[2]) - 1, Number(p[3]), 12))
+  d.setUTCDate(d.getUTCDate() + prazoValido(dias))
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * O que a lista de contratos mostra na coluna Serviço. DERIVADO dos itens:
+ * um rótulo digitado à parte divergiria das linhas no primeiro item novo.
+ */
+export function resumoDosItens(itens: ItemDoContrato[]): string {
+  const nomes = (itens || []).map(i => String(i.description || '').trim()).filter(Boolean)
+  if (nomes.length === 0) return 'Serviço'
+  if (nomes.length <= 3) return nomes.join(' + ')
+  return `${nomes.slice(0, 3).join(' + ')} +${nomes.length - 3}`
+}
+
+export interface ContratoMontado {
+  itens: ItemDoContrato[]
+  bruto: number
+  desconto: number
+  total: number
+  resumo: string
+}
+
+/**
+ * Valida as linhas e fecha a conta. UMA função: a tela mostra a prévia e a
+ * rota grava a partir daqui, porque duas telas nunca devem calcular o mesmo
+ * número de jeitos diferentes.
+ *
+ * O DESCONTO É EM DÓLAR, nunca em porcentagem — este projeto já pagou caro
+ * pelo contrário na entrada do parcelamento, onde $250 em $1.000 obrigava a
+ * digitar 25 e digitar 250 era recusado.
+ */
+export function montarContrato(
+  pedido: { itens?: any[]; desconto?: unknown },
+): ContratoMontado | { erro: string } {
+  const brutas = Array.isArray(pedido.itens) ? pedido.itens : []
+
+  // Linha inteiramente vazia é o campo em branco que todo formulário deixa
+  // sobrando — some sem reclamar. Linha com preço e SEM nome não some: isso
+  // é dinheiro sem justificativa, e o cliente recebe a conta.
+  const itens: ItemDoContrato[] = []
+  for (const l of brutas) {
+    const nome = String(l?.description ?? '').trim()
+    const qtd = numero(l?.quantity, 1)
+    const preco = numero(l?.unit_price ?? l?.unitPrice, 0)
+    if (!nome && !preco && (!l?.quantity || qtd === 1)) continue
+    if (!nome) return { erro: 'Há uma linha com valor e sem descrição. Diga o que é, ou apague a linha.' }
+    if (!(qtd > 0)) return { erro: `Quantidade inválida em "${nome}".` }
+    if (preco < 0) return { erro: `Preço negativo em "${nome}" — desconto é o campo de baixo.` }
+    itens.push({ description: nome, quantity: cents(qtd), unit_price: cents(preco) })
+  }
+
+  if (itens.length === 0) return { erro: 'O contrato precisa de pelo menos um item.' }
+
+  const bruto = cents(itens.reduce((s, i) => s + i.quantity * i.unit_price, 0))
+  const desconto = cents(Math.max(0, numero(pedido.desconto, 0)))
+
+  if (desconto > bruto) {
+    return { erro: `O desconto (${desconto.toFixed(2)}) é maior que a soma dos itens (${bruto.toFixed(2)}).` }
+  }
+  const total = cents(bruto - desconto)
+  if (total <= 0) {
+    return { erro: 'O contrato ficaria em zero. Um acordo que não cobra nada não é contrato — apague-o ou ajuste o desconto.' }
+  }
+
+  return { itens, bruto, desconto, total, resumo: resumoDosItens(itens) }
 }

@@ -376,7 +376,6 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
   const PARES = [
     ['Receber',                'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/payments/route.ts',         'receber'],
     ['Estornar',               'app/dashboard/billing/page.tsx', 'estornar',      'app/api/billing/payments/route.ts',         'estornar'],
-    ['Ativar/pausar contrato', 'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recurring/route.ts',        'receber'],
     ['Cobrar de novo',         'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recharge/route.ts',         'receber'],
     ['Cancelar parcelamento',  'app/dashboard/billing/page.tsx', 'cancelar',      'app/api/billing/installment-plan/route.ts', 'cancelar'],
     ['Relatorios',             'app/dashboard/billing/page.tsx', 'verRelatorios', 'app/api/billing/reports/route.ts',          'verRelatorios'],
@@ -391,6 +390,48 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
   semPar.length
     ? falta('Botao e trava pedem a mesma chave (tabela)', semPar.join(' · '))
     : ok(`Botao e trava pedem a mesma chave (${PARES.length} pares declarados)`)
+
+  // CONTRATO RECORRENTE: a trava e por NIVEL (socio ou gerente), nao por
+  // chave de `perms` -- decisao do socio, porque `receber` tambem se concede
+  // a uma pessoa, e com a concessao um assistente passava a definir quanto a
+  // carteira paga todo mes.
+  //
+  // Casar dois textos ("a tela pede X, a rota exige X") nao serve aqui: a
+  // regra e uma expressao. Entao a conferencia e mais forte -- A TELA NAO
+  // DECIDE. Ela usa a resposta que o servidor mandou pronta, e e o GET que
+  // liga as duas pontas. Sem esse elo, botao e trava voltam a poder divergir,
+  // que e a falha de metodo que mais custou neste projeto.
+  {
+    const rota = readFileSync(join(raiz, 'app/api/billing/recurring/route.ts'), 'utf8')
+    const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
+    const problemas = []
+
+    if (!/const podeMexerEmContrato\s*=\s*\(nivel[\s\S]{0,160}?'owner'[\s\S]{0,60}?'manager'/.test(rota)) {
+      problemas.push('a rota nao define podeMexerEmContrato por nivel (owner/manager)')
+    }
+    // As DUAS portas de escrita: criar e alterar.
+    const guardas = (rota.match(/if \(!podeMexerEmContrato\(perms\.nivel\)\)/g) || []).length
+    if (guardas < 2) problemas.push(`so ${guardas} rota(s) de escrita travam por nivel -- esperado POST e PATCH`)
+    // O elo: o GET manda a resposta pronta, calculada pela MESMA funcao.
+    if (!/podeContrato:\s*podeMexerEmContrato\(perms\.nivel\)/.test(rota)) {
+      problemas.push('o GET nao manda podeContrato calculado por podeMexerEmContrato')
+    }
+    // E a tela OBEDECE, em vez de recalcular a regra por conta propria.
+    if (!/const podeContrato = !!planosDados\.podeContrato/.test(tela)) {
+      problemas.push('a tela nao le podeContrato do servidor')
+    }
+    // Estreito de proposito: olha a ATRIBUICAO de podeContrato, nao qualquer
+    // mencao a nivel na tela. A primeira versao desta conferencia acusou a
+    // aba de Autorizacao, que le o nivel por motivo proprio e nao tem nada a
+    // ver com contrato -- invariante que reprova codigo certo ensina a
+    // cadastrar excecao.
+    if (/podeContrato\s*=\s*(?!!!planosDados)[\s\S]{0,120}?nivel/.test(tela)) {
+      problemas.push('a tela calcula podeContrato a partir do nivel -- ela tem de obedecer o servidor')
+    }
+    problemas.length
+      ? falta('Contrato recorrente: a trava e por nivel e a tela obedece', problemas.join(' · '))
+      : ok('Contrato recorrente: trava por nivel no POST e no PATCH, e a tela obedece o servidor')
+  }
 
   // O estorno tem chave PROPRIA: barrar antes em `receber` torna `estornar`
   // sozinho inutil, e separar as duas coisas e o motivo de existirem duas.

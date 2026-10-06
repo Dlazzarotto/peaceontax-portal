@@ -445,6 +445,49 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   O GET passou a filtrar os contratos por `clientesOcultos`: filtrava a lista
   de CLIENTES e não a de contratos, então o nome das empresas (e o caixa da
   firma) aparecia para quem não pode abri-las.
+- **O contrato recorrente é o MOLDE DE UMA FATURA: itens, desconto, prazo**
+  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`, migrações
+  `sql/contrato-recorrente-itens-v1.sql` e `-funcao-v1.sql`). Era uma
+  descrição e um valor — não dava para escrever o acordo real
+  ("Bookkeeping 350 + Payroll 120, menos 50, vence 15 dias depois").
+  **`amount` e `description` passaram a ser DERIVADOS** das linhas, e a
+  lista `CAMPOS_EDITAVEIS` **não** os aceita: dois caminhos para o mesmo
+  número deixariam o cabeçalho discordar das linhas no primeiro item
+  acrescentado — o defeito que a impressão de fatura já teve aqui.
+  **Desconto em DÓLAR**, nunca porcentagem: a entrada do parcelamento já
+  custou caro pedindo 25 para dizer $250, e desconto quebrado é pior ($37
+  em $470 é 7,87%). Desconto ≥ soma é **recusa** — negativo seria a firma
+  pagando o cliente todo mês.
+  **Prazo em DIAS, não em dia do mês.** "Emite no 1 e vence no 10" desmonta
+  quando a emissão é no 25: o vencimento cairia ANTES da emissão. "Vence em
+  N dias" atravessa a virada do mês sozinho e é como o mundo contábil já
+  escreve (Net 15, Net 30). `vencimentoDaCobranca` soma ao MEIO-DIA UTC —
+  somar dias em cima da meia-noite escorrega um dia nas viradas de horário
+  de verão.
+  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_contrato`):
+  apagar e inserir em duas idas deixaria o contrato SEM NENHUMA LINHA se a
+  segunda falhasse — o acordo apagado por uma falha de rede. **E o total é
+  recalculado lá dentro**: a tela manda as linhas, número vindo do navegador
+  não define quanto o cliente paga (mesma regra de `conciliar_deposito`).
+  Testado no PG 16: a recusa por desconto volta atrás e as linhas antigas
+  ficam. A migração **copia** cada contrato antigo para uma linha — sem
+  isso, o modelo novo apagaria o acordo antigo em silêncio —, e a
+  conferência **falha** se sobrar contrato sem linha.
+  A prévia da tela chama `montarContrato`, a MESMA função da rota. 85 casos
+  em `testes/contrato-recorrente.mts`.
+- **Mexer em contrato é por NÍVEL (sócio ou gerente), não por chave de
+  `perms`** — decisão do sócio. `receber` também se concede a uma pessoa
+  (`staff_grants`), e com a concessão um assistente passava a definir quanto
+  a carteira paga todo mês. Nível é a base; aqui a base é o PISO.
+  A conferência disso **não** é o par de textos "a tela pede X, a rota exige
+  X", porque a regra é uma expressão: é mais forte — **a tela não decide**.
+  O GET manda `podeContrato` calculado pela MESMA função que trava o POST e
+  o PATCH, e a auditoria exige os quatro elos (a função por nível, as duas
+  guardas de escrita, o GET mandando pronto, a tela obedecendo). Sabotada
+  nos quatro. A primeira versão era larga demais e acusou a aba de
+  Autorização, que lê o nível por motivo próprio: ela olha a ATRIBUIÇÃO de
+  `podeContrato`, não qualquer menção a nível na tela — invariante que
+  reprova código certo ensina a cadastrar exceção.
 - **Cobrar no balcão é um QR, não um leitor** (`lib/cobranca-balcao.ts`,
   `/api/billing/cobranca-balcao`, quadro em `app/dashboard/billing`). O leitor
   comprado foi o **Stripe Reader M2**, que é **Bluetooth**: só funciona com um
