@@ -397,6 +397,97 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
+- **Contrato recorrente: editar e encerrar pedem senha, motivo e trilha —
+  e a aba parou de prometer o que o sistema não faz**
+  (`lib/contrato-recorrente.ts`, `/api/billing/recurring`, migração
+  `sql/contrato-recorrente-auditoria-v1.sql`). A aba só tinha
+  Pausar/Reativar, e o PATCH que já aceitava valor, dia e cobrança
+  automática **não pedia senha, não pedia motivo, não deixava rastro e não
+  conferia de qual cliente era o contrato** — `isStaff` diz QUEM chama, não
+  QUAL cliente, e bastava mandar o `id` de um contrato de empresa. Editar
+  uma FATURA, documento único, exige as três primeiras; o contrato exigia
+  zero. A fatura erra uma vez, **o contrato erra todo mês**.
+  **Encerrar ≠ pausar.** Pausar é reversível e não mexe no acordo: segue em
+  um clique, mas vai para a trilha. Encerrar grava `end_date`, desliga e
+  **não volta** — `situacaoDoContrato` olha o `end_date` ANTES do `active`,
+  senão um contrato acabado apareceria como "pausado", com botão de
+  Reativar, ressuscitando um acordo que as duas partes desfizeram.
+  **A trilha vem ANTES da alteração** (`recurring_plan_audit`): se o insert
+  falhar, a edição é RECUSADA e a mensagem diz qual migração falta. Mudança
+  sem rastro é pior que mudança não feita (princípio 2). O preço é uma linha
+  de trilha sobrando se o update seguinte falhar — esse lado é o barato.
+  **A próxima cobrança tinha dois defeitos mudos**, agora em módulo puro com
+  59 casos: somava **um mês sempre**, qualquer que fosse o intervalo (o
+  trimestral tinha data de mensal), e usava o dia do **servidor em UTC**, não
+  o do escritório — o mesmo defeito já corrigido na lista de faturas e no
+  relatório. A régua é **ancorada no início**, não em hoje: trimestral que
+  começou em 10/jan cobra jan · abr · jul · out; recalcular a partir de hoje
+  daria outra régua a cada edição e a data andaria sozinha. Mexer em dia,
+  início ou intervalo **recalcula `next_run`** — trocar o dia deixava a
+  próxima data na antiga, em silêncio.
+  Três armadilhas na comparação do que mudou, cada uma marcando "mudou" sem
+  nada ter mudado e enchendo a trilha de ruído: `350` × `'350.00'`,
+  `auto_charge` nulo × `false`, e `date` devolvido com hora. A quarta é o
+  oposto: **campo de data VAZIO é "não mexi nisso", não "data inválida"** —
+  contrato sem `start_date` fazia quem só queria trocar o VALOR levar um erro
+  falando de data.
+  **E a aba mentia.** O texto dizia "Gera fatura sozinho no dia escolhido".
+  **Nada no repositório lê `recurring_plans`** além da própria rota: não há
+  cron para ela (o único é o aviso de cobrança), não há geração de fatura,
+  não há Stripe — e o relatório de receita recorrente lê `payment_plans`,
+  outra tabela. Como há pelo menos um gatilho nessa tabela que **só existe no
+  banco** (o que recusa auto-cobrança sem cartão), não dá para afirmar daqui
+  que não exista um `pg_cron`; então a tela não afirma nada: ela marca
+  **⚠ a data passou e nada foi gerado** quando `next_run` ficou para trás com
+  o contrato ativo. É auto-evidente — quem gerasse a fatura teria movido o
+  `next_run`. Gerar a fatura de verdade é decisão aberta, junto com a
+  duplicação Plans × `recurring_plans`.
+  O GET passou a filtrar os contratos por `clientesOcultos`: filtrava a lista
+  de CLIENTES e não a de contratos, então o nome das empresas (e o caixa da
+  firma) aparecia para quem não pode abri-las.
+- **O contrato recorrente é o MOLDE DE UMA FATURA: itens, desconto, prazo**
+  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`, migrações
+  `sql/contrato-recorrente-itens-v1.sql` e `-funcao-v1.sql`). Era uma
+  descrição e um valor — não dava para escrever o acordo real
+  ("Bookkeeping 350 + Payroll 120, menos 50, vence 15 dias depois").
+  **`amount` e `description` passaram a ser DERIVADOS** das linhas, e a
+  lista `CAMPOS_EDITAVEIS` **não** os aceita: dois caminhos para o mesmo
+  número deixariam o cabeçalho discordar das linhas no primeiro item
+  acrescentado — o defeito que a impressão de fatura já teve aqui.
+  **Desconto em DÓLAR**, nunca porcentagem: a entrada do parcelamento já
+  custou caro pedindo 25 para dizer $250, e desconto quebrado é pior ($37
+  em $470 é 7,87%). Desconto ≥ soma é **recusa** — negativo seria a firma
+  pagando o cliente todo mês.
+  **Prazo em DIAS, não em dia do mês.** "Emite no 1 e vence no 10" desmonta
+  quando a emissão é no 25: o vencimento cairia ANTES da emissão. "Vence em
+  N dias" atravessa a virada do mês sozinho e é como o mundo contábil já
+  escreve (Net 15, Net 30). `vencimentoDaCobranca` soma ao MEIO-DIA UTC —
+  somar dias em cima da meia-noite escorrega um dia nas viradas de horário
+  de verão.
+  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_contrato`):
+  apagar e inserir em duas idas deixaria o contrato SEM NENHUMA LINHA se a
+  segunda falhasse — o acordo apagado por uma falha de rede. **E o total é
+  recalculado lá dentro**: a tela manda as linhas, número vindo do navegador
+  não define quanto o cliente paga (mesma regra de `conciliar_deposito`).
+  Testado no PG 16: a recusa por desconto volta atrás e as linhas antigas
+  ficam. A migração **copia** cada contrato antigo para uma linha — sem
+  isso, o modelo novo apagaria o acordo antigo em silêncio —, e a
+  conferência **falha** se sobrar contrato sem linha.
+  A prévia da tela chama `montarContrato`, a MESMA função da rota. 85 casos
+  em `testes/contrato-recorrente.mts`.
+- **Mexer em contrato é por NÍVEL (sócio ou gerente), não por chave de
+  `perms`** — decisão do sócio. `receber` também se concede a uma pessoa
+  (`staff_grants`), e com a concessão um assistente passava a definir quanto
+  a carteira paga todo mês. Nível é a base; aqui a base é o PISO.
+  A conferência disso **não** é o par de textos "a tela pede X, a rota exige
+  X", porque a regra é uma expressão: é mais forte — **a tela não decide**.
+  O GET manda `podeContrato` calculado pela MESMA função que trava o POST e
+  o PATCH, e a auditoria exige os quatro elos (a função por nível, as duas
+  guardas de escrita, o GET mandando pronto, a tela obedecendo). Sabotada
+  nos quatro. A primeira versão era larga demais e acusou a aba de
+  Autorização, que lê o nível por motivo próprio: ela olha a ATRIBUIÇÃO de
+  `podeContrato`, não qualquer menção a nível na tela — invariante que
+  reprova código certo ensina a cadastrar exceção.
 - **Cobrar no balcão é um QR, não um leitor** (`lib/cobranca-balcao.ts`,
   `/api/billing/cobranca-balcao`, quadro em `app/dashboard/billing`). O leitor
   comprado foi o **Stripe Reader M2**, que é **Bluetooth**: só funciona com um
@@ -833,6 +924,41 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `testes/lista-flutuante.mts`, incluindo uma varredura do campo por toda a
   altura da janela. A auditoria recusa `\w+.bottom + N` em arquivo que use
   `getBoundingClientRect` sem passar por `posicionarLista`.
+- **Linha de tabela não carrega lista grande — o custo é o PRODUTO.** A tela
+  Listas → Fornecedores e clientes derrubava a aba do navegador
+  (`RESULT_CODE_HUNG`, o Chrome matando o renderizador): cada linha montava um
+  `<select>` com TODOS os clientes da firma. Medido em Chromium: **22,7 ms por
+  mil `<option>`**, linear. São quase mil clientes e o cadastro de
+  fornecedores passa dos milhares — 500 linhas já são 532 mil `<option>` e
+  **~12 s** de thread principal travada; 2.000 linhas, ~48 s. O Chrome mata a
+  aba muito antes. Filtrar não salvava: quem abre a tela vê tudo ANTES de
+  filtrar. Duas travas, e as duas precisam existir, senão o defeito volta pelo
+  outro caminho: **o seletor pesado só nasce na linha em edição** (trocar
+  escopo é raro e já pede confirmação — manter mil opções em cada linha para
+  um clique por mês foi o que custou a aba) e **a tabela desenha `POR_PAGINA`
+  linhas por vez**, com o teto no DESENHO, nunca na busca nem na contagem.
+  Depois: 161 ms. Fechar o editor no `blur` tem de ESPERAR (200 ms, o mesmo do
+  autocomplete do payee): em celular o `change` às vezes chega depois do blur,
+  e desmontar antes perde a escolha em silêncio.
+  **Não há invariante de auditoria para isto, e é decisão, não esquecimento:**
+  a forma do código corrigido — o `.map` de `<option>` dentro do `.map` da
+  linha, agora sob `editandoEscopo === p.id` — é a MESMA do defeito. Uma
+  conferência estrutural acusaria o conserto, e invariante que reprova código
+  certo ensina a cadastrar exceção. A regra fica escrita; a conta é
+  `linhas × opções`, e acima de ~50 mil `<option>` num render a aba congela.
+  **Dívida medida e aberta**: `components/BookkeepingTab.tsx` tem a mesma
+  forma na linha do lançamento (conta contábil + contas bancárias, ~60-80
+  `<option>` por linha, até 8.000 linhas = ~560 mil, ~12 s). Não foi mexida
+  junto porque é a mesa de trabalho diária e paginar ali mexe no "selecionar
+  tudo" e nas ações em lote — é decisão do sócio, não conserto de passagem.
+- **A escolha da regra do payee é uma só, o caminho até ela é que mudou.**
+  `regraDoPayee` era chamada DENTRO do laço dos fornecedores e varria a lista
+  inteira de regras a cada volta: com o teto de 5.000 dos dois lados são 25
+  milhões de comparações, cada uma com `trim`/`toLowerCase`, só para abrir
+  Listas → Fornecedores. `indexarRegras` monta o índice uma vez e
+  `regraNoIndice` faz a MESMA escolha (a regra do próprio cliente ganha da
+  geral) numa consulta. `regraDoPayee` continua existindo e delega — duas
+  telas nunca devem decidir a mesma coisa de jeitos diferentes.
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.

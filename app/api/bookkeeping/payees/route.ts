@@ -31,11 +31,33 @@ const chave = (v: unknown) => String(v ?? '').trim().toLowerCase()
 const literal = (v: string) => v.replace(/[\\%_]/g, (m) => '\\' + m)
 
 // Regra que manda no nome: a do próprio cliente ganha da geral.
-function regraDoPayee(regras: any[], nome: string, dono: string | null) {
-  const iguais = regras.filter(r => chave(r.payee) === chave(nome))
+//
+// A ESCOLHA mora aqui, uma vez só. O que mudou é COMO se chega às candidatas:
+// na lista geral isto era chamado DENTRO do laço dos fornecedores e varria a
+// lista inteira de regras a cada volta — com o teto de 5.000 dos dois lados
+// são 25 milhões de comparações, cada uma com trim/toLowerCase, só para abrir
+// a tela. O índice faz a mesma escolha numa consulta.
+function indexarRegras(regras: any[]): Map<string, any[]> {
+  const porNome = new Map<string, any[]>()
+  for (const r of regras) {
+    const k = chave(r.payee)
+    const iguais = porNome.get(k)
+    if (iguais) iguais.push(r)
+    else porNome.set(k, [r])
+  }
+  return porNome
+}
+
+function regraNoIndice(indice: Map<string, any[]>, nome: string, dono: string | null) {
+  const iguais = indice.get(chave(nome))
+  if (!iguais) return null
   return iguais.find(r => dono && r.client_id === dono)
     || iguais.find(r => r.client_id === null)
     || null
+}
+
+function regraDoPayee(regras: any[], nome: string, dono: string | null) {
+  return regraNoIndice(indexarRegras(regras), nome, dono)
 }
 
 async function todasTransacoes(db: any, clientId: string) {
@@ -82,14 +104,14 @@ export async function GET(req: NextRequest) {
     const { ocultos, erro: errEscopo } = await clientesOcultos(auth)
     if (errEscopo) return NextResponse.json({ error: errEscopo }, { status: 500 })
 
-    const listaRegras = regras.data || []
+    const indiceRegras = indexarRegras(regras.data || [])
     const nivel = await getStaffLevel(auth.userId)
 
     return NextResponse.json({
       // Payee global (sem dono) continua aparecendo: ele nao diz de quem e.
       payees: (cadastro.data || []).filter((p: any) => !p.client_id || !ocultos.has(p.client_id)).map((p: any) => {
         const dono: string | null = p.client_id ?? null
-        const regra = regraDoPayee(listaRegras, p.name, dono)
+        const regra = regraNoIndice(indiceRegras, p.name, dono)
         return {
           id: p.id, name: p.name, type: p.type, clientId: dono,
           cliente: dono ? (p.clients?.business_name || p.clients?.name || '—') : 'Todos os clientes',
