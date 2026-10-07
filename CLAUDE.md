@@ -169,13 +169,36 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `enviar`: mandar documento ao cliente é enviar, não cancelar. Por NÍVEL nada
   muda (as duas chaves são de gerente/sócio); o que muda é a autorização por
   pessoa, que é justamente para isso. A auditoria confere os três pontos.
-- **A lista de faturas é do dia e é de quem emitiu.** Sem `verTodasFaturas`,
-  `GET /api/billing/invoices` filtra por `created_by` + `created_at >=`
-  início do dia; o `?id=` respeita o mesmo escopo. O corte vem de
+- **A lista de faturas é do dia e é de quem emitiu — e só o SÓCIO é
+  ilimitado** (`lib/escopo-faturas.ts`, `/api/billing/consulta`, migração
+  `sql/consulta-de-faturas-v1.sql`). O corte do dia vem de
   `lib/dia-da-firma.ts` (`America/New_York`), nunca do servidor: às 20h de
   Malden já é o dia seguinte em UTC e a lista zerava no meio do expediente.
-  O módulo trata os dois domingos de horário de verão — 15 casos em
-  `testes/dia-da-firma.mts`.
+  **O que mudou (decisão do sócio):** `verTodasFaturas` vinha por NÍVEL, e
+  com isso o GERENTE abria a tela com o histórico inteiro à mostra. Quem
+  passa pela mesa lê quanto cada cliente da firma pagou — e abrir a tela não
+  é a mesma coisa que PRECISAR daquele dado. Agora a lista nasce FECHADA no
+  próprio dia, das próprias faturas, com busca por período e por situação
+  (`todas · em aberto · pagas · canceladas · rascunhos`, lista FECHADA).
+  **Sair disso é um ATO**: pede senha e motivo de um gerente ou sócio, a
+  liberação vale 30 minutos e fica em `invoice_query_audit` — que é a trilha
+  E a janela, porque duas tabelas poderiam discordar e aí "quem viu a
+  carteira em setembro" deixa de ter resposta. `via` separa `proprio`
+  (o gerente na própria máquina) de `senha` (liberou para outra pessoa),
+  pela mesma razão de `aprovadoVia` no recebimento. **Senha certa não
+  basta**: o nível de quem autoriza é conferido, como em `podeAprovar`.
+  A regra mora em `decidirConsulta`, e a TELA CHAMA A MESMA FUNÇÃO —
+  o servidor manda `escopo` pronto e a tela não recalcula nada.
+  Três armadilhas que o módulo fecha: **pedido SEM data é amplo**, não "o
+  dia de hoje" (é o jeito mais fácil de ver tudo sem parecer que se pediu);
+  **emissor ausente é QUALQUER emissor**, não "eu"; e a recusa devolve o
+  filtro SEGURO, nunca o aberto. A rota **recusa com 403** em vez de
+  devolver calada uma lista curta — lista curta sem explicação é uma
+  afirmação falsa ("não há fatura") e quem olha conclui que o sistema
+  perdeu o documento; a tela abre o pedido de autorização em cima disso.
+  O `?id=` respeita o MESMO escopo: fechar a lista e deixar o id aberto é
+  fechar a porta e esquecer a janela. 40 casos em
+  `testes/escopo-faturas.mts`; a auditoria confere os quatro elos.
 - **Dado de cliente tem uma porta só: `/api/clients/profile`**, com
   `editarCliente` + senha da própria pessoa + motivo, gravando
   `previous_state`/`new_state` em `client_audit`. `/api/clients/[id]` PATCH

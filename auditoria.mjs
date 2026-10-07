@@ -643,9 +643,31 @@ checar('O CLAUDE.md avisa sobre a chave', 'CLAUDE.md',
 titulo('ESCOPO DA LISTA DE FATURAS E PORTA UNICA DO CADASTRO')
 checar('O corte do dia e o do escritorio', 'lib/dia-da-firma.ts',
        /America\/New_York/, 'sem fuso proprio a lista zera as 20h de Malden')
-checar('A lista filtra por quem emitiu e por hoje', 'app/api/billing/invoices/route.ts',
-       /!perms\.verTodasFaturas[\s\S]{0,160}created_by[\s\S]{0,120}corteDeHoje/,
-       'o assistente voltaria a ver a carteira inteira')
+// A lista e do DIA e de QUEM EMITIU. Antes a trava era um `if` solto na
+// rota; agora a regra mora em `decidirConsulta` (lib/escopo-faturas.ts), a
+// tela chama a MESMA funcao e so o SOCIO e ilimitado. Sao quatro elos, e
+// qualquer um que caia devolve a carteira inteira a quem abrir a tela.
+{
+  const rota = readFileSync(join(raiz, 'app/api/billing/invoices/route.ts'), 'utf8')
+  const problemas = []
+  if (!/decidirConsulta\(/.test(rota)) problemas.push('a rota nao chama decidirConsulta -- a regra voltou para dentro dela')
+  if (!/decisao\.precisaAutorizacao[\s\S]{0,200}status: 403/.test(rota)) {
+    problemas.push('a rota nao RECUSA quando falta autorizacao -- lista curta sem explicacao e afirmacao falsa')
+  }
+  // Dois fatos INDEPENDENTES, nao um por distancia: medir distancia de regex
+  // ja acusou defeito que nao existia neste projeto, e o comentario que
+  // explica o corte do dia fica justamente entre as duas linhas.
+  if (!/q = q\.eq\('created_by', decisao\.filtro\.createdBy\)/.test(rota)) {
+    problemas.push('a rota nao aplica o filtro de emissor que decidirConsulta devolveu')
+  }
+  if (!/q = q\.gte\('created_at', corteDeHoje\(\)\)/.test(rota)) {
+    problemas.push('o corte do dia do ESCRITORIO sumiu -- a lista zeraria as 20h de Malden')
+  }
+  if (!/perms\.nivel === 'owner'/.test(rota)) problemas.push('a rota nao reserva o acesso ilimitado ao socio')
+  problemas.length
+    ? falta('A lista e do dia e de quem emitiu', problemas.join(' · '))
+    : ok('A lista e do dia e de quem emitiu (decidirConsulta, recusa, corte do escritorio, socio ilimitado)')
+}
 recusar('Enviar nao pega carona em cancelar', 'app/api/billing/invoices/route.ts',
         /if \(!perms\.cancelar\) return NextResponse\.json\(\{ error: 'Enviar/,
         'soltar cancelar passaria a soltar o envio junto, calado')
@@ -654,9 +676,18 @@ checar('Enviar tem trava propria', 'app/api/billing/invoices/route.ts',
 checar('Criar e enviar passa pela mesma trava', 'app/api/billing/invoices/route.ts',
        /b\.enviarAgora[\s\S]{0,120}!perms\.enviar/,
        'o atalho de um clique nao pode furar a permissao de enviar')
+// Fechar a lista e deixar o ?id= aberto e fechar a porta e esquecer a
+// janela: bastaria o id para ver a fatura de qualquer um.
 checar('O ?id= respeita o mesmo escopo', 'app/api/billing/invoices/route.ts',
-       /doc\.created_by !== auth\.userId/,
+       /const minha = doc\.created_by === auth\.userId[\s\S]{0,200}!semLimite[\s\S]{0,120}!autorizado/,
        'filtrar a lista e deixar o id aberto e fechar a porta e esquecer a janela')
+// A janela de consulta e lida do ESTADO gravado, e consulta que falha NAO
+// pode virar "sem janela" -- isso trancaria quem acabou de ser autorizado,
+// e a pessoa concluiria que a senha nao pegou.
+checar('A janela de consulta nao vira "sem janela" quando a consulta falha',
+       'app/api/billing/invoices/route.ts',
+       /errJanela[\s\S]{0,160}does not exist[\s\S]{0,200}status: 500/,
+       'erro de leitura engolido tranca quem acabou de ser autorizado')
 checar('Cadastro de cliente so muda com autorizacao', 'app/api/clients/profile/route.ts',
        /!perms\.editarCliente/, 'a rota do cadastro precisa exigir editarCliente')
 checar('E com senha e motivo', 'app/api/clients/profile/route.ts',
