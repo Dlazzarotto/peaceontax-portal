@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
+import { ROTULO_DA_SITUACAO, type SituacaoFiltro } from '@/lib/escopo-faturas'
 import { formatar as formatarCodigo, formatoValido as codigoBemFormado,
          relogio, segundosRestantes, MINUTOS_DE_VIDA } from '@/lib/codigo-autorizacao'
 
@@ -96,7 +97,18 @@ export default function BillingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qrBalcao?.id, qrBalcao?.pago])
   const [filtroDoc, setFiltroDoc] = useState('')
-  const [filtroStatus, setFiltroStatus] = useState('')
+  // A LISTA NASCE FECHADA: o padrão é o PRÓPRIO dia, das PRÓPRIAS faturas —
+  // o que dá para ver sem autorização. Histórico não fica à mostra; quem
+  // precisa dele busca, e buscar além disso é um ato com senha e motivo.
+  const [fSituacao, setFSituacao] = useState<SituacaoFiltro>('todas')
+  const [fDe, setFDe] = useState('')      // vazio = ainda não sabemos o dia da firma
+  const [fAte, setFAte] = useState('')
+  const [fSoMinhas, setFSoMinhas] = useState(true)
+  // Autorização para ver além: o servidor recusa com 403 e a tela abre isto.
+  const [autzConsulta, setAutzConsulta] = useState<any>(null)   // a janela viva
+  const [pedirAutz, setPedirAutz] = useState(false)
+  const [acMotivo, setAcMotivo] = useState(''); const [acEmail, setAcEmail] = useState('')
+  const [acSenha, setAcSenha] = useState('')
   const [busca, setBusca] = useState('')
   const [soAbertas, setSoAbertas] = useState(false)
   const [aba, setAba] = useState<'docs' | 'contratos' | 'parcelamentos' | 'autorizacao'>('docs')
@@ -194,12 +206,41 @@ export default function BillingPage() {
     try {
       const qs = new URLSearchParams()
       if (filtroDoc) qs.set('doc', filtroDoc)
-      if (filtroStatus) qs.set('status', filtroStatus)
+      if (fSituacao && fSituacao !== 'todas') qs.set('situacao', fSituacao)
+      if (fDe) qs.set('de', fDe)
+      if (fAte) qs.set('ate', fAte)
+      // `emissor=eu` é o atalho; ausente significa QUALQUER emissor, e
+      // qualquer emissor é consulta ampla — o servidor é quem decide.
+      if (fSoMinhas) qs.set('emissor', 'eu')
       const d = await jsonSeguro(await fetch(`/api/billing/invoices?${qs}`))
-      if (d?.invoices) setDados(d)
+      // RECUSA POR FALTA DE AUTORIZAÇÃO NÃO É ERRO: é o fluxo. A tela abre o
+      // pedido em vez de mostrar um aviso vermelho que ninguém sabe resolver.
+      if (d?.precisaAutorizacaoDeConsulta) {
+        setLoading(false); setPedirAutz(true); setAcMotivo(''); setAcSenha('')
+        setMsg(''); return
+      }
+      if (d?.invoices) { setDados(d); setAutzConsulta(d.escopo?.autorizado ? d.escopo : null) }
       else setMsg(`⚠️ ${d?.error || 'Não foi possível carregar.'}`)
     } catch (e) { setMsg(`⚠️ ${(e as Error).message}`) }
     setLoading(false)
+  }
+
+  // Liberar a consulta: senha e motivo de um gerente ou sócio. Quem já é
+  // gerente usa a PRÓPRIA senha (deixa o e-mail em branco).
+  const liberarConsulta = async () => {
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/consulta', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        motivo: acMotivo, password: acSenha, email: acEmail.trim() || undefined,
+        pedido: { de: fDe, ate: fAte, situacao: fSituacao, soMinhas: fSoMinhas },
+      }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false); setAcSenha('')
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    setMsg(`✓ ${d.message}`)
+    setPedirAutz(false); setAcMotivo(''); setAcEmail('')
+    load()
   }
   const loadPlanos = async () => {
     const d = await jsonSeguro(await fetch('/api/billing/recurring'))
@@ -209,7 +250,13 @@ export default function BillingPage() {
     if (d?.plans) { setPlanos(d.plans); setPlanosDados(d) }
     else setMsg('⚠️ Resposta inesperada ao carregar os contratos.')
   }
-  useEffect(() => { load() }, [filtroDoc, filtroStatus])
+  // O período padrão é o dia da FIRMA, que só o servidor sabe (America/
+  // New_York). Até ele chegar, a tela pede sem data e o servidor responde o
+  // próprio dia — nunca a carteira inteira.
+  useEffect(() => {
+    if (!fDe && dados?.escopo?.hoje) { setFDe(dados.escopo.hoje); setFAte(dados.escopo.hoje) }
+  }, [dados?.escopo?.hoje, fDe])
+  useEffect(() => { load() }, [filtroDoc, fSituacao, fDe, fAte, fSoMinhas])
   useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
 
   const cancelarParcelamento = async () => {
@@ -822,9 +869,11 @@ export default function BillingPage() {
           <option value="estimate">Só orçamentos</option>
           <option value="invoice">Só faturas</option>
         </select>
-        <select value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)} style={{ ...inp, cursor: 'pointer' }}>
-          <option value="">Todas as situações</option>
-          {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.rotulo}</option>)}
+        <select value={fSituacao} onChange={e => setFSituacao(e.target.value as SituacaoFiltro)}
+          style={{ ...inp, cursor: 'pointer' }}>
+          {(['todas', 'aberto', 'paga', 'cancelada', 'rascunho'] as SituacaoFiltro[]).map(k => (
+            <option key={k} value={k}>{ROTULO_DA_SITUACAO[k]}</option>
+          ))}
         </select>
         {soAbertas && (
           <button onClick={() => setSoAbertas(false)}
@@ -835,6 +884,43 @@ export default function BillingPage() {
         <button onClick={() => setAbrirNovo(v => !v)} style={btn('#2D3278')}>
           {abrirNovo ? 'Fechar' : '➕ Novo documento'}
         </button>
+      </div>
+
+      {/* ── PERÍODO E EMISSOR ────────────────────────────────────────────
+          A lista é do DIA e é de QUEM EMITIU. Mexer aqui para trás, ou tirar
+          "só as minhas", é consulta AMPLA — e aí o servidor pede autorização
+          de gerente ou sócio, com motivo. Só o sócio não passa por isso. */}
+      <div style={{ ...card, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>DE</span>
+          <input type="date" value={fDe} onChange={e => setFDe(e.target.value)} style={{ ...inp, width: 160 }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>ATÉ</span>
+          <input type="date" value={fAte} onChange={e => setFAte(e.target.value)} style={{ ...inp, width: 160 }} />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13.5,
+                        color: '#4A5A70', cursor: 'pointer', paddingBottom: 9 }}>
+          <input type="checkbox" checked={fSoMinhas} onChange={e => setFSoMinhas(e.target.checked)} />
+          Só as que eu emiti
+        </label>
+        {dados?.escopo?.hoje && (
+          <button onClick={() => { setFDe(dados.escopo.hoje); setFAte(dados.escopo.hoje); setFSoMinhas(true); setFSituacao('todas') }}
+            style={{ padding: '9px 14px', borderRadius: 9, border: '1.5px solid #CFDAEA', background: '#fff',
+                     color: '#4A5A70', fontSize: 13.5, fontWeight: 700, cursor: 'pointer' }}>
+            Voltar para hoje
+          </button>
+        )}
+
+        <div style={{ marginLeft: 'auto', fontSize: 12.5, color: '#6A7A9A', maxWidth: 330, textAlign: 'right' as const }}>
+          {dados?.escopo?.semLimite
+            ? 'Você é o sócio: consulta sem limite.'
+            : autzConsulta
+              ? '🔓 Consulta liberada — o período e o emissor estão abertos por alguns minutos.'
+              : dados?.escopo?.verTodas
+                ? 'Você tem autorização permanente para ver as faturas de todos.'
+                : 'Histórico e faturas de outras pessoas pedem autorização de gerente ou sócio, com motivo.'}
+        </div>
       </div>
 
       {abrirNovo && (
@@ -1760,6 +1846,62 @@ export default function BillingPage() {
       {/* ── Cobrança no balcão ──────────────────────────────────────────
           O cliente aponta o telefone, paga no Stripe e o webhook dá baixa.
           Nenhuma integração nova: é o mesmo Checkout do portal. */}
+      {/* ── AUTORIZAR A CONSULTA ──────────────────────────────────────
+          Não é erro: é o fluxo. O servidor recusou porque o pedido sai do
+          próprio dia, e aqui se pede a autorização em vez de mostrar um
+          aviso vermelho que ninguém sabe resolver. */}
+      {pedirAutz && (
+        <div onClick={() => !busy && setPedirAutz(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 460, width: '100%' }}>
+            <div style={{ fontWeight: 800, color: '#0f2340', fontSize: 17 }}>Ver além do dia de hoje</div>
+            <div style={{ fontSize: 13.5, color: '#4A5A70', margin: '8px 0 14px', lineHeight: 1.5 }}>
+              A lista de faturamento é do dia e é de quem emitiu. Para consultar
+              outro período ou faturas de outra pessoa, um <strong>gerente ou o
+              sócio</strong> autoriza com a senha e um motivo. A liberação vale{' '}
+              <strong>30 minutos</strong> e fica registrada.
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>POR QUE PRECISA VER</span>
+                <input value={acMotivo} onChange={e => setAcMotivo(e.target.value)}
+                  placeholder="cliente ligou perguntando da fatura de setembro" style={inp} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>
+                  E-MAIL DO GERENTE OU SÓCIO
+                </span>
+                <input value={acEmail} onChange={e => setAcEmail(e.target.value)}
+                  placeholder="deixe em branco se a senha é a sua" autoComplete="off" style={inp} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>SENHA</span>
+                <input type="password" value={acSenha} onChange={e => setAcSenha(e.target.value)}
+                  autoComplete="off" style={{ ...inp, maxWidth: 250 }} />
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 18, justifyContent: 'flex-end' }}>
+              <button onClick={() => {
+                  // Desistir volta para o que se pode ver sem pedir nada —
+                  // em vez de deixar a tela num pedido recusado, sem lista.
+                  setPedirAutz(false)
+                  if (dados?.escopo?.hoje) { setFDe(dados.escopo.hoje); setFAte(dados.escopo.hoje) }
+                  setFSoMinhas(true)
+                }} disabled={busy}
+                style={{ padding: '10px 16px', borderRadius: 9, border: '1.5px solid #CFDAEA',
+                         background: '#fff', color: '#4A5A70', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                Voltar para hoje
+              </button>
+              <button onClick={liberarConsulta} disabled={busy} style={btn('#2D3278', busy)}>
+                Liberar consulta
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* EDITAR o contrato. Senha e motivo porque isto muda quanto e quando o
           cliente paga — princípio 3. A trilha fica em recurring_plan_audit. */}
       {editando && (

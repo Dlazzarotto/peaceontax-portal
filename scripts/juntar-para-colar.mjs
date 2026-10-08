@@ -4,7 +4,7 @@
 // POR QUE ISTO EXISTE
 // Nem sempre da para rodar `migrar.mjs`: a maquina pode nao ter psql, e nem
 // todo mundo quer gerar um token de acesso. O que sempre existe e o SQL
-// Editor no navegador. Colar tres arquivos em sequencia convida a errar a
+// Editor no navegador. Colar varios arquivos em sequencia convida a errar a
 // ORDEM e a esquecer de anotar no livro -- e migracao nao anotada aparece
 // como PENDENTE para sempre, ate alguem rodar de novo.
 //
@@ -41,7 +41,7 @@ export function montar(arquivos, ler = (a) => readFileSync(a, 'utf-8')) {
   let out = `-- COLE ESTE ARQUIVO INTEIRO NO SQL EDITOR DO SUPABASE E APERTE RUN.
 --
 -- GERADO por scripts/juntar-para-colar.mjs -- nao edite a mao.
--- Junta, NA ORDEM, as migracoes abaixo e anota as tres no livro
+-- Junta, NA ORDEM, as migracoes abaixo e anota as ${arquivos.length} no livro
 -- (public.schema_migrations) com o MESMO sha256 que scripts/migrar.mjs
 -- calcula: depois disso \`--pendentes\` diz APLICADO e ninguem roda de novo.
 --

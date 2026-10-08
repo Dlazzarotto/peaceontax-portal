@@ -31,6 +31,7 @@ import Stripe from 'stripe'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito } from '@/lib/ach-transito'
 import { corteDeHoje, dataDaFirma } from '@/lib/dia-da-firma'
+import { decidirConsulta, janelaViva, statusDaSituacao, ehSituacao, type NivelFinanceiro } from '@/lib/escopo-faturas'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,6 +44,24 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const db = serviceDb()
+
+  // Janela de consulta ampliada viva? Lê o ESTADO gravado
+  // (/api/billing/consulta). Consulta que falha NÃO vira "sem janela",
+  // senão quem acabou de ser autorizado seria trancado e concluiria que a
+  // senha não pegou.
+  let autorizado = false
+  {
+    const { data: janela, error: errJanela } = await db.from('invoice_query_audit')
+      .select('expira_em').eq('performed_by', auth.userId)
+      .gt('expira_em', new Date().toISOString())
+      .order('expira_em', { ascending: false }).limit(1).maybeSingle()
+    if (errJanela && !/does not exist|not find/i.test(errJanela.message || '')) {
+      return NextResponse.json({ error: `Não foi possível ler a autorização de consulta: ${errJanela.message}` }, { status: 500 })
+    }
+    autorizado = !!janela && janelaViva(janela.expira_em)
+  }
+  // O SÓCIO é o único sem limite — é a regra, e ela vale literalmente.
+  const semLimite = perms.nivel === 'owner'
 
   // Uma fatura específica, com itens — usado pela tela de edição
   const umId = sp.get('id')
@@ -61,27 +80,72 @@ export async function GET(req: NextRequest) {
     // apagaria o que estava nela.
     if (errItens) return NextResponse.json({ error: `Itens da fatura: ${errItens.message}` }, { status: 500 })
     // Filtrar a lista e deixar ?id= aberto seria fechar a porta e esquecer a
-    // janela: bastaria o id para ver qualquer fatura da carteira.
-    if (!perms.verTodasFaturas && doc.created_by !== auth.userId) {
-      return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+    // janela: bastaria o id para ver qualquer fatura da carteira. O escopo
+    // aqui é o MESMO da lista — sem isso, a tela nova pediria autorização e
+    // o id continuaria entregando a fatura de qualquer um.
+    const minha = doc.created_by === auth.userId
+    if (!semLimite && !minha && !perms.verTodasFaturas && !autorizado) {
+      return NextResponse.json({
+        error: 'Esta fatura é de outra pessoa. Ver fatura de outro emissor precisa de autorização de gerente ou sócio, com motivo.',
+        precisaAutorizacaoDeConsulta: true,
+      }, { status: 403 })
     }
     return NextResponse.json({ invoice: doc, items: itens || [], perms })
   }
 
+  // ── O ESCOPO DA CONSULTA ─────────────────────────────────────────────
+  // A lista é do DIA e é de QUEM EMITIU. Olhar dia anterior ou fatura de
+  // outra pessoa é um ATO: pede autorização de gerente ou sócio, com motivo
+  // (/api/billing/consulta). **Só o sócio tem acesso ilimitado.**
+  //
+  // A REGRA MORA EM `decidirConsulta`, e a tela chama a MESMA função. A
+  // trava é daqui, não da tela — a rota responde a quem a chamar direto.
+  const hoje = dataDaFirma()
+
+  const pedido = {
+    de: sp.get('de'), ate: sp.get('ate'),
+    situacao: sp.get('situacao') || 'todas',
+    // `emissor=eu` é o atalho da tela para "as minhas"; ausente é QUALQUER,
+    // e qualquer é amplo.
+    emissor: sp.get('emissor') === 'eu' ? auth.userId : sp.get('emissor'),
+    busca: sp.get('busca') || '',
+  }
+  const decisao = decidirConsulta(pedido, {
+    nivel: perms.nivel as NivelFinanceiro,
+    userId: auth.userId,
+    verTodas: !!perms.verTodasFaturas,
+    autorizado,
+  }, hoje)
+
+  // RECUSA, em vez de devolver calado o que a pessoa já podia ver: lista
+  // curta sem explicação é uma afirmação falsa ("não há fatura"), e quem
+  // olha conclui que o sistema perdeu o documento.
+  if (decisao.precisaAutorizacao) {
+    return NextResponse.json({
+      error: decisao.motivo,
+      precisaAutorizacaoDeConsulta: true,
+      hoje,
+    }, { status: 403 })
+  }
+
   let q = db.from('invoices')
-    .select('id, client_id, doc_type, number, status, issue_date, due_date, total, paid_total, payment_plan, expected_method, financier, notes, ach_desde, ach_valor, clients(business_name, name)')
+    .select('id, client_id, doc_type, number, status, issue_date, due_date, total, paid_total, payment_plan, expected_method, financier, notes, ach_desde, ach_valor, created_by, clients(business_name, name)')
     .order('issue_date', { ascending: false })
     .order('number', { ascending: false })
     .limit(400)
 
-  // Sem `verTodasFaturas`: só o que a própria pessoa emitiu hoje.
-  // A trava é daqui, não da tela — a rota responde a quem a chamar direto.
-  if (!perms.verTodasFaturas) {
-    q = q.eq('created_by', auth.userId).gte('created_at', corteDeHoje())
+  if (decisao.filtro.createdBy) q = q.eq('created_by', decisao.filtro.createdBy)
+  // O corte do dia é o do ESCRITÓRIO: às 20h de Malden já é o dia seguinte
+  // em UTC e a lista zerava no meio do expediente da temporada.
+  if (decisao.filtro.de === hoje && decisao.filtro.ate === hoje && !decisao.amplo) {
+    q = q.gte('created_at', corteDeHoje())
+  } else {
+    if (decisao.filtro.de) q = q.gte('issue_date', decisao.filtro.de)
+    if (decisao.filtro.ate) q = q.lte('issue_date', decisao.filtro.ate)
   }
+  if (decisao.filtro.status) q = q.in('status', decisao.filtro.status)
 
   if (sp.get('doc')) q = q.eq('doc_type', sp.get('doc'))
-  if (sp.get('status')) q = q.eq('status', sp.get('status'))
   if (sp.get('clientId')) q = q.eq('client_id', sp.get('clientId'))
 
   const [
@@ -124,10 +188,18 @@ export async function GET(req: NextRequest) {
       id: x.id, nome: x.label, preco: Number(x.amount) || 0, code: x.code, kind: x.kind,
     })),
     perms,
-    // A tela precisa dizer POR QUE a lista está curta, senão parece defeito.
-    escopo: perms.verTodasFaturas
-      ? null
-      : { apenasMinhas: true, dia: dataDaFirma() },
+    // A tela precisa dizer POR QUE a lista está curta, senão parece defeito —
+    // e precisa saber o que PODE pedir sem levar 403. O servidor manda a
+    // resposta pronta; a tela não recalcula a regra.
+    escopo: {
+      hoje,
+      amplo: decisao.amplo,
+      semLimite,
+      autorizado,
+      verTodas: !!perms.verTodasFaturas,
+      // Sem nada disso, o que se enxerga é o próprio dia.
+      apenasMinhas: !decisao.amplo,
+    },
   })
 }
 
