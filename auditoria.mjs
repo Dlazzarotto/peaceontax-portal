@@ -576,7 +576,71 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
   soltas.length
     ? falta('Nenhuma rota de API sem conferencia', `sem getAuth: ${soltas.join(', ')}`)
     : ok('Nenhuma rota de API sem conferencia')
+
+  // VERBO POR VERBO. Conferir o ARQUIVO deixou passar /api/send-invite: o
+  // POST tinha getAuth e o GET nao, e o GET entregava a lista de convites --
+  // com o TOKEN que cria a conta -- a qualquer cliente logado no portal.
+  // Cada GET/POST/PUT/PATCH/DELETE exportado precisa conferir quem chama no
+  // proprio corpo, ou chamar uma funcao do mesmo arquivo que confere (a
+  // relacao e seguida em cadeia: helper que chama helper que confere vale).
+  // Comentario sai antes: o comentario que EXPLICA o getAuth nao confere nada.
+  const semComentario = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const verbosSoltos = []
+  let verbosVistos = 0
+  for (const arq of arquivos(join(raiz, 'app', 'api'), ['route.ts'])) {
+    const nome = rel(arq)
+    if (ABERTAS.includes(nome)) continue
+    const cod = semComentario(readFileSync(arq, 'utf8'))
+    const funcs = [...cod.matchAll(/(?:async\s+)?function\s+(\w+)\s*\(|const\s+(\w+)\s*=\s*(?:async\s*)?\(/g)]
+      .map(m => ({ nome: m[1] || m[2], i: m.index }))
+    // O corpo vai ate a proxima funcao: corta CEDO, nunca tarde -- erra para
+    // o lado de acusar, nunca para o de deixar passar.
+    const corpo = (i) => {
+      const prox = funcs.filter(f => f.i > i + 30).map(f => f.i)
+      return cod.slice(i, prox.length ? Math.min(...prox) : cod.length)
+    }
+    const conferem = new Set()
+    for (let volta = 0; volta < 4; volta++) for (const f of funcs) {
+      const c = corpo(f.i)
+      if (CONFERE.test(c) || [...conferem].some(n => new RegExp(`\\b${n}\\(`).test(c))) conferem.add(f.nome)
+    }
+    for (const v of cod.matchAll(/export\s+(?:async\s+function\s+|const\s+)(GET|POST|PUT|PATCH|DELETE)\b/g)) {
+      verbosVistos++
+      const c = corpo(v.index)
+      const ok = CONFERE.test(c) ||
+        [...conferem].some(n => n !== v[1] && new RegExp(`\\b${n}\\(`).test(c))
+      if (!ok) verbosSoltos.push(`${nome} ${v[1]}`)
+    }
+  }
+  if (verbosVistos === 0)
+    falta('Cada verbo de cada rota confere quem chama', 'nenhum verbo exportado encontrado -- a conferencia perdeu a ancora')
+  else if (verbosSoltos.length)
+    falta('Cada verbo de cada rota confere quem chama', `sem conferencia no proprio verbo: ${verbosSoltos.join(', ')}`)
+  else
+    ok(`Cada verbo de cada rota confere quem chama (${verbosVistos} verbos)`)
 }
+
+titulo('EXCEDENTE DE TRANSACOES: SO CONTA, E COM A FRANQUIA MENSAL')
+// A franquia do contrato e POR MES e era comparada com a contagem do ANO
+// inteiro: 100/mes contra 590 no ano dava "$612,50 a cobrar" -- e um botao
+// lancava isso na fatura do Stripe. A conta tem um lugar so
+// (lib/excedente-transacoes.ts), as duas telas usam, e cobrar e faturamento.
+recusar('Excedente nao cobra pelo bookkeeping (sem POST)', 'app/api/bookkeeping/overage/route.ts',
+  /export\s+(async\s+function|const)\s+POST\b/, 'cobrar excedente e faturamento: alcada de quem emite e de quem da baixa')
+recusar('Excedente nao chama o Stripe', 'app/api/bookkeeping/overage/route.ts',
+  /from ['"]stripe['"]|new Stripe\(/, 'o contador nao pode lancar item na assinatura do cliente')
+recusar('A tela do bookkeeping nao manda cobrar excedente', 'components/BookkeepingTab.tsx',
+  /\/api\/bookkeeping\/overage['"`][\s\S]{0,80}method:\s*['"]POST/, 'o botao de cobrar excedente voltou')
+for (const arq of ['app/api/bookkeeping/overage/route.ts', 'app/api/bookkeeping/overview/route.ts']) {
+  checar(`${arq.split('/').slice(-2, -1)[0]}: franquia pelo modulo unico`, arq,
+    // As DUAS chamadas no arquivo, sem medir distancia entre elas (medir
+    // distancia de regex ja acusou defeito que nao existia).
+    /^(?=[\s\S]*\bvigenciaNoAno\()(?=[\s\S]*\bapurarExcedente\()/,
+    'duas telas calculando o mesmo numero de jeitos diferentes -- foi assim que 100/mes virou 100/ano')
+}
+recusar('Central nao compara franquia mensal com o ano', 'app/api/bookkeeping/overview/route.ts',
+  /yearLimit:\s*plan\?\.included_transactions/, 'included_transactions e POR MES')
+
 
 titulo('AUTORIZACOES POR PESSOA (nivel + concessoes)')
 checar('lib/permissoes.ts existe', 'lib/permissoes.ts', /export function permissoesDe/,

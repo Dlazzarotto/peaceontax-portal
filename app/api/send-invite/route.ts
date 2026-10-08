@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase-browser'
-import { getAuth, canAccessClient } from '@/lib/api-auth';
+import { getAuth, canAccessClient, clientesOcultos, podeVerEmpresas } from '@/lib/api-auth';
 
 const PORTAL_URL  = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME   = 'Peace on Tax'
@@ -113,8 +113,34 @@ export async function POST(req: NextRequest) {
   }
 }
 
+// GET → a lista de convites, para a tela /invitations. SÓ A EQUIPE.
+//
+// Ficou aberta enquanto o POST foi fechado: o middleware só exige login, e a
+// auditoria conferia o ARQUIVO ("tem isStaff em algum lugar"), não cada
+// verbo. Qualquer cliente logado no portal lia todos os convites — nome,
+// e-mail e o TOKEN, que é o que cria a conta: com ele dava para registrar-se
+// no lugar do convidado. Agora a auditoria confere verbo por verbo.
+//
+// E vale o escopo por TIPO, como em /api/clients: quem não pode abrir
+// empresa não vê convite de empresa (nem o da própria firma). O convite pode
+// não ter cadastro ligado (`client_id` nulo), então o tipo do próprio
+// convite também conta.
 export async function GET() {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
+
+  const { ocultos, erro: errEscopo } = await clientesOcultos(auth)
+  if (errEscopo) return NextResponse.json({ error: errEscopo }, { status: 500 })
+  const veEmpresas = await podeVerEmpresas(auth)
+
   const db = supabaseAdmin()
-  const { data } = await db.from('client_invitations').select('*').order('created_at', { ascending: false })
-  return NextResponse.json({ invitations: data || [] })
+  const { data, error } = await db.from('client_invitations').select('*').order('created_at', { ascending: false })
+  // Consulta que falha não vira "nenhum convite": a tela diria que não há
+  // ninguém esperando acesso.
+  if (error) return NextResponse.json({ error: `Não foi possível ler os convites: ${error.message}` }, { status: 500 })
+
+  const invitations = (data || []).filter((c: any) =>
+    !(c.client_id && ocultos.has(c.client_id)) &&
+    (veEmpresas || c.client_type !== 'business'))
+  return NextResponse.json({ invitations })
 }

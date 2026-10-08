@@ -85,6 +85,19 @@ export async function canAccessClient(
   return permissoesDe(nivel, await concessoesDe(auth.userId)).verEmpresas;
 }
 
+/**
+ * Esta pessoa pode ver EMPRESA? Para listas que não passam por um cliente
+ * cadastrado (um convite pode não ter `client_id`). Mesma regra de
+ * `canAccessClient`: cliente do portal não; sócio sim; o resto pela
+ * autorização `verEmpresas`.
+ */
+export async function podeVerEmpresas(auth: AuthContext): Promise<boolean> {
+  if (!auth.isStaff) return false;
+  const nivel = await getStaffLevel(auth.userId);
+  if (nivel === "owner") return true;
+  return permissoesDe(nivel, await concessoesDe(auth.userId)).verEmpresas;
+}
+
 /** A mensagem de recusa, igual em todas as rotas. */
 export const SEM_ACESSO_EMPRESA =
   "Este é um cliente Empresa. Atender empresas exige autorização — fale com o sócio.";

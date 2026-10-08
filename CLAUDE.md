@@ -877,6 +877,28 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   instante fica de fora nem conta duas vezes na emenda de um mês com o outro.
   Os dois domingos de horário de verão estão nos testes (dia de 23 e de 25
   horas).
+- **Excedente de transações: franquia MENSAL, apuração ANUAL, e o
+  bookkeeping só CONTA** (`lib/excedente-transacoes.ts`, 30 casos em
+  `testes/excedente-transacoes.mts`). `included_transactions` é POR MÊS
+  (formulário e contrato dizem isso), e a rota de excedente e a central
+  comparavam com a contagem do ANO: 100/mês contra 590 no ano dava "$612,50
+  a cobrar" — e o botão **Cobrar excedente** lançava isso na assinatura do
+  Stripe. O conserto existia desde setembro num ramo que nunca entrou
+  (`af814e1`). Franquia = mensal × meses de vigência, da PRIMEIRA COBRANÇA
+  (`ancoraDeCobranca`); a contagem se recorta pela vigência; no ano corrente
+  vai até o mês corrente e sai marcada `parcial`. O POST e o botão saíram:
+  cobrança é faturamento (princípio 1). A auditoria recusa o POST, o Stripe
+  na rota, o botão na tela e a central voltar a usar o número mensal, e
+  exige o módulo nas duas rotas.
+- **Cada VERBO confere quem chama, não só o arquivo.** A auditoria olhava
+  se o `route.ts` tinha `getAuth` em algum lugar: o POST de
+  `/api/send-invite` tinha, o GET não — e o GET entregava a lista de
+  convites, com o TOKEN que cria a conta, a qualquer cliente logado no
+  portal. Agora cada `GET/POST/PUT/PATCH/DELETE` exportado precisa conferir
+  no próprio corpo ou chamar uma função do mesmo arquivo que confere
+  (seguida em cadeia), com os comentários retirados antes. A lista de
+  convites também obedece ao escopo por tipo (`podeVerEmpresas`, para
+  convite sem cadastro ligado).
 - **Numeração de fatura é gerada no banco** (`INV-2026-0001`), nunca no código.
 - **Preço praticado fica gravado no item da fatura**; reajuste do catálogo
   (`pricing_items`) não altera fatura antiga.
