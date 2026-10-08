@@ -14,6 +14,8 @@ interface InviteRow { email: string; note?: string; valid: boolean; error?: stri
 export default function InvitationsPage() {
   const [invites,   setInvites]   = useState<any[]>([])
   const [loading,   setLoading]   = useState(true)
+  // Falha ao ler NÃO é "nenhum convite": a tela afirmaria que ninguém espera acesso.
+  const [erroLista, setErroLista] = useState<string | null>(null)
   const [tab,       setTab]       = useState<'single'|'bulk'>('single')
   const [email,     setEmail]     = useState('')
   const [note,      setNote]      = useState('')
@@ -31,7 +33,15 @@ export default function InvitationsPage() {
 
   const load = () => {
     setLoading(true)
-    fetch('/api/send-invite').then(r => r.json()).then(d => { setInvites(d.invitations || []); setLoading(false) })
+    setErroLista(null)
+    fetch('/api/send-invite')
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setErroLista(d.error); setInvites([]) }
+        else setInvites(d.invitations || [])
+      })
+      .catch(e => { setErroLista(`Não foi possível carregar os convites: ${e?.message || e}`); setInvites([]) })
+      .finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
@@ -277,7 +287,9 @@ export default function InvitationsPage() {
             <span style={{ fontSize:12, color:'#6a7a9a' }}>{invites.length} total</span>
           </div>
 
-          {loading ? <p style={{ color:'#6a7a9a', fontSize:13 }}>Loading…</p> : invites.length===0 ? (
+          {loading ? <p style={{ color:'#6a7a9a', fontSize:13 }}>Loading…</p> : erroLista ? (
+            <p style={{ color:'#b42318', fontSize:13, fontWeight:600 }}>⚠ {erroLista}</p>
+          ) : invites.length===0 ? (
             <div style={{ textAlign:'center', padding:'32px 0', color:'#9aaab0' }}>
               <div style={{ fontSize:40, marginBottom:10 }}>✉️</div>
               <div style={{ fontSize:13 }}>No invitations yet</div>

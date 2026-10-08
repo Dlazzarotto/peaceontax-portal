@@ -500,6 +500,8 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e valor por excedente) e **outros serviços mensais** (payroll, sales tax), mais **parcelamento** de serviços avulsos com entrada.
 
+**Excedente de transações (bookkeeping).** A franquia do contrato é **por mês** (o formulário pede "transações incluídas/mês" e o contrato assinado promete "até N por mês"). A apuração é **anual**: a franquia do período é o número mensal × os **meses de vigência** no ano, contados da **primeira cobrança** (contrato criado em 20/08 com débito no dia 5 vale de setembro a dezembro). Mês de pouco movimento compensa mês de muito. Só contam os lançamentos dentro da vigência — histórico importado de antes do contrato não vira excedente. No **ano em curso** a franquia vai até o mês corrente, e a tela avisa que o número é parcial. O bookkeeping **só conta**: cobrar excedente se faz pelo Financeiro, com uma fatura, sob a mesma alçada de qualquer cobrança. A conta mora em `lib/excedente-transacoes.ts` e é a mesma no quadro do cliente e na central de bookkeeping.
+
 O **dia da cobrança é definido no acordo** (1 a 28), não mais fixo. Um cliente pode ter vários serviços mensais, mas o sistema impede dois planos ativos do mesmo serviço — evita cobrança duplicada.
 
 **Contrato** gerado pelo sistema, em português ou inglês conforme o cliente, com timbre e dez cláusulas: objeto, preço, autorização de débito, obrigações, prazo, atraso, entrega, confidencialidade, **autorização ACH** e assinaturas. Assinado via **DocuSign**, com campos preenchíveis pelo cliente (banco, tipo de conta, routing, account) e rubrica.

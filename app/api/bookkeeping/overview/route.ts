@@ -4,27 +4,49 @@
 
 import { NextResponse } from 'next/server'
 import { getAuth, serviceDb, clientesOcultos } from '@/lib/api-auth'
+import { dataDaFirma } from '@/lib/dia-da-firma'
+import { vigenciaNoAno, apurarExcedente } from '@/lib/excedente-transacoes'
+
+// Lê TODOS os lançamentos, em páginas de 1000 com `order`. Era
+// `.limit(50000)`: o PostgREST tem teto próprio (1000 por padrão, ver o
+// conserto de PATCH /api/bookkeeping/rules) e corta EM SILÊNCIO — a central
+// contaria só parte da carteira, sem dizer qual parte.
+async function todosOsLancamentos(db: any) {
+  const PAGINA = 1000
+  const linhas: { client_id: string; status: string; fiscal_year: number | null; tx_date: string | null }[] = []
+  for (let de = 0; ; de += PAGINA) {
+    const { data, error } = await db.from('bank_transactions')
+      .select('client_id, status, fiscal_year, tx_date')
+      .order('id')
+      .range(de, de + PAGINA - 1)
+    if (error) return { linhas, erro: error.message as string }
+    linhas.push(...(data || []))
+    if (!data || data.length < PAGINA) break
+  }
+  return { linhas, erro: null as string | null }
+}
 
 export async function GET() {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
 
   const db = serviceDb()
-  const year = new Date().getFullYear()
+  // O ano do ESCRITÓRIO, não o do servidor em UTC (na virada do ano, às 21h
+  // de Malden o servidor já está no ano seguinte).
+  const hoje = dataDaFirma()
+  const year = Number(hoje.slice(0, 4))
 
   const [
     { data: plans, error: errPlans },
-    { data: txs, error: errTxs },
+    { linhas: txs, erro: errTxs },
     { data: statements, error: errDocs },
     { data: alerts, error: errAlerts },
   ] = await Promise.all([
     db.from('payment_plans')
-      .select('client_id, monthly_amount, included_transactions, status, clients(id, name)')
+      .select('client_id, monthly_amount, included_transactions, overage_rate, created_at, due_day, status, clients(id, name)')
       .eq('kind', 'bookkeeping')
       .in('status', ['active', 'paused', 'payment_failed']),
-    db.from('bank_transactions')
-      .select('client_id, status, fiscal_year')
-      .limit(50000),
+    todosOsLancamentos(db),
     db.from('documents')
       .select('id, client_id')
       .ilike('category', '%bank%'),
@@ -38,7 +60,7 @@ export async function GET() {
   // equipe conclui que nao ha trabalho pendente naquele cliente.
   for (const [oque, err] of [['contratos', errPlans], ['lancamentos', errTxs],
                              ['extratos', errDocs], ['alertas', errAlerts]] as const) {
-    if (err) return NextResponse.json({ error: `Nao foi possivel ler ${oque}: ${err.message}` }, { status: 500 })
+    if (err) return NextResponse.json({ error: `Nao foi possivel ler ${oque}: ${typeof err === 'string' ? err : err.message}` }, { status: 500 })
   }
 
   // Clientes relevantes: com contrato OU com transações OU com extratos
@@ -70,8 +92,16 @@ export async function GET() {
     const forReview = clientTxs.filter(t => ['pending', 'auto'].includes(t.status)).length
     const inRegister = clientTxs.filter(t => ['approved', 'reviewed'].includes(t.status)).length
     const total = clientTxs.filter(t => t.status !== 'excluded').length
-    const yearCount = clientTxs.filter(t => t.fiscal_year === year && t.status !== 'excluded').length
+    const doAno = clientTxs.filter(t => t.fiscal_year === year && t.status !== 'excluded')
+    const yearCount = doAno.length
     const plan = (plans || []).find(p => p.client_id === id) as any
+    // A MESMA conta do quadro do cliente (lib/excedente-transacoes.ts):
+    // franquia MENSAL × meses de vigência, contagem recortada pela vigência.
+    // Antes: `yearLimit = included_transactions` contra o ano inteiro — 100/mês
+    // virava "100/ano" e quase todo cliente aparecia estourado.
+    const vig = vigenciaNoAno(plan || {}, year, hoje)
+    const naVigencia = vig.desde ? doAno.filter(t => (t.tx_date || '') >= vig.desde!).length : yearCount
+    const ap = apurarExcedente(plan || null, naVigencia, vig)
     const hasStatements = (statements || []).some(s => s.client_id === id)
 
     let workStatus: 'sem_comecar' | 'em_aberto' | 'pronto'
@@ -84,7 +114,10 @@ export async function GET() {
       name: nameMap[id] || 'Cliente',
       workStatus,
       forReview, inRegister, total,
-      yearCount, yearLimit: plan?.included_transactions ?? null,
+      yearCount,
+      yearLimit: ap.franquia,
+      yearExcess: ap.excedente,
+      yearPartial: ap.parcial,
       contract: plan ? {
         monthly: plan.monthly_amount,
         status: plan.status,

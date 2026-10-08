@@ -94,9 +94,12 @@ export default function BookkeepingCentral() {
                 </td>
                 <td style={{ padding:'12px 16px', fontSize:15, fontWeight:800, color:'#1a6b4a' }}>{c.inRegister}</td>
                 <td style={{ padding:'12px 16px', fontSize:13, fontWeight:700,
-                  color: c.yearLimit && c.yearCount > c.yearLimit ? '#b02020' : '#2D3278' }}>
-                  {c.yearCount}{c.yearLimit ? ` / ${c.yearLimit}` : ''}
-                  {c.yearLimit && c.yearCount > c.yearLimit && ' ⚠️'}
+                  color: c.yearExcess > 0 ? '#b02020' : '#2D3278' }}
+                  title={c.yearLimit != null
+                    ? `Franquia do período: ${c.yearLimit}${c.yearPartial ? ' (ano em curso, até este mês)' : ''}${c.yearExcess > 0 ? ` — ${c.yearExcess} acima` : ''}`
+                    : undefined}>
+                  {c.yearCount}{c.yearLimit != null ? ` / ${c.yearLimit}` : ''}
+                  {c.yearExcess > 0 && ' ⚠️'}
                 </td>
                 <td style={{ padding:'12px 16px' }}>
                   <Link href={`/clients/${c.clientId}`}

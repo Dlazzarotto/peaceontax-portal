@@ -925,25 +925,22 @@ export default function BookkeepingTab({ clientId }: Props) {
     window.open(`/api/bookkeeping/pnl?${params}`, '_blank')
   }
 
+  // Contador de transações × franquia do contrato. SÓ conta: cobrar excedente
+  // é faturamento (ver app/api/bookkeeping/overage/route.ts).
+  // Falha ao contar não some calada: sem isto o quadro ficava em "—" e
+  // parecia que não havia o que mostrar.
   const loadCounter = async () => {
     setOvBusy(true)
-    const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&year=${pnlYear}`)
-    const d = await r.json()
-    if (!d.error) setOvData(d)
+    try {
+      const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&year=${pnlYear}`)
+      const d = await r.json()
+      setOvData(d.error ? { erro: d.error } : d)
+    } catch (e: any) {
+      setOvData({ erro: `Não foi possível contar: ${e?.message || e}` })
+    }
     setOvBusy(false)
   }
   useEffect(() => { loadCounter() }, [clientId, pnlYear])
-
-  const chargeOverage = async () => {
-    setOvBusy(true); setMsg('')
-    const r = await fetch('/api/bookkeeping/overage', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, year: pnlYear }),
-    })
-    const d = await r.json()
-    setMsg(d.ok ? `✓ ${d.message}` : `Erro: ${d.error}`)
-    setOvBusy(false); loadCounter()
-  }
 
   const TAB_FILTER: Record<string, (t: Tx) => boolean> = {
     recognized:   t => t.status === 'auto',
@@ -1381,24 +1378,34 @@ export default function BookkeepingTab({ clientId }: Props) {
           </div>
           {!ovData ? (
             <span style={{ fontSize:12.5, color:'#9aaab0' }}>{ovBusy ? 'Contando…' : '—'}</span>
+          ) : ovData.erro ? (
+            <span style={{ fontSize:12.5, color:'#b42318', fontWeight:600 }}>⚠ {ovData.erro}</span>
           ) : (
             <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center' }}>
-              <span style={{ fontSize:22, fontWeight:800, color:'#2D3278' }}>{ovData.total}</span>
-              {ovData.included ? (
-                <>
-                  <span style={{ fontSize:12.5, fontWeight:600, color: ovData.overage > 0 ? '#c06010' : '#1a6b4a' }}>
-                    lançamentos no ano
-                    <span style={{ color:'#8a9ab0', fontWeight:400 }}> · contrato: {ovData.included}/ano
-                    {ovData.overage > 0 ? ` (${ovData.overage} acima → $${Number(ovData.charge).toFixed(2)})` : ' ✓'}</span>
+              <span style={{ fontSize:22, fontWeight:800, color:'#2D3278' }}>{ovData.totalDoAno}</span>
+              {ovData.franquia != null ? (
+                <span style={{ fontSize:12.5, fontWeight:600, color: ovData.excedente > 0 ? '#c06010' : '#1a6b4a' }}>
+                  lançamentos no ano
+                  <span style={{ color:'#8a9ab0', fontWeight:400 }}>
+                    {' · '}contrato: {ovData.incluidasPorMes}/mês × {ovData.meses} {ovData.meses === 1 ? 'mês' : 'meses'} = {ovData.franquia}
+                    {ovData.desde ? ` (vigência desde ${fmtDate(ovData.desde)}: ${ovData.total} lançamentos)` : ''}
+                    {ovData.excedente > 0
+                      ? ` · ${ovData.excedente} acima da franquia ≈ $${Number(ovData.valor).toFixed(2)}`
+                      : ' ✓ dentro da franquia'}
+                    {ovData.parcial ? ' · ano em curso, número parcial' : ''}
                   </span>
-                  {ovData.overage > 0 && (
-                    <button onClick={chargeOverage} disabled={ovBusy} style={btn('#F47B20', ovBusy)}>
-                      💳 Cobrar excedente do ano (fatura dia 5)
-                    </button>
+                  {ovData.excedente > 0 && (
+                    <div style={{ fontSize:11.5, color:'#8a6a3a', fontWeight:400, marginTop:4 }}>
+                      Cobrar excedente é pelo Financeiro, com uma fatura — não há cobrança automática daqui.
+                    </div>
                   )}
-                </>
+                </span>
               ) : (
-                <span style={{ fontSize:12, color:'#9aaab0' }}>transações no ano (sem contrato de bookkeeping ativo — só contagem)</span>
+                <span style={{ fontSize:12, color:'#9aaab0' }}>
+                  {ovData.hasPlan
+                    ? 'transações no ano (o contrato não limita transações — só contagem)'
+                    : 'transações no ano (sem contrato de bookkeeping ativo — só contagem)'}
+                </span>
               )}
             </div>
           )}
