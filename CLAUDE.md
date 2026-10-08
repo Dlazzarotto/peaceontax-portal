@@ -1029,6 +1029,18 @@ middleware.ts        controle de acesso por rota
   de decisão do sócio.
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
+- **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,
+  `/api/billing/consulta`), três pontos para o sócio decidir:
+  **(a)** o assistente digita **e-mail e senha do gerente** na máquina dele —
+  o mesmo modelo que o recebimento ABANDONOU pelo código ditado
+  (`lib/codigo-autorizacao.ts`): senha de terceiro em máquina alheia e o
+  limite de login do Supabase por IP na temporada. **(b)** uma liberação
+  abre a carteira INTEIRA por 30 minutos — qualquer período, qualquer
+  emissor —; o `pedido` é gravado, mas não restringe nada. **(c)** o rastro
+  é da LIBERAÇÃO, não da consulta: não fica registrado o que foi visto, e
+  quem tem `verTodasFaturas` não deixa linha nenhuma. Também: pelo `?id=`
+  a pessoa abre fatura PRÓPRIA de qualquer dia, sem autorização — a lista
+  e o id não aplicam o mesmo corte de data.
 
 ## Como trabalhar aqui
 
@@ -1211,7 +1223,12 @@ middleware.ts        controle de acesso por rota
   PENDENTE para sempre e alguém roda de novo. O arquivo fica **fora de
   `sql/`**, senão viraria mais uma migração pendente. É uma CÓPIA, e cópia
   que envelhece em silêncio é pior que cópia nenhuma: a auditoria regera em
-  memória e compara.
+  memória e compara — **todo** arquivo de `colar-no-sql-editor/` que traga
+  a marca do gerador, a partir da linha `-- Origem:` dele (antes só o do
+  caixa, com a lista escrita à mão; o segundo pacote chegou a ser commitado
+  com a mensagem dizendo que a auditoria o conferia, e ela não conferia), e
+  confere também a ORDEM dentro dele contra `DEPENDE_DE`. Sem nenhum pacote
+  gerado, ou pacote sem `-- Origem:`, é FALHA: âncora perdida.
   **Pacote de migrações não mora em `sql/`.** `pendentes-parte-2.sql`
   embalava SEIS migrações (`status-da-fatura-v2`, `permissoes-por-pessoa-v4`,
   `pricing-items-ativo-v1`, `codigo-de-autorizacao-funcao-v1`,

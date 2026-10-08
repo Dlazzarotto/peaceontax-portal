@@ -1,7 +1,7 @@
 -- COLE ESTE ARQUIVO INTEIRO NO SQL EDITOR DO SUPABASE E APERTE RUN.
 --
 -- GERADO por scripts/juntar-para-colar.mjs -- nao edite a mao.
--- Junta, NA ORDEM, as migracoes abaixo e anota as tres no livro
+-- Junta, NA ORDEM, as migracoes abaixo e anota as 4 no livro
 -- (public.schema_migrations) com o MESMO sha256 que scripts/migrar.mjs
 -- calcula: depois disso `--pendentes` diz APLICADO e ninguem roda de novo.
 --

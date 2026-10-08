@@ -124,9 +124,12 @@ export function decidirConsulta(
   }
 
   // Daqui para baixo o pedido é amplo. Quem tem a concessão individual
-  // (`verTodasFaturas`) não precisa de um SEGUNDO para liberar — mas a
-  // consulta continua sendo registrada: a concessão dispensa a autorização,
-  // não o rastro.
+  // (`verTodasFaturas`) não precisa de um SEGUNDO para liberar.
+  // ATENÇÃO ao que o rastro cobre: `invoice_query_audit` grava a LIBERAÇÃO
+  // (quem liberou, para quem, por quê, até quando), não cada consulta feita
+  // dentro dela — e quem tem `verTodasFaturas` não gera linha nenhuma.
+  // Registrar cada consulta é decisão aberta (ver "Dívida conhecida" no
+  // CLAUDE.md); não afirme aqui um rastro que o código não grava.
   if (quem.verTodas || quem.autorizado) {
     return {
       amplo: true, precisaAutorizacao: false, motivo: null,

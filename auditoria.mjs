@@ -17,6 +17,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { execSync } from 'node:child_process'
 
 const raiz = process.cwd()
@@ -1260,26 +1261,66 @@ titulo('CAMINHO DE ARQUIVO A PARTIR DO MODULO (Windows)')
 }
 
 
-titulo('O ARQUIVO DE COLAR ESTA EM DIA COM AS MIGRACOES')
-// `colar-no-sql-editor/caixa-completo.sql` e uma COPIA das migracoes, para
-// quem nao tem psql nem token. Copia que envelhece em silencio e pior que
-// copia nenhuma: alguem cola uma versao antiga achando que aplicou a nova.
-// Aqui ela e regerada em memoria e comparada.
+titulo('OS ARQUIVOS DE COLAR ESTAO EM DIA E NA ORDEM')
+// Os arquivos de `colar-no-sql-editor/` gerados por juntar-para-colar.mjs sao
+// COPIAS das migracoes, para quem nao tem psql nem token. Duas conferencias,
+// para CADA um deles (antes so o do caixa era conferido, com a lista de
+// fontes escrita aqui a mao -- o segundo pacote nasceu sem conferencia
+// nenhuma, embora o commit dele dissesse o contrario):
+//
+//  1. EM DIA. Copia que envelhece em silencio e pior que copia nenhuma:
+//     alguem cola a versao antiga achando que aplicou a nova. O pacote e
+//     regerado em memoria, a partir da linha `-- Origem:` dele, e comparado.
+//  2. NA ORDEM. A ordem do pacote tem de respeitar DEPENDE_DE. Funcao antes
+//     da tabela quebra no SQL Editor, e quem cola nao tem como saber que a
+//     culpa e da ordem do arquivo, nao do SQL.
+//
+// Ancora perdida e FALHA: pacote gerado sem `-- Origem:`, ou nenhum pacote
+// gerado encontrado, quer dizer que nao se esta conferindo nada.
 {
-  const saida = 'colar-no-sql-editor/caixa-completo.sql'
-  const fontes = ['sql/caixa-da-firma-v1.sql', 'sql/caixa-conciliacao-v1.sql',
-                  'sql/caixa-conciliacao-v2.sql', 'sql/caixa-origens-v1.sql',
-                  'sql/caixa-conciliacao-funcao-v1.sql', 'sql/contas-a-pagar-v1.sql',
-                  'sql/caixa-saldo-da-conta-v1.sql']
-  if (!existsSync(join(raiz, saida))) {
-    ver(`${saida} nao existe (nada a conferir)`)
-  } else {
-    const { montar } = await import(`file://${join(raiz, 'scripts/juntar-para-colar.mjs')}`)
+  const { montar } = await import(pathToFileURL(join(raiz, 'scripts/juntar-para-colar.mjs')).href)
+  const { DEPENDE_DE } = await import(pathToFileURL(join(raiz, 'scripts/ordem-das-migracoes.mjs')).href)
+  const pasta = 'colar-no-sql-editor'
+  const MARCA = 'GERADO por scripts/juntar-para-colar.mjs'
+  const gerados = existsSync(join(raiz, pasta))
+    ? readdirSync(join(raiz, pasta)).filter(f => f.endsWith('.sql'))
+        .map(f => `${pasta}/${f}`)
+        .filter(f => readFileSync(join(raiz, f), 'utf8').includes(MARCA))
+    : []
+  if (gerados.length === 0) {
+    falta('Os arquivos de colar estao em dia e na ordem',
+      `nenhum arquivo em ${pasta}/ traz "${MARCA}" -- a conferencia perdeu a ancora`)
+  }
+  for (const saida of gerados) {
+    const texto = readFileSync(join(raiz, saida), 'utf8')
+    const m = texto.match(/^-- Origem: (.+)$/m)
+    if (!m) {
+      falta(`${saida}: em dia e na ordem`, 'sem a linha "-- Origem:" -- nao da para saber de quais migracoes ele e copia')
+      continue
+    }
+    const fontes = m[1].split(',').map(x => x.trim()).filter(Boolean)
+    const sumidas = fontes.filter(f => !existsSync(join(raiz, f)))
+    if (sumidas.length) {
+      falta(`${saida}: em dia e na ordem`, `copia de arquivo que nao existe mais: ${sumidas.join(', ')}`)
+      continue
+    }
     const esperado = montar(fontes, (a) => readFileSync(join(raiz, a), 'utf8'))
-    readFileSync(join(raiz, saida), 'utf8') === esperado
-      ? ok('O arquivo de colar esta em dia com as migracoes')
-      : falta('O arquivo de colar esta em dia com as migracoes',
+    texto === esperado
+      ? ok(`${saida}: em dia com as ${fontes.length} migracoes`)
+      : falta(`${saida}: em dia com as migracoes`,
           `regere: node scripts/juntar-para-colar.mjs ${saida} ${fontes.join(' ')}`)
+    const fora = []
+    for (const [arq, deps] of Object.entries(DEPENDE_DE)) {
+      const i = fontes.indexOf(arq)
+      if (i < 0) continue
+      for (const d of deps) {
+        const j = fontes.indexOf(d)
+        if (j > i) fora.push(`${d} vem depois de ${arq}`)
+      }
+    }
+    fora.length
+      ? falta(`${saida}: na ordem de DEPENDE_DE`, fora.join('; '))
+      : ok(`${saida}: na ordem de DEPENDE_DE`)
   }
 }
 
