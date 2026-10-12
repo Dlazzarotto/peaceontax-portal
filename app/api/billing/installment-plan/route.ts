@@ -85,7 +85,15 @@ export async function GET() {
   // existia e não aparecia.
   const [{ data: planos, error: errPlanos }, { data: faturas, error: errFaturas }] = await Promise.all([
     db.from('payment_plans')
-      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices(number, total, paid_total)')
+      // invoices!invoice_id: DIZER a FK. Há DUAS relações entre payment_plans
+      // e invoices — payment_plans.invoice_id → invoices.id (a fatura que foi
+      // parcelada) e invoices.plan_id → payment_plans.id (as faturas que um
+      // plano mensal gera). Sem apontar a coluna, o PostgREST não sabe qual
+      // usar e recusa a consulta INTEIRA com "more than one relationship was
+      // found", e a aba de Parcelamentos não abria. Aqui a fatura é a de
+      // ORIGEM do parcelamento: invoice_id. A chave da resposta continua
+      // `invoices` (o hint só desambigua), então o map abaixo não muda.
+      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices!invoice_id(number, total, paid_total)')
       .eq('kind', 'installment')
       .not('invoice_id', 'is', null)
       .order('created_at', { ascending: false })
