@@ -48,18 +48,13 @@ create index if not exists idx_inv_logs_invitation on invitation_logs(invitation
 alter table client_invitations enable row level security;
 alter table invitation_logs     enable row level security;
 
-create policy "firm_manage_invitations" on client_invitations
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
-
-create policy "firm_manage_inv_logs" on invitation_logs
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
-
--- Public read for token validation (unauthenticated clients clicking link)
-create policy "public_read_invite_by_token" on client_invitations
-  for select using (true);
+-- FECHADO PARA O NAVEGADOR: quem le/grava convite e o servidor com a service
+-- role. A policy `firm_manage_*` lia user_metadata (campo que o cliente forja,
+-- ver supabase-schema.sql) e `public_read_invite_by_token` (using true)
+-- entregava a tabela inteira -- com o TOKEN que cria a conta -- a qualquer um
+-- com a anon key, SEM login. O convite e validado por /api/invite/[token] com
+-- a service role, nao pelo navegador, entao a leitura publica nao servia a
+-- nada. Historico e conserto: sql/rls-tabelas-expostas-v2.sql.
+revoke all on client_invitations, invitation_logs from anon, authenticated;
 
 select 'Invitation schema created ✓' as status;

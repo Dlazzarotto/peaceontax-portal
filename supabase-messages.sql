@@ -13,10 +13,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "firm_all_messages" ON messages
-  FOR ALL USING (
-    (SELECT raw_user_meta_data->>'role' FROM auth.users WHERE id = auth.uid()) = 'firm'
-  );
+-- A EQUIPE TRABALHA PELO SERVIDOR com a service role (passa por cima da RLS).
+-- A policy `firm_all_messages` lia raw_user_meta_data por subconsulta em
+-- auth.users (forjavel em tese, e `permission denied` na pratica). Sai, e a
+-- tabela fecha para o navegador. Ver sql/rls-tabelas-expostas-v2.sql.
+DROP POLICY IF EXISTS "firm_all_messages" ON messages;
+REVOKE ALL ON messages FROM anon, authenticated;
 
 CREATE POLICY "client_own_messages" ON messages
   FOR ALL USING (

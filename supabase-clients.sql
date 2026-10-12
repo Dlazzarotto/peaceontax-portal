@@ -72,24 +72,21 @@ create index if not exists idx_docs_category    on documents(category);
 alter table clients   enable row level security;
 alter table documents enable row level security;
 
--- Firm sees all clients
-drop policy if exists "firm_all_clients" on clients;
-create policy "firm_all_clients" on clients
-  for all using (
-    (select raw_user_meta_data->>'role' from auth.users where id = auth.uid()) = 'firm'
-  );
+-- A EQUIPE TRABALHA PELO SERVIDOR com a service role (passa por cima da RLS).
+-- As policies `firm_all_*` liam raw_user_meta_data -- o mesmo campo que o
+-- cliente forja -- por subconsulta em auth.users. Alem de forjaveis em tese,
+-- davam `permission denied for table users` para quem nao e dono (anon/
+-- authenticated nao tem grant em auth.users), entao nem funcionavam. Saem, e
+-- a tabela fecha para o navegador. Ver sql/rls-tabelas-expostas-v2.sql.
+-- Tambem derruba qualquer resquicio das policies antigas, caso ja aplicadas.
+drop policy if exists "firm_all_clients"   on clients;
+drop policy if exists "firm_all_documents" on documents;
+revoke all on clients, documents from anon, authenticated;
 
 -- Client sees only their own record
 drop policy if exists "client_own_record" on clients;
 create policy "client_own_record" on clients
   for select using (user_id = auth.uid());
-
--- Firm sees all documents
-drop policy if exists "firm_all_documents" on documents;
-create policy "firm_all_documents" on documents
-  for all using (
-    (select raw_user_meta_data->>'role' from auth.users where id = auth.uid()) = 'firm'
-  );
 
 -- Client sees only their documents
 drop policy if exists "client_own_documents" on documents;

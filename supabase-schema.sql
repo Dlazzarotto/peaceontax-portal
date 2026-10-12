@@ -91,26 +91,16 @@ alter table documents       enable row level security;
 alter table classification_rules enable row level security;
 alter table tasks           enable row level security;
 
--- Firm staff can see everything
-create policy "firm_full_access_clients" on clients
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
-
-create policy "firm_full_access_transactions" on transactions
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
-
-create policy "firm_full_access_documents" on documents
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
-
-create policy "firm_full_access_rules" on classification_rules
-  for all using (
-    (auth.jwt() ->> 'user_metadata')::jsonb ->> 'role' = 'firm'
-  );
+-- A EQUIPE TRABALHA PELO SERVIDOR, com a service role key, que passa por cima
+-- da RLS. NAO ha policy de "firm" aqui: a antiga lia o papel de user_metadata
+-- no JWT, e esse campo o PROPRIO dono do login reescreve
+-- (auth.updateUser({ data: { role: 'firm' } }) com a anon key). A RLS do
+-- PostgREST e porta separada do app, entao um cliente do portal forjava o
+-- campo e lia/alterava dado de qualquer cliente. O papel mora em app_metadata
+-- (sql/papel-no-app-metadata-v1.sql) e quem le estas tabelas e o servidor.
+-- Fecha para o navegador. Historico e conserto: sql/rls-tabelas-expostas-v2.sql.
+revoke all on clients, transactions, documents, classification_rules
+  from anon, authenticated;
 
 -- Clients can only see their own data
 create policy "client_own_transactions" on transactions

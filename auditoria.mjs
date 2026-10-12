@@ -1090,6 +1090,61 @@ titulo('VIEW NOVA TAMBEM NASCE FECHADA')
   if (!abertas) ok(`as ${views.size} views tiram o privilegio de anon/authenticated`)
 }
 
+titulo('POLICY NAO DECIDE POR CAMPO QUE O CLIENTE FORJA')
+// Uma policy de RLS em tabela do schema public NAO pode decidir acesso por
+// user_metadata / raw_user_meta_data -- esse campo o PROPRIO dono do login
+// reescreve (`auth.updateUser({ data: { role: 'firm' } })` com a anon key) --
+// nem liberar a tabela com `using (true)`. Foi o buraco que
+// sql/rls-tabelas-expostas-v2.sql fechou: pela RLS do PostgREST, que e porta
+// separada do app, um cliente do portal forjava o papel e lia dado de
+// qualquer cliente, e `public_read_invite_by_token (using true)` entregava os
+// TOKENS de convite a quem tivesse a anon key, sem login. O papel mora em
+// app_metadata (so a service role escreve la) e quem le essas tabelas e o
+// servidor com a service role, que passa por cima da RLS. Policy por
+// app_metadata, por auth.uid() ou por `coluna = true` (ex.: `active = true`)
+// NAO casa aqui. storage.* e auth.* ficam de fora (grant proprio; o storage e
+// divida anotada no cabecalho da v2).
+{
+  const sqls = []
+  for (const d of ['.', 'sql']) {
+    const dir = join(raiz, d)
+    if (!existsSync(dir)) continue
+    for (const nome of readdirSync(dir)) if (nome.endsWith('.sql')) sqls.push(join(dir, nome))
+  }
+  let conferidas = 0
+  let forjaveis = 0
+  for (const f of sqls) {
+    const txt = readFileSync(f, 'utf8')
+    // Cada `create policy ... ;` inteiro. Lazy ate o PRIMEIRO ponto-e-virgula
+    // (nao ha `;` dentro do corpo de uma policy); [\s\S] atravessa linhas e
+    // parenteses -- [^)]* nao atravessaria o `(select ...)` do USING.
+    for (const m of txt.matchAll(/create\s+policy[\s\S]{0,1500}?;/gi)) {
+      const stmt = m[0]
+      // Alvo: `on [schema.]tabela` logo apos o nome. Pula schema != public.
+      const alvo = stmt.match(/\bon\s+(?:("?[a-z_][a-z0-9_]*"?)\.)?"?[a-z_][a-z0-9_]*"?/i)
+      const esquema = alvo && alvo[1] ? alvo[1].replace(/"/g, '').toLowerCase() : 'public'
+      if (esquema !== 'public') continue
+      conferidas++
+      const leUserMeta = /user_meta/i.test(stmt)                         // user_metadata e raw_user_meta_data
+      const liberaGeral = /\busing\s*\(\s*true\s*\)/i.test(stmt)
+                       || /\bwith\s+check\s*\(\s*true\s*\)/i.test(stmt)
+      if (leUserMeta || liberaGeral) {
+        forjaveis++
+        const nm = stmt.match(/create\s+policy\s+"?([^"\n(]+?)"?\s+on\b/i)
+        falta(`policy forjavel em ${rel(f)}: ${nm ? nm[1].trim() : '?'}`,
+          leUserMeta
+            ? 'decide por user_metadata/raw_user_meta_data -- campo que o cliente reescreve; use app_metadata ou a service role'
+            : 'using (true) libera a tabela para a anon key')
+      }
+    }
+  }
+  // Ancora perdida e FALHA: se o padrao de create policy nao casou em lugar
+  // nenhum, a invariante nao esta conferindo nada -- e esse ja foi o modo de
+  // falhar que passou despercebido aqui antes.
+  if (conferidas === 0) falta('nenhuma create policy conferida', 'ancora perdida: o padrao `create policy` nao casou em nenhum .sql')
+  else if (!forjaveis) ok(`as ${conferidas} policies de tabela public nao decidem por campo forjavel`)
+}
+
 titulo('CAIXA DA FIRMA (a Peace on Tax como cliente de si mesma)')
 // A firma e uma LINHA em `clients` marcada com `is_firm`: assim o livro dela
 // usa o mesmo motor dos clientes (Plaid, regras, plano de contas, P&L) em vez
