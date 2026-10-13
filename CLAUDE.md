@@ -877,6 +877,31 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   instante fica de fora nem conta duas vezes na emenda de um mês com o outro.
   Os dois domingos de horário de verão estão nos testes (dia de 23 e de 25
   horas).
+- **Relatório contábil escolhe o período por UM seletor, filtra por DATA e lê
+  TUDO** (`lib/periodo-relatorio.ts`, `components/SeletorPeriodo.tsx`,
+  `lib/paginar.ts`; rotas `pnl`, `balance-sheet`, `vendors`,
+  `category-detail`). Cada rota lia o período do seu jeito (`year`,
+  `year+month`, 31/12 fixo), a tela da equipe só oferecia ano e mês, o portal
+  só o ano, e o Financeiro tinha três atalhos próprios por `toISOString()` —
+  UTC: às 21h de Malden "este mês" já era o mês seguinte. Agora as três telas
+  usam o mesmo componente: este mês · mês passado · último trimestre (o último
+  COMPLETO) · este ano · ano passado · datas livres, com "hoje" pelo dia do
+  escritório. As rotas recebem `from`/`to` (o Balanço, `asOf`) e continuam
+  aceitando `year[&month]`; a conversão é UMA (`periodoDosParametros` e
+  `dataDeCorteDosParametros`), e período que não faz sentido é 400, não "o
+  ano todo". **O filtro é por `tx_date`, não por `fiscal_year`**:
+  `fiscal_year` nasce de `tx_date.slice(0, 4)` em toda importação, então no
+  ano inteiro dá o mesmo e num trimestre só a data serve — lançamento sem
+  `fiscal_year` (que ficava fora) passa a entrar. **O 1099 é por
+  ano-calendário** (lei): período livre vira o ano do FIM, e a tela e o
+  impresso dizem qual; a contagem do contrato idem. **E as quatro rotas liam
+  com `.limit(10000)`/`.limit(20000)`, que o PostgREST corta em 1000 sem
+  avisar** — P&L, Balanço e 1099 saíam TRUNCADOS para cliente com mais de mil
+  lançamentos aprovados no período, sem aviso nenhum; agora leem em páginas
+  (`todasAsLinhas`), e consulta que falha é 500, não "No income recorded".
+  A auditoria exige nas quatro rotas a conversão única, o filtro por data e
+  a paginação, recusa `.limit(N≥1000)` nelas e exige o seletor nas três
+  telas. 48 casos em `testes/periodo-relatorio.mts`.
 - **Excedente de transações: franquia MENSAL, apuração ANUAL, e o
   bookkeeping só CONTA** (`lib/excedente-transacoes.ts`, 30 casos em
   `testes/excedente-transacoes.mts`). `included_transactions` é POR MÊS

@@ -5,6 +5,9 @@
 
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
+import SeletorPeriodo from '@/components/SeletorPeriodo'
+import { periodoDoPreset } from '@/lib/periodo-relatorio'
+import { dataDaFirma } from '@/lib/dia-da-firma'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
 import { ROTULO_DA_SITUACAO, type SituacaoFiltro } from '@/lib/escopo-faturas'
@@ -118,9 +121,11 @@ export default function BillingPage() {
   const [autzSeg, setAutzSeg] = useState(0)
   // Relatórios do sócio (a rota recusa quem não é owner; aqui só a tela)
   const [relAberto, setRelAberto] = useState(false)
-  const anoAtual = new Date().getFullYear()
-  const [relDe, setRelDe] = useState(`${anoAtual}-01-01`)
-  const [relAte, setRelAte] = useState(`${anoAtual}-12-31`)
+  // Período dos relatórios: nasce em "este ano", pelo dia do ESCRITÓRIO —
+  // `new Date()` aqui era o relógio do navegador, e o atalho "este mês"
+  // saía pela data UTC. A conta mora em lib/periodo-relatorio.ts.
+  const [relPeriodo, setRelPeriodo] = useState(() => periodoDoPreset('este_ano', dataDaFirma(new Date())))
+  const relDe = relPeriodo.de, relAte = relPeriodo.ate
   const abrirRelatorio = (id: string) =>
     window.open(`/api/billing/reports?report=${id}&from=${relDe}&to=${relAte}`, '_blank')
   // Parcelamento de fatura em aberto
@@ -808,17 +813,8 @@ export default function BillingPage() {
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>Período</span>
-            <input type="date" value={relDe} onChange={e => setRelDe(e.target.value)} style={{ padding: '7px 10px', border: '1.5px solid #E2E8F4', borderRadius: 8, fontSize: 13 }} />
-            <span style={{ fontSize: 12, color: '#6A7A9A' }}>até</span>
-            <input type="date" value={relAte} onChange={e => setRelAte(e.target.value)} style={{ padding: '7px 10px', border: '1.5px solid #E2E8F4', borderRadius: 8, fontSize: 13 }} />
-            {[
-              ['Este ano', `${anoAtual}-01-01`, `${anoAtual}-12-31`],
-              ['Ano passado', `${anoAtual - 1}-01-01`, `${anoAtual - 1}-12-31`],
-              ['Este mês', new Date().toISOString().slice(0, 8) + '01', new Date(anoAtual, new Date().getMonth() + 1, 0).toISOString().slice(0, 10)],
-            ].map(([r, de, ate]) => (
-              <button key={r} onClick={() => { setRelDe(de); setRelAte(ate) }}
-                style={{ background: '#fff', border: '1.5px solid #E2E8F4', borderRadius: 8, padding: '6px 10px', fontSize: 12, fontWeight: 700, color: '#2D3278', cursor: 'pointer' }}>{r}</button>
-            ))}
+            {/* O mesmo seletor dos relatórios contábeis e do portal. */}
+            <SeletorPeriodo valor={relPeriodo} onChange={setRelPeriodo} compacto />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
             {[
