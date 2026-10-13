@@ -41,6 +41,70 @@ export async function parcelamentoVivo(db: any, invoiceId: string) {
 }
 
 /**
+ * Situações em que a parcela ainda NÃO foi recebida. `charged` aparece em
+ * leituras antigas mas ninguém o escreve (vestígio): a parcela viva é
+ * `scheduled` (o Stripe ainda vai cobrar) ou `failed` (cobrou e não entrou).
+ */
+export const STATUS_ABERTOS = ['scheduled', 'failed'] as const
+
+/** A próxima parcela em aberto do cronograma — a de menor número. Lança se a consulta falhar. */
+export async function proximaParcelaAberta(db: any, invoiceId: string) {
+  const { data, error } = await db.from('invoice_installments')
+    .select('id, invoice_id, seq, amount, status, stripe_invoice, due_date')
+    .eq('invoice_id', invoiceId).in('status', STATUS_ABERTOS as unknown as string[])
+    .order('seq').limit(1)
+  if (error) throw new Error(`Cronograma: ${error.message}`)
+  return (data && data[0]) || null
+}
+
+export type ParcelaAberta = { seq: number; amount: number | string; status: string; stripe_invoice?: string | null }
+
+export type DecisaoManual =
+  | { tipo: 'quitacao' }
+  | { tipo: 'parcela'; parcela: ParcelaAberta }
+  | { tipo: 'recusa'; motivo: string }
+
+const iguais = (a: number, b: number) => Math.abs(a - b) < 0.005
+const dolar = (v: number) => `$${v.toFixed(2)}`
+
+/**
+ * O que um recebimento MANUAL (Zelle, dinheiro, cheque) pode fazer numa fatura
+ * com parcelamento vivo. Regra do sócio (ESPECIFICACAO, "Primeiro emite,
+ * depois cobra"):
+ *
+ *   · o SALDO INTEIRO quita antecipadamente — encerra o débito no Stripe;
+ *   · o valor EXATO da próxima parcela em aberto liquida essa parcela, tenha o
+ *     débito dela falhado ou ainda nem acontecido. O Stripe passa a cobrar
+ *     UMA A MENOS: a invoice dela, se já existe, sai da linha; a cobrança que
+ *     sobrar no fim do cronograma é anulada pelo webhook;
+ *   · qualquer outro valor é recusado — "um pouco" de uma parcela que o Stripe
+ *     vai debitar inteira é cobrar o cliente duas vezes.
+ *
+ * A quitação vence: se a próxima parcela É o saldo (a última), o caminho é
+ * encerrar o plano, que também cancela a régua no Stripe.
+ *
+ * Pura, de propósito: a rota só busca a parcela e chama. É dinheiro com o
+ * Stripe do outro lado, e por isso está em testes/parcelamento.mts.
+ */
+export function decidirRecebimentoManual(args: {
+  saldo: number
+  valor: number
+  proxima: ParcelaAberta | null
+  totalParcelas?: number
+}): DecisaoManual {
+  const { saldo, valor, proxima } = args
+  if (iguais(valor, saldo)) return { tipo: 'quitacao' }
+  if (proxima && iguais(valor, Number(proxima.amount))) return { tipo: 'parcela', parcela: proxima }
+  const n = args.totalParcelas ? `/${args.totalParcelas}` : ''
+  return {
+    tipo: 'recusa',
+    motivo: proxima
+      ? `Fatura parcelada com débito automático. Recebimento manual só da parcela ${proxima.seq}${n} (${dolar(Number(proxima.amount))})${proxima.status === 'failed' ? ', cujo débito falhou,' : ''} ou do saldo inteiro (${dolar(saldo)}, quitação antecipada). Valor parcial de uma parcela não entra: o Stripe debitaria a parcela inteira e o cliente pagaria duas vezes.`
+      : `Fatura parcelada sem parcela em aberto no cronograma. Recebimento manual só do saldo inteiro (${dolar(saldo)}, quitação antecipada).`,
+  }
+}
+
+/**
  * Encerra o parcelamento: para a cobrança no Stripe, fecha as invoices das
  * parcelas que ficaram abertas e acerta o cronograma e o plano.
  * Devolve o que deu certo, para quem chamou avisar a equipe com honestidade.
