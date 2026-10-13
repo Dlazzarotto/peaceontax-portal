@@ -9,7 +9,8 @@
 
 import { ehDoExtrato, movimentoDeBanco, fluxoRealizado, saldoEmConta,
          diasAte, faixaDoVencimento, projetarCaixa,
-         ORIGENS_DE_PASSAGEM } from '../lib/fluxo-de-caixa.ts'
+         ORIGENS_DE_PASSAGEM,
+         faturasEmAberto, aReceber, somaRecebido } from '../lib/fluxo-de-caixa.ts'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -300,6 +301,35 @@ const conta = (o: any) => ({ amount: 500, due_date: '2026-10-20', status: 'abert
   const p = projetarCaixa({ saldoInicial: 0, hoje: HOJE, faturas: [],
     contas: [conta({ status: 'paga' }), conta({ status: 'cancelada' }), conta({ status: 'aberta' })] })
   eq('só a aberta conta', p.pagar, 500)
+}
+
+// ── Os três números do topo do caixa ────────────────────────────────────
+// Em aberto usa a MESMA régua da projeção (só fatura com saldo); a receber
+// é o projetado mais o vencido que a projeção separa; recebido só soma o que
+// a consulta já recortou pelo mês do escritório.
+{
+  const f = (total: any, pago: any = 0, due = '2026-11-01') => ({ total, paid_total: pago, due_date: due })
+
+  eq('em aberto: conta e soma o EMITIDO', faturasEmAberto([f(100), f(250.5), f(40)]), { qtd: 3, emitido: 390.5 })
+  eq('em aberto: fatura quitada não conta', faturasEmAberto([f(100, 100), f(200)]), { qtd: 1, emitido: 200 })
+  eq('em aberto: parcial conta pelo total emitido, não pelo saldo', faturasEmAberto([f(1000, 250)]), { qtd: 1, emitido: 1000 })
+  eq('em aberto: pago acima do total não conta', faturasEmAberto([f(100, 150)]), { qtd: 0, emitido: 0 })
+  eq('em aberto: número em texto', faturasEmAberto([f('99.99', '0')]), { qtd: 1, emitido: 99.99 })
+  eq('em aberto: vazio', faturasEmAberto([]), { qtd: 0, emitido: 0 })
+  eq('em aberto: centavos não acumulam erro de ponto flutuante', faturasEmAberto([f(0.1), f(0.2)]), { qtd: 2, emitido: 0.3 })
+
+  // A receber sai da MESMA projeção da tela: 500 e 80 vencem em dias; 300
+  // com 100 pagos venceu em setembro — a projeção o separa, o widget soma.
+  const p = projetarCaixa({ saldoInicial: 0, hoje: HOJE, contas: [],
+    faturas: [f(500, 0, '2026-10-20'), f(300, 100, '2026-09-01'), f(80, 0, '2026-10-16')] })
+  eq('a receber: projetado + vencido', aReceber(p), { saldo: 780, vencido: 200 })
+  eq('a receber: sem vencido', aReceber({ receber: 12.5, receberVencido: 0 }), { saldo: 12.5, vencido: 0 })
+  eq('a receber: soma não escorrega no centavo', aReceber({ receber: 0.1, receberVencido: 0.2 }), { saldo: 0.3, vencido: 0.2 })
+
+  eq('recebido: soma e conta', somaRecebido([{ amount: 100 }, { amount: '50.25' }, { amount: 0 }]), { qtd: 3, total: 150.25 })
+  eq('recebido: vazio não é nulo', somaRecebido([]), { qtd: 0, total: 0 })
+  eq('recebido: valor inválido vale zero, não derruba a soma',
+    somaRecebido([{ amount: null }, { amount: 'x' as any }, { amount: 10 }]), { qtd: 3, total: 10 })
 }
 
 console.log(`fluxo-de-caixa: ${passou} passaram, ${falhou} falharam`)

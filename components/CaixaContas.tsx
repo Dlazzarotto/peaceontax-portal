@@ -7,7 +7,7 @@
 // no banco.
 
 import { useState, useEffect, useCallback } from 'react'
-import { money } from '@/lib/format'
+import { useDinheiro } from '@/components/OcultarValores'
 
 const fmtData = (d: string) => {
   const s = String(d || '').slice(0, 10)
@@ -31,6 +31,8 @@ export default function CaixaContas() {
   const [abrindo, setAbrindo] = useState(false)
   const [pagando, setPagando] = useState<string | null>(null)
   const [cands, setCands] = useState<any[] | null>(null)
+  // Formata dinheiro respeitando o botão "Ocultar valores" (components/OcultarValores.tsx).
+  const dinheiro = useDinheiro()
 
   const carregar = useCallback(async () => {
     try {
@@ -114,7 +116,7 @@ export default function CaixaContas() {
         {[['A vencer', a.aVencer, '#1a6b4a'], ['Vencido', a.vencido, '#b02020'],
           ['Total em aberto', a.total, '#0f2340']].map(([r, v, c]: any) => (
           <div key={r} style={caixa({ minWidth:160, flex:1, padding:'14px 18px' })}>
-            <div style={{ fontSize:24, fontWeight:800, color:c }}>{money(v || 0)}</div>
+            <div style={{ fontSize:24, fontWeight:800, color:c }}>{dinheiro(v || 0)}</div>
             <div style={{ fontSize:12.5, fontWeight:700, color:'#6a7a9a' }}>{r}</div>
           </div>
         ))}
@@ -122,8 +124,8 @@ export default function CaixaContas() {
 
       {a.vencido > 0 && (
         <div style={{ fontSize:12.5, color:'#6a7a9a', marginBottom:14 }}>
-          Atraso: até 30d <b>{money(a.ate30)}</b> · 31–60d <b>{money(a.ate60)}</b> ·
-          61–90d <b>{money(a.ate90)}</b> · mais de 90d <b>{money(a.mais90)}</b>
+          Atraso: até 30d <b>{dinheiro(a.ate30)}</b> · 31–60d <b>{dinheiro(a.ate60)}</b> ·
+          61–90d <b>{dinheiro(a.ate90)}</b> · mais de 90d <b>{dinheiro(a.mais90)}</b>
         </div>
       )}
 
@@ -194,7 +196,7 @@ export default function CaixaContas() {
               {c.description && <span style={{ color:'#6a7a9a', fontSize:12.5 }}> — {c.description}</span>}
             </span>
             <span style={{ fontSize:11.5, fontWeight:800, color: COR[c.situacao] }}>{ROTULO[c.situacao]}</span>
-            <span style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{money(c.amount)}</span>
+            <span style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{dinheiro(c.amount)}</span>
             <button onClick={() => procurarPagamento(c.id)} disabled={busy}
               style={{ padding:'6px 12px', borderRadius:8, border:'none', background:'#1a6b4a',
                        color:'#fff', fontSize:12, fontWeight:800, cursor:'pointer' }}>
@@ -210,13 +212,13 @@ export default function CaixaContas() {
           {pagando === c.id && (
             <div style={{ marginTop:12, borderTop:'1px solid #eef2f8', paddingTop:12 }}>
               <div style={{ fontSize:12.5, color:'#6a7a9a', marginBottom:8 }}>
-                Débitos do extrato de <b>{money(c.amount)}</b> por volta do vencimento.
+                Débitos do extrato de <b>{dinheiro(c.amount)}</b> por volta do vencimento.
                 Pagar não lança despesa — ela já veio do banco.
               </div>
               {cands === null ? <p style={{ fontSize:13, color:'#6a7a9a' }}>Procurando…</p>
                : cands.length === 0 ? (
                 <p style={{ fontSize:13, color:'#b02020', margin:0 }}>
-                  Nenhum débito de {money(c.amount)} no extrato por volta desta data. Se o pagamento
+                  Nenhum débito de {dinheiro(c.amount)} no extrato por volta desta data. Se o pagamento
                   acabou de sair, espere o banco trazer o lançamento — ou confira o valor.
                 </p>
               ) : cands.map((t: any) => (
@@ -227,7 +229,7 @@ export default function CaixaContas() {
                     {t.description}
                     {t.pareceOFornecedor && <span style={{ color:'#1a6b4a', fontSize:11 }}> · nome bate</span>}
                   </span>
-                  <span style={{ fontWeight:700 }}>{money(t.valor)}</span>
+                  <span style={{ fontWeight:700 }}>{dinheiro(t.valor)}</span>
                   <button onClick={() => acao({ id: c.id, acao: 'pagar', txId: t.id }, '✓ Conta fechada com o débito do extrato.')}
                     disabled={busy}
                     style={{ padding:'5px 10px', borderRadius:8, border:'none', background:'#2a5fa8',
@@ -261,7 +263,7 @@ export default function CaixaContas() {
                   {c.cancel_reason && <span style={{ color:'#9aa5b8', fontSize:12 }}> — {c.cancel_reason}</span>}
                 </span>
                 <span style={{ fontSize:11.5, fontWeight:800, color: COR[c.situacao] }}>{ROTULO[c.situacao]}</span>
-                <span style={{ fontWeight:700 }}>{money(c.amount)}</span>
+                <span style={{ fontWeight:700 }}>{dinheiro(c.amount)}</span>
                 {c.status === 'paga' && (
                   <button onClick={() => acao({ id: c.id, acao: 'reabrir' }, '✓ Pagamento desfeito — a conta voltou a aberta.')}
                     disabled={busy}

@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { conferirDeposito } from '@/lib/deposito-match'
-import { money } from '@/lib/format'
+import { useDinheiro } from '@/components/OcultarValores'
 
 const fmtData = (d: string) => {
   const s = String(d || '').slice(0, 10)
@@ -22,6 +22,8 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
   const [aberto, setAberto] = useState<string | null>(null)
   const [marcados, setMarcados] = useState<Record<string, boolean>>({})
   const [sugestao, setSugestao] = useState<any>(null)
+  // Formata dinheiro respeitando o botão "Ocultar valores" (components/OcultarValores.tsx).
+  const dinheiro = useDinheiro()
 
   const carregar = useCallback(async () => {
     try {
@@ -55,7 +57,7 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
     for (const id of j.selecionar || []) novos[id] = true
     setMarcados(novos)
     setMsg(j.aviso ? `⚠️ ${j.aviso}` : `Repasse ${j.repasse.id}: ${j.detalhe.cobrancas} cobrança(s), `
-      + `${money(j.detalhe.bruto)} bruto, ${money(j.detalhe.taxa)} de taxa.`)
+      + `${dinheiro(j.detalhe.bruto)} bruto, ${dinheiro(j.detalhe.taxa)} de taxa.`)
   }
 
   const conciliar = async () => {
@@ -66,7 +68,7 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
     })
     const j = await r.json(); setBusy(false)
     if (!r.ok) { setMsg(`⚠️ ${j.error}`); return }
-    setMsg(`✓ Conciliado: ${money(j.bruto)} de receita` + (j.taxa > 0 ? `, ${money(j.taxa)} de taxa lançada como despesa.` : '.'))
+    setMsg(`✓ Conciliado: ${dinheiro(j.bruto)} de receita` + (j.taxa > 0 ? `, ${dinheiro(j.taxa)} de taxa lançada como despesa.` : '.'))
     setAberto(null); setMarcados({}); setSugestao(null)
     carregar(); aoMudar?.()
   }
@@ -113,7 +115,7 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
       <div style={caixa({ marginBottom: 14 })}>
         <div style={{ display:'flex', alignItems:'baseline', gap:10, flexWrap:'wrap' }}>
           <span style={{ fontSize:12.5, fontWeight:700, color:'#6a7a9a' }}>EM TRÂNSITO</span>
-          <span style={{ fontSize:24, fontWeight:800, color:'#0f2340' }}>{money(d.saldoEmTransito || 0)}</span>
+          <span style={{ fontSize:24, fontWeight:800, color:'#0f2340' }}>{dinheiro(d.saldoEmTransito || 0)}</span>
           <span style={{ fontSize:12.5, color:'#6a7a9a' }}>
             {(d.transito || []).length} recebimento(s) ainda sem depósito no banco
           </span>
@@ -134,7 +136,7 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
             <span style={{ flex:1, fontWeight:700, color:'#0f2340', fontSize:13.5, minWidth:160 }}>
               {dep.descricao} {dep.pareceStripe && <span style={{ fontSize:11, color:'#6a5acd' }}>· Stripe</span>}
             </span>
-            <span style={{ fontSize:16, fontWeight:800, color:'#1a6b4a' }}>{money(dep.valor)}</span>
+            <span style={{ fontSize:16, fontWeight:800, color:'#1a6b4a' }}>{dinheiro(dep.valor)}</span>
             <span style={{ fontSize:12, color:'#2a5fa8', fontWeight:700 }}>
               {aberto === dep.id ? 'fechar' : 'conciliar ▸'}
             </span>
@@ -174,15 +176,15 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
                       onChange={e => setMarcados(m => ({ ...m, [t.id]: e.target.checked }))} />
                     <span style={{ color:'#6a7a9a', minWidth:74, fontSize:12 }}>{fmtData(t.data)}</span>
                     <span style={{ flex:1, color:'#0f2340' }}>{t.descricao}</span>
-                    <span style={{ fontWeight:700 }}>{money(t.valor)}</span>
+                    <span style={{ fontWeight:700 }}>{dinheiro(t.valor)}</span>
                   </label>
                 ))}
               </div>
 
               <div style={{ display:'flex', gap:14, flexWrap:'wrap', alignItems:'center', marginTop:12 }}>
                 <span style={{ fontSize:13 }}>
-                  Bruto escolhido <b>{money(conf?.soma || 0)}</b> · no banco <b>{money(dep.valor)}</b>
-                  {conf && conf.diferenca > 0 && <> · taxa <b style={{ color:'#c06010' }}>{money(conf.diferenca)}</b></>}
+                  Bruto escolhido <b>{dinheiro(conf?.soma || 0)}</b> · no banco <b>{dinheiro(dep.valor)}</b>
+                  {conf && conf.diferenca > 0 && <> · taxa <b style={{ color:'#c06010' }}>{dinheiro(conf.diferenca)}</b></>}
                 </span>
                 <button onClick={conciliar} disabled={busy || !conf?.podeConciliar}
                   style={{ padding:'10px 18px', borderRadius:10, border:'none', fontSize:13.5, fontWeight:800,
@@ -213,7 +215,7 @@ export default function CaixaDepositos({ aoMudar }: { aoMudar?: () => void }) {
                                        borderBottom:'1px solid #f3f6fb', fontSize:13, flexWrap:'wrap' }}>
                 <span style={{ color:'#6a7a9a', minWidth:74, fontSize:12 }}>{fmtData(c.data)}</span>
                 <span style={{ flex:1, color:'#0f2340' }}>{c.descricao}</span>
-                <span style={{ fontWeight:700 }}>{money(c.valor)}</span>
+                <span style={{ fontWeight:700 }}>{dinheiro(c.valor)}</span>
                 <button onClick={() => desfazer(c.id)} disabled={busy}
                   style={{ padding:'4px 10px', borderRadius:8, border:'1.5px solid #d6a0a0', background:'#fff',
                            color:'#b02020', fontSize:11.5, fontWeight:700, cursor:'pointer' }}>

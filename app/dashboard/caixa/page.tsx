@@ -15,6 +15,7 @@ import BookkeepingTab from '@/components/BookkeepingTab'
 import CaixaDepositos from '@/components/CaixaDepositos'
 import CaixaContas from '@/components/CaixaContas'
 import CaixaFluxo from '@/components/CaixaFluxo'
+import { OcultarValoresProvider, BotaoOcultarValores } from '@/components/OcultarValores'
 
 declare global { interface Window { Plaid: any } }
 
@@ -30,7 +31,7 @@ const CAMPOS: [string, string, string][] = [
   ['zip',           'ZIP',            ''],
 ]
 
-export default function CaixaDaFirma() {
+function CaixaDaFirmaInterna() {
   const [dados, setDados]   = useState<any>(null)
   const [erro, setErro]     = useState('')
   const [msg, setMsg]       = useState('')
@@ -151,9 +152,14 @@ export default function CaixaDaFirma() {
   }
 
   const titulo = (
-    <h1 style={{ fontFamily:'Georgia,serif', fontSize:24, color:'#0f2340', margin:'0 0 4px' }}>
-      🏦 Caixa da firma
-    </h1>
+    <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap', margin:'0 0 4px' }}>
+      <h1 style={{ fontFamily:'Georgia,serif', fontSize:24, color:'#0f2340', margin:0 }}>
+        🏦 Caixa da firma
+      </h1>
+      {/* Quem passa pela mesa não lê o caixa: os valores viram •••••• até
+          clicar de novo. A escolha fica neste navegador. */}
+      <BotaoOcultarValores />
+    </div>
   )
 
   if (erro) return (
@@ -301,5 +307,17 @@ export default function CaixaDaFirma() {
         </>
       )}
     </div>
+  )
+}
+
+// O provedor do botão "Ocultar valores" envolve a tela inteira: o botão fica
+// no título e os componentes do caixa (fluxo, depósitos, contas) leem a mesma
+// escolha. O livro (BookkeepingTab) fica de fora — é o componente dos
+// clientes, e mascarar o lançamento linha a linha é decisão à parte.
+export default function CaixaDaFirma() {
+  return (
+    <OcultarValoresProvider>
+      <CaixaDaFirmaInterna />
+    </OcultarValoresProvider>
   )
 }
