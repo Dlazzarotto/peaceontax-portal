@@ -5,6 +5,7 @@
 
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
+import { decidirValorDaCobranca } from '@/lib/cobranca-balcao'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
 import { ROTULO_DA_SITUACAO, type SituacaoFiltro } from '@/lib/escopo-faturas'
@@ -636,10 +637,17 @@ export default function BillingPage() {
 
   const cobrarCartao = async (inv: Inv, forma: 'card' | 'klarna' | 'us_bank_account' = 'card',
                              confirmarQuitacao = false) => {
+    // Cartão e ACH cobram o valor DIGITADO; Klarna é sempre o saldo inteiro.
+    // A prévia é a MESMA regra da rota (lib/cobranca-balcao.ts); a rota
+    // confere de novo com o que a tela não sabe (parcelamento vivo). Antes o
+    // botão mostrava o valor digitado e a chamada não o mandava.
+    const pedido = forma === 'klarna' ? '' : rValor
+    const previa = decidirValorDaCobranca({ saldo: inv.saldo, pedido, forma, parcelado: false })
+    if (previa.ok === false) { setMsg(`⚠️ ${previa.motivo}`); return }
     setBusy(true); setMsg('')
     const d = await fetch('/api/billing/stripe-checkout', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ invoiceId: inv.id, forma, confirmarQuitacao }),
+      body: JSON.stringify({ invoiceId: inv.id, forma, valor: pedido, confirmarQuitacao }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     // Fatura parcelada: cobrar aqui quita tudo de uma vez e encerra o
@@ -703,6 +711,13 @@ export default function BillingPage() {
 
   // Sem a aprovação preenchida o botão não sai do lugar: melhor travar aqui
   // do que mandar a senha vazia e voltar com erro.
+  // O que o Stripe vai cobrar se a equipe clicar em cartão ou ACH: a MESMA
+  // regra da rota. Klarna não entra aqui — é sempre o saldo inteiro.
+  const previaStripe = receber
+    ? decidirValorDaCobranca({ saldo: receber.saldo, pedido: rValor, forma: 'card', parcelado: false })
+    : null
+  const valorStripe = previaStripe?.ok ? previaStripe.valor : null
+  const parcialStripe = !!(previaStripe?.ok && previaStripe.parcial)
   const faltaAprovacao = exigeAprovacao(rForma) && (apPorSenha
     ? (!apEmail.trim() || !apSenha)
     : !codigoBemFormado(apCodigo))
@@ -1774,19 +1789,26 @@ export default function BillingPage() {
                   <b>Klarna:</b> o cliente parcela com eles e <b>você recebe o valor cheio na hora</b> — a
                   inadimplência passa a ser risco da Klarna. Taxa maior (~6%).<br />
                   <b>ACH:</b> débito na conta bancária, taxa baixa, compensa em alguns dias.<br />
-                  <b>Já cobrei:</b> quando o cartão passou na maquininha — informe o comprovante em Referência.
+                  <b>Já cobrei:</b> quando o cartão passou na maquininha — informe o comprovante em Referência.<br />
+                  <b>Valor:</b> cartão e ACH cobram o valor digitado acima
+                  {parcialStripe && valorStripe != null
+                    ? <> — <b>cobrança parcial</b>: os {money(Math.round((receber.saldo - valorStripe) * 100) / 100)} restantes seguem em aberto</>
+                    : ''}. Klarna é sempre o saldo inteiro.
                 </div>
-                <button onClick={() => cobrarCartao(receber, 'card')} disabled={busy}
-                  style={{ ...btn('#5A1A8A', busy), width: '100%', marginBottom: 8 }}>
-                  💳 Cobrar no cartão — {money(Number(rValor) || receber.saldo)}
+                {previaStripe?.ok === false && (
+                  <div style={{ color: '#B02020', fontSize: 12.5, fontWeight: 700, marginBottom: 9 }}>⚠️ {previaStripe.motivo}</div>
+                )}
+                <button onClick={() => cobrarCartao(receber, 'card')} disabled={busy || !previaStripe?.ok}
+                  style={{ ...btn('#5A1A8A', busy || !previaStripe?.ok), width: '100%', marginBottom: 8 }}>
+                  💳 Cobrar no cartão — {money(valorStripe ?? receber.saldo)}{parcialStripe ? ' (parcial)' : ''}
                 </button>
                 <button onClick={() => cobrarCartao(receber, 'klarna')} disabled={busy}
                   style={{ ...btn('#C06010', busy), width: '100%', marginBottom: 8 }}>
-                  🧾 Parcelar com Klarna — você recebe integral
+                  🧾 Parcelar com Klarna — {money(receber.saldo)}, você recebe integral
                 </button>
-                <button onClick={() => cobrarCartao(receber, 'us_bank_account')} disabled={busy}
-                  style={{ ...btn('#0A6A8A', busy), width: '100%' }}>
-                  🏦 Débito em conta (ACH)
+                <button onClick={() => cobrarCartao(receber, 'us_bank_account')} disabled={busy || !previaStripe?.ok}
+                  style={{ ...btn('#0A6A8A', busy || !previaStripe?.ok), width: '100%' }}>
+                  🏦 Débito em conta (ACH) — {money(valorStripe ?? receber.saldo)}{parcialStripe ? ' (parcial)' : ''}
                 </button>
               </div>
             )}

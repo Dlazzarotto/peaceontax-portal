@@ -511,6 +511,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Autorização, que lê o nível por motivo próprio: ela olha a ATRIBUIÇÃO de
   `podeContrato`, não qualquer menção a nível na tela — invariante que
   reprova código certo ensina a cadastrar exceção.
+- **Cobrar pelo Stripe cobra o valor DIGITADO, pela mesma regra na tela e
+  na rota** (`decidirValorDaCobranca` em `lib/cobranca-balcao.ts`,
+  `/api/billing/stripe-checkout`, modal de Receber). O botão "Cobrar no
+  cartão" MOSTRAVA o valor digitado e a chamada não o mandava: a rota cobrava
+  o saldo inteiro, sempre — o cliente que ia pagar uma parte no cartão via o
+  total na página do Stripe. Mesma classe do botão × trava: cada arquivo
+  sozinho parecia certo. Agora: vazio é o saldo; o resto tem de ser centavos,
+  acima do piso do Stripe (US$ 0,50) e dentro do saldo, e a recusa diz o
+  saldo. **Parcial só em cartão e ACH**: Klarna financia a fatura inteira e a
+  marca como financiada, então é sempre o saldo; **fatura parcelada** cobrada
+  em parte deixaria o débito automático correndo em dobro, então nela só a
+  quitação (com a confirmação que já existia) ou a parcela por fora. Com
+  `forma = 'todas'` e valor parcial, o Klarna sai da lista de formas. O
+  webhook já gravava o recebimento pelo `amount_total` da sessão, então o
+  parcial entra certo e o gatilho marca `partial`. QR do balcão e portal
+  seguem pelo saldo inteiro, por desenho. A auditoria exige os elos: a tela
+  manda `valor`, tela e rota chamam a regra, e `unit_amount` nasce do valor
+  decidido, nunca de `saldo`. 50 casos em `testes/cobranca-balcao.mts`.
 - **Cobrar no balcão é um QR, não um leitor** (`lib/cobranca-balcao.ts`,
   `/api/billing/cobranca-balcao`, quadro em `app/dashboard/billing`). O leitor
   comprado foi o **Stripe Reader M2**, que é **Bluetooth**: só funciona com um
