@@ -8,6 +8,9 @@ import { posicionarLista, type PosicaoDaLista } from '@/lib/lista-flutuante'
 import { historicoDoPayee, avisoDeVariacao, type HistoricoDoPayee } from '@/lib/payee-contas'
 import { sugerirTexto } from '@/lib/regra-texto'
 import ReconcileTab from '@/components/ReconcileTab'
+import SeletorPeriodo from '@/components/SeletorPeriodo'
+import { periodoDoPreset, periodoValido, anoDe, type Periodo } from '@/lib/periodo-relatorio'
+import { dataDaFirma } from '@/lib/dia-da-firma'
 
 // Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
 const fmtDate = (d: string | null | undefined) => {
@@ -256,8 +259,13 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [mPayeeType, setMPayeeType] = useState('vendor')
   const [mScope, setMScope] = useState('client')
   const [mErr, setMErr] = useState('')
-  const [pnlYear, setPnlYear] = useState(new Date().getFullYear() - 1)
-  const [pnlMonth, setPnlMonth] = useState<string>('all')
+  // Período dos relatórios: nasce em "ano passado" (o exercício que se
+  // declara), pelo dia do ESCRITÓRIO — o mesmo seletor do portal e do
+  // Financeiro (lib/periodo-relatorio.ts). O 1099 e a contagem do contrato
+  // são por ano-calendário: usam o ano do FIM do período.
+  const [periodo, setPeriodo] = useState<Periodo>(() => periodoDoPreset('ano_passado', dataDaFirma(new Date())))
+  const periodoOk = periodoValido(periodo.de, periodo.ate)
+  const anoDoPeriodo = anoDe(periodo.ate)
   const [ovData, setOvData] = useState<any>(null)
   const [ovBusy, setOvBusy] = useState(false)
 
@@ -920,8 +928,8 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const openPnl = () => {
-    const params = new URLSearchParams({ clientId, year: String(pnlYear) })
-    if (pnlMonth !== 'all') params.set('month', pnlMonth)
+    if (!periodoOk) return
+    const params = new URLSearchParams({ clientId, from: periodo.de, to: periodo.ate })
     window.open(`/api/bookkeeping/pnl?${params}`, '_blank')
   }
 
@@ -932,7 +940,7 @@ export default function BookkeepingTab({ clientId }: Props) {
   const loadCounter = async () => {
     setOvBusy(true)
     try {
-      const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&year=${pnlYear}`)
+      const r = await fetch(`/api/bookkeeping/overage?clientId=${clientId}&year=${anoDoPeriodo}`)
       const d = await r.json()
       setOvData(d.error ? { erro: d.error } : d)
     } catch (e: any) {
@@ -940,7 +948,7 @@ export default function BookkeepingTab({ clientId }: Props) {
     }
     setOvBusy(false)
   }
-  useEffect(() => { loadCounter() }, [clientId, pnlYear])
+  useEffect(() => { loadCounter() }, [clientId, anoDoPeriodo])
 
   const TAB_FILTER: Record<string, (t: Tx) => boolean> = {
     recognized:   t => t.status === 'auto',
@@ -1353,28 +1361,26 @@ export default function BookkeepingTab({ clientId }: Props) {
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(300px, 1fr))', gap:12, marginBottom:14 }}>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>📑 Relatórios</div>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:8 }}>
-            <select value={pnlYear} onChange={e => setPnlYear(Number(e.target.value))} style={sel}>
-              {Array.from({length:7},(_,i)=>new Date().getFullYear()-i).map(y => <option key={y}>{y}</option>)}
-            </select>
-            <select value={pnlMonth} onChange={e => setPnlMonth(e.target.value)} style={sel}>
-              <option value="all">Ano inteiro</option>
-              {Array.from({length:12},(_,i)=>i+1).map(m => <option key={m} value={m}>{String(m).padStart(2,'0')}</option>)}
-            </select>
+          <div style={{ marginBottom:8 }}>
+            {/* O mesmo seletor do portal e do Financeiro (lib/periodo-relatorio.ts) */}
+            <SeletorPeriodo valor={periodo} onChange={setPeriodo} compacto />
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-            <button onClick={openPnl} style={btn('#2D3278')}>📈 P&L</button>
-            <button onClick={() => window.open(`/api/bookkeeping/balance-sheet?clientId=${clientId}&year=${pnlYear}`, '_blank')}
-              style={btn('#0a6a8a')}>🏦 Balance Sheet</button>
-            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}&report=vendors`, '_blank')}
-              style={btn('#5a1a8a')}>🏪 Fornecedores</button>
-            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${pnlYear}&report=1099`, '_blank')}
-              style={btn('#8a4a0a')}>📋 1099</button>
+            <button onClick={openPnl} disabled={!periodoOk} style={btn('#2D3278', !periodoOk)}>📈 P&L</button>
+            <button onClick={() => window.open(`/api/bookkeeping/balance-sheet?clientId=${clientId}&asOf=${periodo.ate}`, '_blank')}
+              disabled={!periodoOk} style={btn('#0a6a8a', !periodoOk)}>🏦 Balance Sheet</button>
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&from=${periodo.de}&to=${periodo.ate}&report=vendors`, '_blank')}
+              disabled={!periodoOk} style={btn('#5a1a8a', !periodoOk)}>🏪 Fornecedores</button>
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${anoDoPeriodo}&report=1099`, '_blank')}
+              disabled={!periodoOk} style={btn('#8a4a0a', !periodoOk)}>📋 1099 · {anoDoPeriodo}</button>
+          </div>
+          <div style={{ fontSize:11.5, color:'#6a7a9a', marginTop:8 }}>
+            Balance Sheet em {fmtDate(periodo.ate)} · 1099 e contagem do contrato por ano-calendário ({anoDoPeriodo})
           </div>
         </div>
         <div style={{ background:'#fff', borderRadius:12, padding:'14px 16px', border:'1px solid #e2e8f4' }}>
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>
-            🧮 Total de transações do ano — {pnlYear} (todos os bancos)
+            🧮 Total de transações do ano — {anoDoPeriodo} (todos os bancos)
           </div>
           {!ovData ? (
             <span style={{ fontSize:12.5, color:'#9aaab0' }}>{ovBusy ? 'Contando…' : '—'}</span>

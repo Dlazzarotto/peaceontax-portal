@@ -1,4 +1,5 @@
-// GET /api/bookkeeping/category-detail?clientId=...&year=YYYY&month=MM?&category=...
+// GET /api/bookkeeping/category-detail?clientId=...&from=YYYY-MM-DD&to=YYYY-MM-DD&category=...
+//   (ou year=YYYY[&month=M], como sempre aceitou — lib/periodo-relatorio.ts converte)
 // Drill-down do P&L: todos os lançamentos DO REGISTRO daquela categoria,
 // para conferência. Abre na mesma aba a partir da linha do P&L; a barra
 // fixa tem "Voltar ao P&L" e "Print / Save PDF" (some na impressão).
@@ -7,6 +8,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { periodoDosParametros, rotuloDoPeriodo } from '@/lib/periodo-relatorio'
+import { todasAsLinhas } from '@/lib/paginar'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -21,20 +24,18 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
-  const year = parseInt(sp.get('year') || '')
-  // Mês só entra se for número de 1 a 12: ele é remontado na URL do "Voltar ao P&L"
-  const mesBruto = sp.get('month')
-  const month = mesBruto && /^\d{1,2}$/.test(mesBruto) && +mesBruto >= 1 && +mesBruto <= 12 ? mesBruto : null
   const category = sp.get('category')
-  if (!clientId || !year || !category) {
-    return NextResponse.json({ error: 'clientId, year e category obrigatórios' }, { status: 400 })
+  // O período (from/to, ou year[&month] como antes) é validado em
+  // lib/periodo-relatorio.ts — e é remontado na URL do "Voltar ao P&L", por
+  // isso só entra data que existe.
+  const periodo = periodoDosParametros(k => sp.get(k))
+  if (!clientId || !periodo || !category) {
+    return NextResponse.json({ error: 'clientId, período (from/to ou year[&month]) e category obrigatórios' }, { status: 400 })
   }
+  const { de, ate } = periodo
   // clientId vira parte de uma URL; para equipe canAccessClient não confere o formato
   if (!/^[0-9a-fA-F-]{36}$/.test(clientId)) {
     return NextResponse.json({ error: 'clientId inválido' }, { status: 400 })
-  }
-  if (!(year >= 2000 && year <= 2100)) {
-    return NextResponse.json({ error: 'year inválido' }, { status: 400 })
   }
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
@@ -53,21 +54,21 @@ export async function GET(req: NextRequest) {
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
-  let q = db.from('bank_transactions')
-    .select('tx_date, description, payee, amount, status, account_id')
-    .eq('client_id', clientId)
-    .eq('fiscal_year', year)
-    .eq('category', category)
-    .in('status', ['approved', 'reviewed'])
-    .order('tx_date', { ascending: true })
-    .limit(5000)
-  const { data: txs, error: qErr } = await q
+  // Por DATA (fiscal_year nasce dela) e em páginas de 1000: `.limit(5000)`
+  // parava em mil sem avisar, e o total da conta saía menor que o do P&L.
+  const { data: txs, error: qErr } = await todasAsLinhas<any>(() =>
+    db.from('bank_transactions')
+      .select('tx_date, description, payee, amount, status, account_id')
+      .eq('client_id', clientId)
+      .gte('tx_date', de).lte('tx_date', ate)
+      .eq('category', category)
+      .in('status', ['approved', 'reviewed']))
   if (qErr) {
     return new NextResponse(
       `<html><body style="font-family:Georgia,serif;max-width:700px;margin:40px auto;padding:0 20px">
         <h2 style="color:#b02020">Erro ao carregar o detalhe da conta</h2>
-        <p style="font-size:14px;color:#4a5a70">${qErr.message}</p>
-        <p style="font-size:12px;color:#9aaab0">Conta: ${escaparHtml(category)} · Ano: ${year}</p>
+        <p style="font-size:14px;color:#4a5a70">${escaparHtml(qErr.message)}</p>
+        <p style="font-size:12px;color:#9aaab0">Conta: ${escaparHtml(category)} · Período: ${de} – ${ate}</p>
       </body></html>`,
       { status: 500, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
   }
@@ -77,23 +78,22 @@ export async function GET(req: NextRequest) {
     .select('id, name').eq('client_id', clientId)
   const nomeConta = new Map((contas || []).map((a: any) => [a.id, a.name]))
 
-  let list = txs || []
-  if (month && /^\d{1,2}$/.test(month)) {
-    const mm = month.padStart(2, '0')
-    list = list.filter((t: any) => String(t.tx_date).slice(5, 7) === mm)
-  }
+  // A paginação ordena por id; o extrato se lê por data
+  const list = (txs || []).slice().sort((a: any, b: any) => String(a.tx_date).localeCompare(String(b.tx_date)))
 
   // Vazio? Descobre ONDE estão os lançamentos desta conta (ano e status)
   let diagnostico = ''
   if (list.length === 0) {
-    const { data: todos } = await db
+    const { data: todos, error: errTodos } = await todasAsLinhas<any>(() => db
       .from('bank_transactions')
       .select('fiscal_year, status, amount')
       .eq('client_id', clientId)
-      .eq('category', category)
-      .limit(5000)
+      .eq('category', category))
 
-    if (!todos || todos.length === 0) {
+    if (errTodos) {
+      // Procura que falha não vira "não existe em nenhum ano"
+      diagnostico = `Não foi possível procurar os lançamentos desta conta em outros períodos: ${escaparHtml(errTodos.message)}`
+    } else if (!todos || todos.length === 0) {
       diagnostico = `Nenhum lançamento com a conta "${escaparHtml(category)}" foi encontrado para este cliente em nenhum ano.`
     } else {
       const porAno: Record<string, Record<string, number>> = {}
@@ -125,9 +125,9 @@ export async function GET(req: NextRequest) {
   const positives = list.filter((t: any) => Number(t.amount) > 0).length
   const negatives = list.filter((t: any) => Number(t.amount) < 0).length
   const displayName = client?.business_name || client?.name || 'Client'
-  const period = month ? `${month.padStart(2, '0')}/${year}` : String(year)
+  const period = rotuloDoPeriodo(de, ate)
 
-  const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}`
+  const pnlUrl = `/api/bookkeeping/pnl?clientId=${clientId}&from=${de}&to=${ate}`
   const barra = barraDoRelatorio({
     voltarPara: pnlUrl, rotuloVoltar: 'Voltar ao P&L',
     painelPara: isClient ? '/portal' : '/dashboard',
