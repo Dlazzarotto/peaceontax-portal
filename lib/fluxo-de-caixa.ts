@@ -404,6 +404,53 @@ export function projetarCaixa(opts: {
   }
 }
 
+// --- Os três números do topo do caixa -------------------------------------
+//
+// Widgets "faturas em aberto", "a receber" e "pagas no mês". Cada um REUSA
+// uma definição que já existe, para o caixa nunca discordar do resto:
+//
+//   · em aberto: a MESMA régua da projeção — só conta a fatura que ainda tem
+//     saldo (total − pago > 0). Senão o número de faturas não bateria com o
+//     que está projetado logo abaixo. Mostra o EMITIDO (o total da fatura),
+//     não o saldo: "quanto está na rua" é pergunta diferente de "quanto falta
+//     entrar", e a segunda é o widget seguinte.
+//   · a receber: a soma que a projeção já fez, com o vencido DE VOLTA. A
+//     projeção o separa de propósito (dinheiro atrasado não é previsão); mas
+//     "quanto me devem" o inclui, e por isso aparece à parte no widget.
+//   · pagas no mês: o que ENTROU no mês do escritório. É caixa, não emissão —
+//     a fatura de setembro recebida em outubro conta em outubro. A janela é a
+//     do relatório de recebimentos (`janelaDaFirma`, dia do escritório, fim
+//     exclusivo) e o recorte é feito na CONSULTA; aqui só se soma.
+
+export interface FaturasEmAberto { qtd: number; emitido: number }
+
+/** Quantas faturas ainda têm saldo e quanto foi emitido nelas. */
+export function faturasEmAberto(faturas: FaturaEmAberto[]): FaturasEmAberto {
+  let qtd = 0, emitido = 0
+  for (const f of faturas || []) {
+    const saldo = round2(Number(f.total || 0) - Number(f.paid_total || 0))
+    if (saldo <= 0) continue
+    qtd++
+    emitido += Number(f.total || 0)
+  }
+  return { qtd, emitido: round2(emitido) }
+}
+
+export interface AReceber { saldo: number; vencido: number }
+
+/** O que a carteira deve à firma: o projetado mais o vencido que a projeção separa. */
+export function aReceber(p: Pick<Projecao, 'receber' | 'receberVencido'>): AReceber {
+  return { saldo: round2(p.receber + p.receberVencido), vencido: round2(p.receberVencido) }
+}
+
+export interface Recebido { qtd: number; total: number }
+
+/** Soma de pagamentos já recortados pela janela do escritório na consulta. */
+export function somaRecebido(pagamentos: { amount: number | string | null }[]): Recebido {
+  const lista = pagamentos || []
+  return { qtd: lista.length, total: round2(lista.reduce((s, p) => s + (Number(p.amount) || 0), 0)) }
+}
+
 function dinheiro(v: number): string {
   return `$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }

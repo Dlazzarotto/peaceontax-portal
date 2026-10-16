@@ -364,6 +364,27 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   faz a firma gastar o que não tem. Toda rota de `/api/caixa/` é **só do
   sócio** (a auditoria confere as quatro), porque o a receber é a carteira
   inteira, inclusive as empresas que o escopo por tipo esconde.
+- **Os três números do topo do caixa reusam definições que JÁ existem**
+  (`faturasEmAberto`, `aReceber`, `somaRecebido` em `lib/fluxo-de-caixa.ts`,
+  servidos por `/api/caixa/fluxo`): **em aberto** é a MESMA régua da projeção
+  (só fatura com saldo) e mostra o EMITIDO; **a receber** é o projetado mais
+  o vencido que a projeção separa de propósito; **pagas no mês** é o que
+  ENTROU no mês do ESCRITÓRIO (`janelaDaFirma`, a janela do relatório de
+  recebimentos). Achado anotado, decisão do sócio: o painel (`/dashboard`)
+  ainda corta "recebido no mês" pela data UTC (`somaPeriodo`), então um
+  pagamento das 20h do dia 31 cai em meses diferentes nas duas telas.
+  **O botão "Ocultar valores"** (`components/OcultarValores.tsx`) mascara só
+  o DINHEIRO — contagens ficam, dizem quantas e não quanto —, vale no fluxo,
+  nos depósitos e nas contas a pagar; o livro (`BookkeepingTab`) fica de
+  fora, porque é o componente dos clientes. A escolha mora no navegador
+  (localStorage): conforto de quem olha, não regra do sistema. Todo
+  componente do caixa formata dinheiro por `useDinheiro()`, nunca por
+  `money` direto, senão um valor escapa da máscara.
+  **E a rota passou a paginar.** Fatura em aberto, pagamento do mês e o
+  extrato do realizado liam com `.limit(5000)`/`.limit(20000)`, que o
+  PostgREST corta em 1000; o extrato vinha em ordem crescente, então os
+  meses RECENTES eram os que sumiam do fluxo. 13 casos novos em
+  `testes/fluxo-de-caixa.mts`.
 - **O saldo da conta vem do BANCO; o do extrato é reserva** (`saldoEmConta`,
   `bank_accounts.current_balance`, migração `sql/caixa-saldo-da-conta-v1.sql`).
   O `/transactions/sync` do Plaid traz a transação, **não o saldo depois
