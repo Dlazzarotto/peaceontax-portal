@@ -170,6 +170,47 @@ titulo('RELATORIO CONTABIL: UM PERIODO, FILTRO POR DATA, TODAS AS LINHAS')
   checar('O seletor usa o dia da firma', 'components/SeletorPeriodo.tsx', /dataDaFirma\(/, 'o atalho tem de nascer no dia do escritorio')
 }
 
+titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
+// A lista fixa no codigo (Contract Labor e Subcontractors) deixava de fora
+// advogado, aluguel e toda conta nova, e ninguem fora do codigo mudava isso.
+// Decisao do socio: um botao em cada conta de despesa do plano de contas
+// (bookkeeping_categories.form_1099), e TODA despesa paga na conta marcada
+// entra. Tres regras de lei que a lista nao tinha: o limite muda com o ano
+// (600 ate 2025, 2000 a partir de 2026), cartao de credito e PayPal, Venmo e
+// Cash App vao no 1099-K e ficam fora, e grafias do mesmo prestador somam
+// juntas. A regra mora em lib/relatorio-1099.ts, testada.
+{
+  const V = 'app/api/bookkeeping/vendors/route.ts'
+  recusar('O 1099 nao usa lista fixa de contas', V, /CATS_1099/, 'a lista fixa ignora a marca que o socio poe no plano de contas')
+  checar('O 1099 apura pelo modulo puro', V, /apurar1099\(\{/, 'conta de 1099 feita na rota diverge da testada')
+  recusar('A rota do 1099 nao fixa o limite', V, />=\s*(600|2000)\b/, 'o limite muda com o ano: 600 ate 2025, 2000 a partir de 2026')
+  checar('O limite do 1099 muda em 2026', 'lib/relatorio-1099.ts', /desde:\s*2026,\s*valor:\s*2000/, 'pagamento a partir de 2026 tem limite de US$ 2.000')
+  checar('O cartao de credito fica fora do 1099', V, /type === 'credit_card'/, 'pagamento no cartao vai no 1099-K, nao no NEC/MISC')
+  // A RECUSA, nao a mencao: a funcao aparece tambem na linha que tira a marca
+  // de quem muda de grupo, e a primeira versao passava com a recusa desligada.
+  checar('A marca do 1099 so vai em conta de despesa', 'app/api/bookkeeping/categories/route.ts',
+         /if \(formulario && !ehContaDeDespesa\(grupoFinal\)\)\s*\{[\s\S]{0,160}?Só conta de despesa vai para o 1099/,
+         'receita marcada para o 1099 nao faz sentido')
+  checar('A tela marca o 1099 pela rota', 'app/dashboard/accounts/page.tsx', /form1099:/, 'botao do 1099 sem chamada a rota')
+}
+
+titulo('IMPRESSO NAO PUBLICA TEXTO DO BANCO SEM ESCAPAR')
+// O nome do cliente e digitado por ele no aceite do convite, o payee nasce da
+// descricao do extrato e o nome da conta bancaria vem do Plaid. Os quatro
+// impressos interpolavam isso cru no HTML: um nome com <script> rodava na
+// sessao de quem abrisse o relatorio, inclusive a do socio.
+// O padrao olha a POSICAO de texto (depois de `>`, do travessao e dos icones),
+// nao qualquer interpolacao: `${g.cat}` dentro do argumento de catLink, que
+// escapa, nao e saida de HTML.
+{
+  const CRU = /(>|— |🏦 |💳 )\s*\$\{\s*(displayName|name|[a-z]\.payee|[a-z]\.name|g\.cat|c)\s*\}/
+  for (const arq of ['app/api/bookkeeping/pnl/route.ts', 'app/api/bookkeeping/balance-sheet/route.ts',
+                     'app/api/bookkeeping/vendors/route.ts', 'app/api/bookkeeping/category-detail/route.ts']) {
+    recusar(`${arq.split('/').slice(-2)[0]} escapa o que vem do banco`, arq, CRU,
+            'nome de cliente, payee ou conta sem escaparHtml vira HTML na sessao da equipe')
+  }
+}
+
 titulo('IMPRESSOS: VOLTAR E CELULAR')
 checar('Barra tem destino fixo alem do Voltar', 'lib/relatorio-barra.ts', 'data-painel=', 'Voltar depende do historico; sem destino fixo nao ha volta garantida')
 checar('Todo impresso declara o viewport', 'lib/relatorio-barra.ts', 'export const META_RELATORIO', 'celular renderiza a ~980px e a barra sai do alcance')
