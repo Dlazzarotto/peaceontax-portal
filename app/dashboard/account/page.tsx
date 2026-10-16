@@ -1,20 +1,20 @@
 'use client'
 // /dashboard/account — Minha Conta (equipe)
-// Alterar senha · Definir PIN de aprovação (owner/manager) · Gestão de equipe (owner)
+// Alterar senha · Definir o PRÓPRIO PIN de aprovação (owner/manager)
+//
+// A gestão da equipe (níveis, PIN dos outros) saiu daqui e foi para a tela
+// Equipe, junto com o resto da equipe (lib/equipe.ts). Aqui o sócio trocava
+// o nível de qualquer pessoa sem senha, sem motivo e sem rastro.
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 
-interface TeamMember {
-  userId: string; email: string; name: string
-  level: 'owner'|'manager'|'junior'; hasPin: boolean; lastSignIn: string|null
-}
-
-const LEVEL_LABEL: Record<string,string> = { owner:'👑 Owner', manager:'⭐ Manager', junior:'👤 Junior' }
+const LEVEL_LABEL: Record<string,string> = { owner:'👑 Sócio', manager:'⭐ Gerente', junior:'👤 Assistente' }
 const LEVEL_COLOR: Record<string,string> = { owner:'#5a1a8a', manager:'#2D3278', junior:'#6a7a9a' }
 
 export default function AccountPage() {
   const [myLevel, setMyLevel] = useState<string>('junior')
-  const [team,    setTeam]    = useState<TeamMember[]>([])
+  const [temPin,  setTemPin]  = useState(false)
 
   // Senha
   const [curPw,  setCurPw]  = useState(''); const [newPw,  setNewPw]  = useState('')
@@ -25,17 +25,10 @@ export default function AccountPage() {
   const [pinPw,  setPinPw]  = useState(''); const [newPin, setNewPin] = useState('')
   const [pinMsg, setPinMsg] = useState('');  const [pinSaving, setPinSaving] = useState(false)
 
-  const [teamMsg, setTeamMsg] = useState('')
-
   const load = async () => {
-    const r = await fetch('/api/account/team')
-    const d = await r.json()
-    if (d.team) { setTeam(d.team); setMyLevel(d.myLevel) }
-    else {
-      // Junior não vê a lista, mas ainda pode trocar senha
-      const p = await fetch('/api/quotes/perms').then(x => x.json())
-      setMyLevel(p.level || 'junior')
-    }
+    const d = await fetch('/api/account/pin').then(r => r.json()).catch(() => ({}))
+    setMyLevel(d.nivel || 'junior')
+    setTemPin(!!d.temPin)
   }
   useEffect(() => { load() }, [])
 
@@ -66,28 +59,6 @@ export default function AccountPage() {
     setPinMsg(d.ok ? '✓ PIN definido com sucesso.' : `Erro: ${d.error}`)
     if (d.ok) { setPinPw(''); setNewPin(''); load() }
     setPinSaving(false)
-  }
-
-  const setLevel = async (targetUserId: string, level: string) => {
-    setTeamMsg('')
-    const r = await fetch('/api/account/team', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ targetUserId, level }),
-    })
-    const d = await r.json()
-    setTeamMsg(d.ok ? '✓ Nível atualizado.' : `Erro: ${d.error}`)
-    if (d.ok) load()
-  }
-
-  const resetPin = async (targetUserId: string, name: string) => {
-    if (!confirm(`Resetar o PIN de ${name}? A pessoa precisará definir um novo em Minha Conta.`)) return
-    const r = await fetch('/api/account/team', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ targetUserId, resetPin: true }),
-    })
-    const d = await r.json()
-    setTeamMsg(d.ok ? '✓ PIN resetado.' : `Erro: ${d.error}`)
-    if (d.ok) load()
   }
 
   const card  = { background:'#fff', borderRadius:14, padding:22, border:'1px solid #e2e8f4', marginBottom:18 }
@@ -130,7 +101,7 @@ export default function AccountPage() {
       {/* ---- PIN de aprovação (owner/manager) ---- */}
       {canPin && (
         <div style={card}>
-          <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>🔑 PIN de aprovação</h2>
+          <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 6px' }}>🔑 PIN de aprovação {temPin ? <span style={{ fontSize:12, color:'#1a6b4a' }}>· ativo</span> : <span style={{ fontSize:12, color:'#9aaab0' }}>· não definido</span>}</h2>
           <p style={{ fontSize:13, color:'#6a7a9a', margin:'0 0 16px' }}>
             Membros junior usam seu PIN (com sua autorização verbal) para confirmar alterações e cancelamentos de cotação. Cada uso fica registrado na auditoria com seu nome como aprovador.
           </p>
@@ -147,45 +118,13 @@ export default function AccountPage() {
         </div>
       )}
 
-      {/* ---- Gestão de equipe (owner) ---- */}
-      {myLevel === 'owner' && team.length > 0 && (
-        <div style={card}>
-          <h2 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 16px' }}>👥 Equipe</h2>
-          <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-            {team.map(m => (
-              <div key={m.userId} style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px', background:'#f8faff', borderRadius:10, flexWrap:'wrap' }}>
-                <div style={{ flex:1, minWidth:180 }}>
-                  <div style={{ fontSize:14, fontWeight:700, color:'#1a2a3a' }}>{m.name}</div>
-                  <div style={{ fontSize:12, color:'#6a7a9a' }}>{m.email}</div>
-                </div>
-                <span style={{ fontSize:11, fontWeight:700, padding:'3px 10px', borderRadius:20,
-                  background:`${LEVEL_COLOR[m.level]}15`, color:LEVEL_COLOR[m.level] }}>
-                  {LEVEL_LABEL[m.level]}
-                </span>
-                <span style={{ fontSize:11, color: m.hasPin ? '#1a6b4a' : '#9aaab0' }}>
-                  {m.hasPin ? '🔑 PIN ativo' : 'sem PIN'}
-                </span>
-                {m.userId !== team.find(t => t.level==='owner' && t.email===m.email)?.userId || m.level !== 'owner' ? null : null}
-                <select value={m.level} onChange={e => setLevel(m.userId, e.target.value)}
-                  style={{ padding:'6px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:12, fontWeight:700, outline:'none', cursor:'pointer' }}>
-                  <option value="owner">Owner</option>
-                  <option value="manager">Manager</option>
-                  <option value="junior">Junior</option>
-                </select>
-                {m.hasPin && (
-                  <button onClick={() => resetPin(m.userId, m.name)}
-                    style={{ fontSize:11, padding:'5px 10px', borderRadius:7, border:'1px solid #fdd', background:'#fff5f5', color:'#b02020', cursor:'pointer', fontWeight:700 }}>
-                    Resetar PIN
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          {teamMsg && <p style={msgStyle(teamMsg)}>{teamMsg}</p>}
-          <p style={{ fontSize:12, color:'#9aaab0', marginTop:12 }}>
-            Novos membros entram como junior por padrão. Owner define os níveis aqui; cada owner/manager define o próprio PIN na sua página Minha Conta.
-          </p>
-        </div>
+      {/* ---- A equipe mora em Equipe ---- */}
+      {myLevel !== 'junior' && (
+        <p style={{ fontSize:13, color:'#6a7a9a' }}>
+          Os níveis, os PINs e as autorizações de cada pessoa ficam em{' '}
+          <Link href="/settings/users" style={{ color:'#2D3278', fontWeight:700 }}>Equipe</Link>
+          {myLevel === 'owner' ? ' — mudar o nível de alguém pede a sua senha e o motivo.' : '.'}
+        </p>
       )}
     </div>
   )

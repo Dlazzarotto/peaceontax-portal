@@ -37,11 +37,12 @@ const LISTAS: [string, string][] = [
   ['Plano de contas',        '/dashboard/accounts'],
   ['Fornecedores e clientes','/dashboard/payees'],
   ['Regras gerais',          '/rules'],
-  ['Equipe',                 '/team'],
 ]
 
+// A equipe num lugar só: o "Equipe" de Listas (o CRM) e o "Settings" (os
+// logins) eram duas telas da mesma gente, e o nível morava numa terceira.
 const ITENS_2: [string, string][] = [
-  ['Settings', '/settings/users'],
+  ['Equipe',   '/settings/users'],
   ['Conta',    '/dashboard/account'],
   ['Precos',   '/dashboard/pricing'],
 ]

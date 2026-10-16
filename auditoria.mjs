@@ -1815,11 +1815,130 @@ titulo('LISTA FLUTUANTE NAO SE POSICIONA NA MAO')
 }
 
 
+titulo('A EQUIPE NUM LUGAR SO: O NIVEL MORA EM team_members')
+// Decisao do socio: "juntar tudo como team member". Eram tres cadastros da
+// mesma gente -- team_members (o CRM), auth.users (o login) e staff_roles (o
+// nivel) -- com tres telas, e eles discordavam. E havia um defeito mudo entre
+// eles: editar o telefone em Team Members comparava o papel com
+// user_metadata.role, que a migracao do papel esvaziou, achava que o papel
+// tinha mudado e REESCREVIA o nivel pelo papel. Gerente com papel de socio
+// virava socio; quem foi promovido em Minha Conta voltava a assistente.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+  // O corpo de uma funcao, da assinatura ate a proxima funcao de topo.
+  // Ancora perdida devolve '' -- e vazio e FALHA abaixo, nunca "nada achado".
+  const corpoDe = (txt, assinatura) => {
+    const i = txt.indexOf(assinatura)
+    if (i < 0) return ''
+    const resto = txt.slice(i + assinatura.length)
+    const j = resto.search(/\n(export )?(async )?function /)
+    return j < 0 ? resto : resto.slice(0, j)
+  }
+  const fontes = [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']),
+                  ...arquivos(join(raiz, 'lib'), ['.ts']),
+                  ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]
+
+  // 1. staff_roles esta CONGELADA (sql/equipe-unica-v1.sql). So staff-perms
+  //    le, e so quando a coluna nova ainda nao existe; ninguem grava.
+  const leemAntiga = [], gravamAntiga = [], gravamNivel = [], listam = []
+  const PODEM_GRAVAR_NIVEL = ['app/api/firm/users/[id]/route.ts', 'lib/equipe-servidor.ts']
+  for (const arq of fontes) {
+    const cod = semComent(readFileSync(arq, 'utf8'))
+    const nome = rel(arq)
+    if (/from\(\s*['"]staff_roles['"]\s*\)/.test(cod) && nome !== 'lib/staff-perms.ts') leemAntiga.push(nome)
+    if (/from\(\s*['"]staff_roles['"]\s*\)[\s\S]{0,80}?\.(insert|update|upsert|delete)\(/.test(cod)) gravamAntiga.push(nome)
+    // 2. Quem grava o NIVEL: a acao de nivel e o aceite do convite, e so.
+    if (!PODEM_GRAVAR_NIVEL.includes(nome)
+        && /from\(\s*['"]team_members['"]\s*\)[\s\S]{0,60}?\.(insert|update|upsert)\(/.test(cod)
+        && /\blevel\s*:/.test(cod)) gravamNivel.push(nome)
+    // 3. listUsers so com pagina, num lugar so (todosOsLogins).
+    if (/\.listUsers\(/.test(cod) && nome !== 'lib/equipe-servidor.ts') listam.push(nome)
+  }
+  leemAntiga.length
+    ? falta('Ninguem le o nivel em staff_roles', `o nivel mora em team_members (getStaffLevel): ${leemAntiga.join(', ')}`)
+    : ok('Ninguem le o nivel em staff_roles')
+  gravamAntiga.length
+    ? falta('Ninguem grava em staff_roles', `ela esta congelada -- a mudanca se perderia: ${gravamAntiga.join(', ')}`)
+    : ok('Ninguem grava em staff_roles')
+  gravamNivel.length
+    ? falta('O nivel so se grava pela acao de nivel e pelo aceite', `com senha, motivo e trilha: ${gravamNivel.join(', ')}`)
+    : ok('O nivel so se grava pela acao de nivel e pelo aceite')
+  listam.length
+    ? falta('Lista de logins so pagina por pagina', `listUsers() sem pagina devolve 50; use todosOsLogins: ${listam.join(', ')}`)
+    : ok('Lista de logins so pagina por pagina')
+  checar('A lista de logins para na pagina VAZIA, nao na curta', 'lib/equipe-servidor.ts',
+         /if \(!users\.length\) return/,
+         'se o servidor limitar a pagina abaixo do pedido, "veio menos" pararia cedo e cortaria a equipe sem aviso')
+
+  // 4. A leitura antiga so quando a coluna falta; erro nao cai na reserva.
+  const perms = ler('lib/staff-perms.ts')
+  const gsl = corpoDe(perms, 'export async function getStaffLevel')
+  const vmp = corpoDe(perms, 'export async function validateManagerPin')
+  if (!gsl || !vmp) falta('Ancoras de lib/staff-perms.ts', 'getStaffLevel ou validateManagerPin nao encontrados -- a conferencia nao conferiria nada')
+  else {
+    if (/colunaAusente\(error\) \? await nivelNaTabelaAntiga/.test(gsl)) ok('getStaffLevel so le staff_roles quando a coluna nova falta')
+    else falta('getStaffLevel so le staff_roles quando a coluna nova falta', 'a tabela antiga esta congelada e mente depois da migracao')
+    const iErro = gsl.indexOf("if (nivel === 'erro') return 'junior'")
+    const iReserva = gsl.indexOf('getUserById')
+    if (iErro >= 0 && iReserva > iErro) ok('Consulta do nivel que falha NAO cai na reserva do papel')
+    else falta('Consulta do nivel que falha NAO cai na reserva do papel', 'um gerente com papel firm viraria socio num tropeco de rede')
+    if (/data && data\.active === false\) nivel = 'junior'/.test(gsl)) ok('Quem saiu da equipe vale assistente, sem cair na reserva')
+    else falta('Quem saiu da equipe vale assistente, sem cair na reserva', 'a sessao aberta do desligado manteria o poder')
+    if (/\.eq\('active', true\)/.test(vmp)) ok('PIN de quem saiu nao aprova')
+    else falta('PIN de quem saiu nao aprova', 'o PIN do gerente desligado liberava desconto e troca de acesso no balcao')
+  }
+
+  // 5. Mudar o nivel: a regra unica, a senha do socio, a trilha ANTES.
+  const rota = ler('app/api/firm/users/[id]/route.ts')
+  const mudar = corpoDe(rota, 'async function mudarNivel')
+  const editar = corpoDe(rota, 'async function editar')
+  if (!mudar || !editar) falta('Ancoras de /api/firm/users/[id]', 'mudarNivel ou editar nao encontrados -- a conferencia nao conferiria nada')
+  else {
+    if (/decidirMudancaDeNivel\(/.test(mudar) && /signInWithPassword\(/.test(mudar)) ok('Mudar o nivel passa pela regra unica e pela senha do socio')
+    else falta('Mudar o nivel passa pela regra unica e pela senha do socio', 'o nivel e a raiz da matriz inteira (principio 3)')
+    const iTrilha = mudar.search(/gravarNaTrilha\(\{[\s\S]{0,200}?acao:\s*'nivel'/)
+    const iGrava = mudar.search(/from\('team_members'\)\.update\(/)
+    if (iTrilha >= 0 && iGrava > iTrilha && /if \(errTrilha\) \{[\s\S]{0,40}?return/.test(mudar)) ok('A trilha do nivel vem ANTES, e falhar recusa a mudanca')
+    else falta('A trilha do nivel vem ANTES, e falhar recusa a mudanca', 'poder que muda sem rastro e pior que mudanca nao feita (principio 2)')
+    if (/\blevel\b|nivelDoPapel|papelDoNivel|app_metadata/.test(editar)) falta('Editar nome e telefone NAO toca no nivel', 'foi assim que uma edicao de telefone promoveu gerente a socio')
+    else ok('Editar nome e telefone NAO toca no nivel')
+    if (/papelDoNivel\(/.test(mudar)) ok('O papel da porta acompanha o nivel')
+    else falta('O papel da porta acompanha o nivel', 'o papel e a reserva do nivel; os dois discordando e o defeito')
+  }
+  recusar('O CRM nao escolhe nivel nem funcao pelo corpo', 'app/api/team/route.ts',
+          /\bb\.(level|role)\b/,
+          'a coluna role era um rotulo que qualquer assistente trocava, e a tela mostrava Socio')
+
+  // 6. Uma definicao de nivel so: o Atendimento pergunta a getStaffLevel.
+  const wa = ler('lib/wa-auth.ts')
+  if (!/staff_roles/.test(wa) && /getStaffLevel\(/.test(wa)) ok('O Atendimento usa o mesmo nivel do resto do sistema')
+  else falta('O Atendimento usa o mesmo nivel do resto do sistema', "varria staff_roles por texto e lia 'admin' como gerente")
+
+  // 7. Convite e para quem nao tem login, e o anterior deixa de valer.
+  const conv = ler('app/api/firm/users/route.ts')
+  const iVelho = conv.search(/update\(\{\s*expires_at:/)
+  const iNovo = conv.search(/from\('staff_invitations'\)\.insert\(/)
+  if (/decidirConvite\(/.test(conv) && iVelho >= 0 && iNovo > iVelho) ok('Convite novo encerra o anterior e recusa quem ja tem login')
+  else falta('Convite novo encerra o anterior e recusa quem ja tem login', 'um link velho com outro nivel abria a conta por sete dias')
+  const aceite = ler('app/api/firm/setup/[token]/route.ts')
+  if (/vincularNaEquipe\(/.test(aceite) && !/staff_roles/.test(aceite)) ok('O aceite do convite completa a linha da equipe')
+  else falta('O aceite do convite completa a linha da equipe', 'inserir sempre punha a pessoa duas vezes no seletor do CRM')
+
+  // 8. A migracao fecha team_members e congela staff_roles.
+  checar('A migracao fecha team_members para o navegador', 'sql/equipe-unica-v1.sql',
+         'revoke all on public.team_members from anon, authenticated',
+         'o nivel mora la: aberta, um cliente logado gravaria owner na propria linha')
+  checar('A migracao congela staff_roles', 'sql/equipe-unica-v1.sql',
+         'revoke insert, update, delete, truncate on public.staff_roles from service_role',
+         'sem isso o codigo antigo gravaria o nivel la entre a migracao e o deploy, e a mudanca se perderia')
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
   ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],
   ['Contratos: modulo Plans x recurring_plans', 'components/PlansTab.tsx'],
-  ['Equipe: staff_roles (permissao) x team_members (CRM)', 'app/team/page.tsx'],
 ]) if (existsSync(join(raiz, d[1]))) ver(d[0])
 
 titulo('MENU DUPLICADO EM QUANTOS LAYOUTS')

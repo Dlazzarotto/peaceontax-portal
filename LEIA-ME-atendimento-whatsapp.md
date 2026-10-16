@@ -162,7 +162,7 @@ com palpite.
 
 ## 7. Premissas que usei — corrija se alguma estiver errada
 
-1. `staff_roles` guarda o nível e dá para achar a pessoa por `user_id` **ou** por e-mail (a leitura é tolerante a ambos)
+1. ~~`staff_roles` guarda o nível e dá para achar a pessoa por `user_id` **ou** por e-mail~~ — superada: o nível mora em `team_members.level` e o Atendimento pergunta a `getStaffLevel`, como o resto do sistema (`sql/equipe-unica-v1.sql`). A leitura "tolerante" achava a pessoa em qualquer coluna de texto e lia `admin` como gerente, enquanto o resto do sistema o tratava como assistente.
 2. A tabela `clients` tem `id` e alguma coluna de telefone entre `phone`, `telefone`, `phone_number`, `celular`, `mobile`, `whatsapp` — o SQL avisa no console qual encontrou
 3. A ficha do cliente abre em `/dashboard/clients/[id]` — se o caminho for outro, é uma linha na tela
 4. A tela não importa `AppShell`: ela é autônoma, com botão de voltar. Foi opção deliberada — importar um componente cuja assinatura eu não vejo quebraria o build no Vercel, e você descobriria pelo celular

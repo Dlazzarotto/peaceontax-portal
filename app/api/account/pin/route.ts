@@ -1,11 +1,25 @@
-// POST /api/account/pin
-// Body: { currentPassword, newPin }
-// Owner/manager define o PRÓPRIO PIN de aprovação. Exige senha atual.
+// /api/account/pin — o PRÓPRIO PIN de aprovação (Minha Conta)
+//
+//  GET  → { nivel, temPin }  o nível de quem está logado e se já tem PIN
+//  POST { currentPassword, newPin } → owner/manager define o próprio PIN.
+//                                      Exige a senha atual.
+//
+// O PIN mora na linha da pessoa em team_members (sql/equipe-unica-v1.sql),
+// junto do nível. Zerar o PIN de outra pessoa é do sócio, em Equipe.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel, hashPin } from '@/lib/staff-perms'
+import { membroDoLogin, AVISO_MIGRACAO } from '@/lib/equipe-servidor'
+
+export async function GET() {
+  const auth = await getAuth()
+  if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito à equipe' }, { status: 403 })
+  const nivel = await getStaffLevel(auth.userId)
+  const { membro, erro } = await membroDoLogin(auth.userId)
+  return NextResponse.json({ nivel, temPin: !!membro?.approval_pin_hash, aviso: erro })
+}
 
 export async function POST(req: NextRequest) {
   const auth = await getAuth()
@@ -43,14 +57,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Senha atual incorreta' }, { status: 403 })
   }
 
-  const { error } = await db
-    .from('staff_roles')
-    .upsert({
-      user_id: auth.userId,
-      level,
-      approval_pin_hash: hashPin(newPin),
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id' })
+  const { membro, erro } = await membroDoLogin(auth.userId, db)
+  if (erro) return NextResponse.json({ error: erro }, { status: erro === AVISO_MIGRACAO ? 409 : 500 })
+  // Não cria a linha aqui: ela carrega o NÍVEL, e quem dá nível é o sócio.
+  if (!membro) {
+    return NextResponse.json({
+      error: 'Seu cadastro na equipe não foi encontrado — peça ao sócio para acertar em Equipe.',
+    }, { status: 409 })
+  }
+
+  const { error } = await db.from('team_members')
+    .update({ approval_pin_hash: hashPin(newPin), updated_at: new Date().toISOString() })
+    .eq('id', membro.id)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
