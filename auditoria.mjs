@@ -103,6 +103,25 @@ checar('Catalogo unico', 'app/api/billing/invoices/route.ts', 'pricing_items', '
 checar('Relatorios: so o socio (verRelatorios)', 'app/api/billing/reports/route.ts', 'perms.verRelatorios', 'gerente veria os totais do negocio')
 checar('Relatorios: orcamento e rascunho fora do faturamento', 'app/api/billing/reports/route.ts', "not('status', 'in', '(draft,void)')", 'faturamento inflado por rascunho/cancelada')
 
+titulo('COBRANCA PELO STRIPE: O VALOR QUE A TELA MOSTRA E O QUE A ROTA COBRA')
+// O botao "Cobrar no cartao" mostrava o valor digitado e a chamada nao o
+// mandava; a rota cobrava o saldo inteiro, sempre -- o cliente que ia pagar
+// uma parte via o total na pagina do Stripe. Mesma classe do botao x trava:
+// cada arquivo sozinho parecia certo. Agora a tela MANDA o valor, tela e rota
+// decidem pela mesma regra pura (lib/cobranca-balcao.ts) e a sessao do Stripe
+// nasce pelo valor decidido -- nunca mais por `saldo` direto.
+checar('A tela manda o valor digitado ao gerar a cobranca', 'app/dashboard/billing/page.tsx',
+       /stripe-checkout'[\s\S]{0,400}?body:\s*JSON\.stringify\(\{[^}]*\bvalor\b/,
+       'o botao mostra um valor e a rota cobra outro')
+checar('A tela decide o valor pela mesma regra da rota', 'app/dashboard/billing/page.tsx',
+       /decidirValorDaCobranca\(/, 'previa da tela diverge da trava')
+checar('A rota decide o valor pela regra pura, com o valor pedido', 'app/api/billing/stripe-checkout/route.ts',
+       /decidirValorDaCobranca\(\{[\s\S]{0,200}?pedido:\s*body\.valor/, 'rota ignora o valor pedido')
+recusar('A sessao do Stripe nao nasce pelo saldo direto', 'app/api/billing/stripe-checkout/route.ts',
+        /unit_amount\]':\s*String\(Math\.round\(saldo \* 100\)\)/, 'cobrar o saldo inteiro era o defeito')
+checar('A sessao do Stripe nasce pelo valor decidido', 'app/api/billing/stripe-checkout/route.ts',
+       /unit_amount\]':\s*String\(Math\.round\(valor \* 100\)\)/, 'o valor decidido tem de ser o cobrado')
+
 titulo('RELATORIOS: NADA DE FORA ENTRA NO SCRIPT')
 checar('Barra: destino vai em atributo, nao dentro do script', 'lib/relatorio-barra.ts', 'data-destino=', 'parametro com </script> injetaria codigo na sessao da equipe')
 checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export function escaparHtml', 'nome de conta da URL viraria HTML')
