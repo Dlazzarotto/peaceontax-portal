@@ -33,6 +33,9 @@ export const DEPENDE_DE = {
   'sql/permissoes-por-pessoa-v4.sql':        ['sql/permissoes-por-pessoa-v1.sql'],
   // Escrito no cabeçalho do próprio arquivo: roda depois de status-da-fatura-v2.
   'sql/recebimento-seguro-v1.sql':           ['sql/status-da-fatura-v2.sql'],
+  // Liga cada login da FIRMA à equipe, e "da firma" é o papel em app_metadata
+  // -- antes da migração do papel, ninguém seria da firma e ninguém entraria.
+  'sql/equipe-unica-v1.sql':                 ['sql/papel-no-app-metadata-v1.sql'],
 }
 
 /**

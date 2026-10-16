@@ -122,9 +122,41 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   escrita do papel em `user_metadata`, e recusa qualquer menção a
   `user_metadata` em `papeis.ts`, `api-auth.ts`, `staff-perms.ts` e
   `middleware.ts`.
-- **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
-  `manager`, `junior`. Quem não está na tabela é `junior`. São duas
-  perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
+- **Nível de acesso vem de `team_members.level`** (`lib/staff-perms.ts`):
+  `owner`, `manager`, `junior`. São duas perguntas diferentes: `papeis.ts` é
+  a PORTA, `team_members.level` é o PODER. Login da firma sem linha na
+  equipe cai no nível que o papel do login dá; consulta que **falha** e quem
+  **saiu** da equipe valem `junior` — a reserva do papel nunca decide num
+  erro (era assim que um gerente com papel `firm` viraria sócio num tropeço).
+- **A equipe é UMA linha por pessoa em `team_members`** (decisão do sócio:
+  "juntar tudo como team member"; `lib/equipe.ts`, puro, 118 casos em
+  `testes/equipe.mts`; `lib/equipe-servidor.ts`; tela Equipe em
+  `/settings/users`; migração `sql/equipe-unica-v1.sql`, que **roda antes de
+  o código subir**). Eram três cadastros da mesma gente com três telas que
+  discordavam: `team_members` (o CRM, com um rótulo de função que qualquer
+  assistente trocava e a tela mostrava "Sócio"), os logins e `staff_roles`
+  (o nível, trocado em Minha Conta sem senha, motivo nem rastro). Agora:
+  nome, e-mail, login (`user_id`, único), nível e PIN na mesma linha.
+  **Editar não toca no nível** — o defeito mudo que motivou: a rota comparava
+  o papel com `user_metadata.role`, que a migração do papel esvaziou, achava
+  que tinha mudado e reescrevia o nível pelo papel em toda edição de telefone.
+  **O nível muda por um ato próprio** (`acao: 'nivel'` em
+  `/api/firm/users/[id]`): só o sócio, nunca o próprio, com a senha do sócio
+  e o motivo, e a trilha `team_member_audit` gravada **antes** (falhou,
+  recusa). `decidirMudancaDeNivel` é a regra; o papel da porta acompanha
+  (`papelDoNivel`) porque é a reserva do nível. Quem grava `level`: essa ação
+  e o aceite do convite, e só. **Desativar** bloqueia o login, tira do
+  seletor e mata o PIN (`validateManagerPin` exige `active`). **Convite** é
+  para quem ainda não tem login (`decidirConvite`; login de cliente também é
+  recusado), e o novo encerra os pendentes do mesmo e-mail — o "Reenviar"
+  deixava o link velho, com outro nível, valendo sete dias. **O aceite
+  completa a linha do CRM** (mesmo e-mail, depois mesmo nome sem e-mail) em
+  vez de duplicar a pessoa, e não toca no nível de quem já tinha linha.
+  `staff_roles` está **congelada** (sem escrita para a service role) e só é
+  lida quando a coluna nova ainda não existe. `listUsers` só pagina por
+  página (`todosOsLogins`), parando na página VAZIA — sem página vinham 50.
+  O Atendimento (`lib/wa-auth.ts`) deixou de ter a sua definição de nível.
+  `/team` redireciona; Minha Conta ficou com a senha e o próprio PIN.
 - **Em cima do nível há autorização por pessoa** (`lib/permissoes.ts`,
   tabela `staff_grants`). O nível é a base; cada concessão é um sim ou não
   explícito que o vence; o sócio é imune a concessão negativa. Quem monta o
@@ -1064,9 +1096,8 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro;
-  `staff_roles` × `team_members`. Duplicações conhecidas, resolução pendente
-  de decisão do sócio.
+- Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro.
+  Duplicações conhecidas; o sócio já decidiu juntar as duas (em andamento).
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,
