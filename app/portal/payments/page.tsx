@@ -10,6 +10,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { fmtUS, money } from '@/lib/format'
+import { porPeriodo } from '@/lib/contrato-unico'
 
 const T: Record<string, any> = {
   en: {
@@ -175,7 +176,7 @@ export default function PaymentsPage() {
   const linha = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' as const, padding: '12px 14px', borderRadius: 10, background: '#f8faff', border: '1px solid #e2e8f4', marginBottom: 8 }
   const rotuloPlano = (p: any) => p.kind === 'installment'
     ? `${p.description || 'Installments'} — ${p.installments}× ${money(p.installment_amount)}`
-    : `${p.description || 'Monthly service'} — ${money(p.monthly_amount)}/mo, day ${p.due_day ?? 5}`
+    : `${p.description || 'Recurring service'} — ${money(p.monthly_amount)}${porPeriodo(p.billing_interval, 'en')}, day ${p.due_day ?? 5}`
 
   return (
     <div>

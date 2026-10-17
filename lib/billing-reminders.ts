@@ -15,6 +15,8 @@
 import { serviceDb } from '@/lib/api-auth'
 import { enviarSms } from '@/lib/sms'
 import { nextBillingDayET, proximaParcela, dataISOEmDias } from '@/lib/plans'
+import { cobrancaAPartirDe } from '@/lib/contrato-unico'
+import { colunaAusente } from '@/lib/caixa-firma'
 import { enviarEmail, avisarNoPortal, emailComMarca } from '@/lib/avisos'
 import { FIRM } from '@/lib/contract-html'
 import { fmtUS } from '@/lib/format'
@@ -55,12 +57,20 @@ function textoAviso(c: Candidato, dias: number): { sms: string; assunto: string;
  * Encontra os planos ativos cujo próximo débito cai exatamente em `alvo`.
  * Regras de data são as mesmas do checkout e do cronograma (lib/plans.ts).
  */
+const COLUNAS_DO_AVISO = 'id, client_id, kind, status, description, monthly_amount, due_day, invoice_id, ' +
+  'installment_amount, installments, paid_installments, frequency, next_charge_date, ' +
+  'clients(id, name, business_name, email, language)'
+// Do contrato único (sql/contrato-unico-v1.sql). Ficam à parte porque o aviso
+// não pode parar entre o deploy e a migração: sem elas, todo plano é débito
+// mensal — que é o que todo plano era antes dela.
+const COLUNAS_DO_CONTRATO = ', billing_interval, collection_method, start_date'
+
 export async function candidatosDoDia(db: any, alvo: string, agora: Date): Promise<Candidato[]> {
-  const { data: planos, error } = await db.from('payment_plans')
-    .select('id, client_id, kind, status, description, monthly_amount, due_day, invoice_id, ' +
-            'installment_amount, installments, paid_installments, frequency, next_charge_date, ' +
-            'clients(id, name, business_name, email, language)')
-    .eq('status', 'active')
+  let { data: planos, error } = await db.from('payment_plans')
+    .select(COLUNAS_DO_AVISO + COLUNAS_DO_CONTRATO).eq('status', 'active')
+  if (error && colunaAusente(error)) {
+    ({ data: planos, error } = await db.from('payment_plans').select(COLUNAS_DO_AVISO).eq('status', 'active'))
+  }
   if (error) throw new Error(`payment_plans: ${error.message}`)
 
   const out: Candidato[] = []
@@ -88,8 +98,21 @@ export async function candidatosDoDia(db: any, alvo: string, agora: Date): Promi
       continue
     }
 
-    // Mensalidade (bookkeeping ou outro serviço): dia acordado, mesma regra do Stripe
-    const prox = nextBillingDayET(p.due_day, agora).toISOString().slice(0, 10)
+    // Contrato POR FATURA não tem débito: o cliente recebe a fatura do
+    // período e paga pelo portal. Avisar "vamos debitar" seria falso.
+    if (p.collection_method === 'fatura') continue
+    // Antes da primeira cobrança (contrato que começa no futuro) não há o que avisar.
+    if (p.next_charge_date && alvo < String(p.next_charge_date).slice(0, 10)) continue
+
+    // Contrato no débito: a régua do contrato, a mesma que ancorou a
+    // assinatura no Stripe (lib/plan-checkout.ts). No mensal, o dia acordado
+    // como sempre (respeita o fim de mês igual ao Stripe); no trimestral e no
+    // anual, a régua do início — senão o cliente ouviria "vamos debitar" todo mês.
+    const iv = p.billing_interval || 'monthly'
+    const inicio = p.start_date || p.next_charge_date
+    const prox = iv === 'monthly' || !inicio
+      ? nextBillingDayET(p.due_day, agora).toISOString().slice(0, 10)
+      : cobrancaAPartirDe(p.due_day, inicio, iv, alvo)
     if (prox === alvo) {
       out.push({ ...base, data: alvo, valor: Number(p.monthly_amount || 0),
         descricao: p.description || (p.kind === 'bookkeeping' ? 'bookkeeping mensal' : 'serviço mensal') })
