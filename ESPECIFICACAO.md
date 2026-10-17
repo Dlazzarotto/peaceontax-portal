@@ -545,11 +545,18 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 **Relatórios do sócio.** Botão Relatórios no Financeiro, visível e servido **só ao sócio** (`verRelatorios`; gerente e assistente recebem recusa na rota). Seis relatórios impressos, no mesmo padrão dos contábeis, com período escolhido: **Faturamento por mês** (emitido, recebido e em aberto), **Recebimentos** (por forma e por cliente, com Klarna como financiado), **Contas a receber** (por cliente, com atraso em faixas), **Contratos e parcelamentos** (receita recorrente mensal dos contratos ativos e parcelas a receber), **Faturamento por serviço** (por item do catálogo) e **Estornos e cancelamentos**. Orçamentos, rascunhos e faturas canceladas ficam fora do faturamento. As contas ficam em `lib/relatorios-financeiro.ts`, sem banco, testadas com casos fixos.
 
-**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — mensalidade no dia acordado, parcela pelo cronograma — e avisa o cliente: por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
+**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — contrato no débito pela régua dele (o trimestral, de três em três meses), parcela pelo cronograma — e avisa o cliente (contrato por fatura não tem débito e não recebe este aviso): por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
 
 ### 4.4 Planos e contratos
 
-Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e valor por excedente) e **outros serviços mensais** (payroll, sales tax), mais **parcelamento** de serviços avulsos com entrada.
+**O contrato recorrente tem um cadastro só (decisão do sócio: juntar os planos com os contratos recorrentes e eliminar os planos).** Mora no Financeiro → Contratos; a ficha do cliente só mostra os contratos dele e aponta para lá. Um contrato é **bookkeeping** (mensal, com transações incluídas por mês e valor por excedente) ou **serviço recorrente** (payroll, sales tax…), e é o **molde de uma fatura**: linhas (serviço do catálogo ou texto livre, quantidade, preço), **desconto em dólar** e o total derivado delas. Repete **mensal, trimestral ou anual**, num **dia do mês (1 a 28)**, numa régua ancorada no início (trimestral de 10/jan cobra jan · abr · jul · out). E se cobra de **uma de duas formas**, escolhida na criação e que não muda depois:
+
+- **Débito automático** — o cliente assina o contrato e cadastra cartão ou conta pelo link; a assinatura do Stripe debita no intervalo do contrato, a partir da primeira data da régua. A fatura de cada cobrança nasce quando o Stripe a finaliza, com os itens do contrato quando a conta deles bate com o que foi debitado.
+- **Fatura do sistema** — uma rotina diária emite a fatura do período no dia, com vencimento em **N dias** (Net 15, Net 30), põe no portal, manda por e-mail e anda a régua; o cliente paga pelo portal (cartão, débito em conta, Klarna) ou diretamente à firma. Não há débito automático, nem aviso de "vamos debitar", e o contrato assinado diz isso.
+
+O contrato nasce **rascunho**: nada é cobrado até a equipe **ativar** (fatura) ou o cliente **cadastrar o débito**. **Editar** — itens, desconto e prazo — vale a partir da **próxima cobrança** e pede senha e motivo (no débito, o preço da assinatura no Stripe muda sem cobrança proporcional). **Mudar o intervalo ou a forma de cobrar é encerrar e criar outro.** **Pausar** é reversível e não cobra o período parado; **encerrar** pede senha e motivo, cancela a assinatura no Stripe (se o Stripe recusar, nada é encerrado) e **não volta**. Tudo fica na trilha do contrato, gravada antes da mudança. O valor de cada cobrança é o do período (num trimestral, o do trimestre); a receita recorrente **mensal** divide pelo intervalo.
+
+**Parcelamento** é outra coisa: é sempre de uma fatura de serviço realizado, com entrada, e nasce no Financeiro (fatura → Parcelar).
 
 **Excedente de transações (bookkeeping).** A franquia do contrato é **por mês** (o formulário pede "transações incluídas/mês" e o contrato assinado promete "até N por mês"). A apuração é **anual**: a franquia do período é o número mensal × os **meses de vigência** no ano, contados da **primeira cobrança** (contrato criado em 20/08 com débito no dia 5 vale de setembro a dezembro). Mês de pouco movimento compensa mês de muito. Só contam os lançamentos dentro da vigência — histórico importado de antes do contrato não vira excedente. No **ano em curso** a franquia vai até o mês corrente, e a tela avisa que o número é parcial. O bookkeeping **só conta**: cobrar excedente se faz pelo Financeiro, com uma fatura, sob a mesma alçada de qualquer cobrança. A conta mora em `lib/excedente-transacoes.ts` e é a mesma no quadro do cliente e na central de bookkeeping.
 
@@ -700,11 +707,12 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **A tela de Faturamento nasce fechada (decisão do sócio).** A lista mostrava o histórico inteiro para gerente e sócio, porque `verTodasFaturas` vinha por nível. Agora ela abre no **próprio dia, das próprias faturas**, com busca por **período** e por **situação** (todas · em aberto · pagas · canceladas · rascunhos). Consultar outro período ou faturas de outra pessoa **pede senha e motivo de um gerente ou sócio**; a liberação vale 30 minutos e fica registrada em `invoice_query_audit` (quem liberou, para quem, por quê, até quando). **Só o sócio tem acesso ilimitado** e não passa por essa porta. A recusa é explícita (403) e a tela abre o pedido de autorização — lista curta sem explicação é uma afirmação falsa. O `?id=` obedece ao mesmo escopo. Migração: `sql/consulta-de-faturas-v1.sql`.
 
+- **O contrato recorrente tem um cadastro só, e cobra (decisão do sócio).** Os **Planos** da ficha do cliente cobravam (Stripe, webhook, fatura do mês) mas eram um valor só, mensal; os **Contratos recorrentes** do Financeiro tinham a regra (itens, desconto, prazo, intervalo, senha e trilha) e nunca cobraram — nenhuma rotina lia a tabela. Ficou o motor dos planos (`payment_plans`: as assinaturas ativas vivem nele e continuam cobrando) com a regra dos contratos, nas duas formas de cobrar descritas em 4.4. Os contratos antigos que não terminaram foram trazidos **em rascunho**, com as linhas — eles nunca cobraram, e ativar sozinho cobraria em dobro quem a firma já faturava à mão; ativar é um a um e começa na primeira data da régua a partir de hoje. A tabela antiga ficou congelada como rastro. Junto: o débito trimestral era **mensal** no Stripe (cobrava o valor do trimestre todo mês) e passou a seguir o intervalo e a régua do contrato; a receita recorrente mensal passou a dividir pelo intervalo; o contrato do DocuSign deixou de prometer débito no contrato por fatura e passou a escapar o que vem da URL e do banco (o cargo de quem assina vinha da URL direto para o documento). Parcelamento antigo sem fatura (do módulo de orçamentos que saiu) aparece em Parcelamentos, e a proposta que nunca começou se desfaz ali. Migrações: `sql/contrato-unico-v1.sql` e `-funcao-v1.sql`, nessa ordem, depois de `sql/equipe-unica-v1.sql`.
+
 **A construir:**
-- **Gerar a fatura do contrato recorrente.** Hoje o contrato é registro, não cobrança. Decidir junto com a duplicação Plans × `recurring_plans` abaixo: ou a rotina agendada emite a fatura do mês a partir de `recurring_plans`, ou os contratos migram para `payment_plans`, que já tem assinatura no Stripe, webhook e baixa.
+- Editar a franquia do bookkeeping (transações incluídas e excedente) num contrato ativo — hoje é encerrar e criar outro.
 
 **Decisões pendentes:**
-- Módulo Plans × tabela `recurring_plans` (duplicação a resolver)
 - Domínio próprio `portal.peaceontax.com`
 
 ---
@@ -722,7 +730,7 @@ app/
     signatures/       DocuSign
     stripe/webhook    entrada única dos eventos de pagamento
     clients/ firm/    cadastro e equipe
-components/           telas reutilizáveis (BookkeepingTab, PlansTab, ProfileEditor…)
+components/           telas reutilizáveis (BookkeepingTab, ContratoItens, ProfileEditor…)
 lib/                  motor de regras, permissões, SMS, contrato, integrações
 middleware.ts         controle de acesso por rota
 ```

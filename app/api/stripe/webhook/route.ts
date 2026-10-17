@@ -45,6 +45,7 @@ import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
 import { filtroDeRecebimento } from '@/lib/recebimento-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
+import { linhasDaMensalidade, rotuloDoPeriodo } from '@/lib/contrato-unico'
 
 export const runtime = 'nodejs'
 
@@ -1223,7 +1224,9 @@ async function garantirFaturaDaMensalidade(
 ): Promise<{ id: string; number: string; total: number; paid_total: number; mesRef: string; recemCriada: boolean } | null> {
   const d = dataDaCompetencia(invoice)
   const competencia = `${d.toISOString().slice(0, 7)}-01`
-  const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  // O período que a cobrança cobre: no trimestral, "out a dez de 2026" — só
+  // o mês fazia o cliente ler o trimestre como mensalidade.
+  const mesRef = rotuloDoPeriodo(competencia, plan.billing_interval)
 
   const { data: porStripe } = await db.from('invoices')
     .select('id, number, total, paid_total').eq('stripe_invoice', invoice.id).maybeSingle()
@@ -1239,6 +1242,16 @@ async function garantirFaturaDaMensalidade(
   const valor = round2(((invoice.amount_due || invoice.amount_paid) ?? 0) / 100)
   if (valor <= 0) return null
 
+  // As linhas do contrato, quando a conta delas bate AO CENTAVO com o que o
+  // Stripe cobrou (linhasDaMensalidade). Não bateu — mudança no meio do
+  // ciclo, ajuste feito no painel do Stripe — vale o cobrado, numa linha só:
+  // a fatura nunca diz um valor que não foi o debitado. Consulta que falha
+  // (ou tabela que ainda não existe) também cai na linha só: a fatura do mês
+  // não pode deixar de nascer por causa do detalhe.
+  const { data: linhasDoPlano } = await db.from('payment_plan_items')
+    .select('service_id, description, quantity, unit_price, sort_order').eq('plan_id', plan.id).order('sort_order')
+  const detalhe = linhasDaMensalidade(linhasDoPlano || [], plan.discount, valor)
+
   const { data: num, error: numErr } = await db.rpc('next_invoice_number', { p_kind: 'invoice' })
   if (numErr || !num) { console.error('Numeração da mensalidade:', numErr); return null }
 
@@ -1250,10 +1263,10 @@ async function garantirFaturaDaMensalidade(
     status: 'sent',
     issue_date: emissaoDaInvoice(invoice),
     due_date: vencimentoDaInvoice(invoice),
-    subtotal: valor, discount: 0, total: valor,
+    subtotal: detalhe ? detalhe.bruto : valor, discount: detalhe ? detalhe.desconto : 0, total: valor,
     payment_plan: 'full',
     expected_method: null,
-    notes: 'Gerada automaticamente pelo contrato recorrente.',
+    notes: detalhe ? `Contrato recorrente — ${mesRef}. Gerada automaticamente.` : 'Gerada automaticamente pelo contrato recorrente.',
     plan_id: plan.id,
     competencia,
     stripe_invoice: invoice.id,
@@ -1261,10 +1274,12 @@ async function garantirFaturaDaMensalidade(
   }).select('id, number, total, paid_total').single()
   if (invErr || !inv) { console.error('Fatura da mensalidade:', invErr); return null }
 
-  const { error: itErr } = await db.from('invoice_items').insert({
-    invoice_id: inv.id, service_id: null, description: descricao,
-    qty: 1, unit_price: valor, amount: valor, sort: 0,
-  })
+  const { error: itErr } = await db.from('invoice_items').insert(detalhe
+    ? detalhe.linhas.map((l, sort) => ({
+        invoice_id: inv.id, service_id: l.service_id, description: l.description,
+        qty: l.qty, unit_price: l.unit_price, amount: l.amount, sort,
+      }))
+    : [{ invoice_id: inv.id, service_id: null, description: descricao, qty: 1, unit_price: valor, amount: valor, sort: 0 }])
   if (itErr) {
     await db.from('invoices').delete().eq('id', inv.id)
     console.error('Item da mensalidade:', itErr)

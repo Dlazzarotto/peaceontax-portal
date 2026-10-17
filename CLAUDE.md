@@ -453,57 +453,82 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
-- **Contrato recorrente: editar e encerrar pedem senha, motivo e trilha —
-  e a aba parou de prometer o que o sistema não faz**
-  (`lib/contrato-recorrente.ts`, `/api/billing/recurring`, migração
-  `sql/contrato-recorrente-auditoria-v1.sql`). A aba só tinha
-  Pausar/Reativar, e o PATCH que já aceitava valor, dia e cobrança
-  automática **não pedia senha, não pedia motivo, não deixava rastro e não
-  conferia de qual cliente era o contrato** — `isStaff` diz QUEM chama, não
-  QUAL cliente, e bastava mandar o `id` de um contrato de empresa. Editar
-  uma FATURA, documento único, exige as três primeiras; o contrato exigia
-  zero. A fatura erra uma vez, **o contrato erra todo mês**.
-  **Encerrar ≠ pausar.** Pausar é reversível e não mexe no acordo: segue em
-  um clique, mas vai para a trilha. Encerrar grava `end_date`, desliga e
-  **não volta** — `situacaoDoContrato` olha o `end_date` ANTES do `active`,
-  senão um contrato acabado apareceria como "pausado", com botão de
-  Reativar, ressuscitando um acordo que as duas partes desfizeram.
-  **A trilha vem ANTES da alteração** (`recurring_plan_audit`): se o insert
-  falhar, a edição é RECUSADA e a mensagem diz qual migração falta. Mudança
-  sem rastro é pior que mudança não feita (princípio 2). O preço é uma linha
-  de trilha sobrando se o update seguinte falhar — esse lado é o barato.
-  **A próxima cobrança tinha dois defeitos mudos**, agora em módulo puro com
-  59 casos: somava **um mês sempre**, qualquer que fosse o intervalo (o
-  trimestral tinha data de mensal), e usava o dia do **servidor em UTC**, não
-  o do escritório — o mesmo defeito já corrigido na lista de faturas e no
-  relatório. A régua é **ancorada no início**, não em hoje: trimestral que
-  começou em 10/jan cobra jan · abr · jul · out; recalcular a partir de hoje
-  daria outra régua a cada edição e a data andaria sozinha. Mexer em dia,
-  início ou intervalo **recalcula `next_run`** — trocar o dia deixava a
-  próxima data na antiga, em silêncio.
-  Três armadilhas na comparação do que mudou, cada uma marcando "mudou" sem
-  nada ter mudado e enchendo a trilha de ruído: `350` × `'350.00'`,
-  `auto_charge` nulo × `false`, e `date` devolvido com hora. A quarta é o
-  oposto: **campo de data VAZIO é "não mexi nisso", não "data inválida"** —
-  contrato sem `start_date` fazia quem só queria trocar o VALOR levar um erro
-  falando de data.
-  **E a aba mentia.** O texto dizia "Gera fatura sozinho no dia escolhido".
-  **Nada no repositório lê `recurring_plans`** além da própria rota: não há
-  cron para ela (o único é o aviso de cobrança), não há geração de fatura,
-  não há Stripe — e o relatório de receita recorrente lê `payment_plans`,
-  outra tabela. Como há pelo menos um gatilho nessa tabela que **só existe no
-  banco** (o que recusa auto-cobrança sem cartão), não dá para afirmar daqui
-  que não exista um `pg_cron`; então a tela não afirma nada: ela marca
-  **⚠ a data passou e nada foi gerado** quando `next_run` ficou para trás com
-  o contrato ativo. É auto-evidente — quem gerasse a fatura teria movido o
-  `next_run`. Gerar a fatura de verdade é decisão aberta, junto com a
-  duplicação Plans × `recurring_plans`.
-  O GET passou a filtrar os contratos por `clientesOcultos`: filtrava a lista
-  de CLIENTES e não a de contratos, então o nome das empresas (e o caixa da
-  firma) aparecia para quem não pode abri-las.
+- **O contrato recorrente tem UM cadastro: `payment_plans` — e ele COBRA**
+  (`lib/contrato-unico.ts`, `lib/emissao-contratos.ts`, `/api/billing/contratos`,
+  `/api/cron/contratos`, migrações `sql/contrato-unico-v1.sql` e
+  `-funcao-v1.sql`). Decisão do sócio: "juntar os planos com os contratos
+  recorrentes e eliminar os planos". Eram dois cadastros do mesmo acordo: os
+  **Planos** da ficha do cliente (`payment_plans`) cobravam — assinatura no
+  Stripe, webhook, fatura do mês — mas eram um valor só e sempre mensais; os
+  **Contratos recorrentes** do Financeiro (`recurring_plans`) tinham a regra
+  certa — itens, desconto, prazo, intervalo, senha e trilha — e **nunca
+  cobraram nada**: nenhuma rotina lia a tabela, e a aba marcava "⚠ a data
+  passou e nada foi gerado" porque era verdade. Ficou o MOTOR dos planos (as
+  assinaturas ativas vivem nele e continuam cobrando, decisão do sócio) com a
+  REGRA dos contratos. A aba "📆 Planos" da ficha, `/api/plans` (e `checkout`,
+  `pause`) e `/api/billing/recurring` saíram; a ficha mostra os contratos do
+  cliente só para leitura (`components/ContratosDoCliente.tsx`) e aponta
+  para o Financeiro. `recurring_plans` e `recurring_plan_items` ficam
+  **congeladas** (a service role perdeu insert/update/delete): rastro, não
+  cadastro.
+  **Duas formas de cobrar, e a forma não muda** (decisão do sócio: mudar
+  intervalo ou forma é encerrar e criar outro):
+  `debito` — a assinatura do Stripe debita no intervalo do contrato
+  (`recorrenciaDoStripe`: o trimestral era MENSAL no Stripe, cobrando o valor
+  do trimestre todo mês) e ancorada na RÉGUA do contrato (`ancoraDoDebito`,
+  com as 48 h do Stripe); a fatura nasce no webhook e sai com os ITENS do
+  contrato **só quando a conta deles bate ao centavo com o debitado**
+  (`linhasDaMensalidade`), senão numa linha só — a fatura nunca diz um valor
+  que não foi o cobrado. `fatura` — a rotina diária (`/api/cron/contratos`,
+  11:00 UTC, `CRON_SECRET`) emite a fatura do período no dia, com vencimento
+  em N dias, avisa o cliente (portal e e-mail, resultado na trilha) e anda a
+  régua **UM passo** — se ficou dias parada, põe a régua em dia um período por
+  rodada, sem pular nenhum. Contrato por fatura **não** recebe "vamos
+  debitar" do aviso de três dias, não gera link de débito (`criarSessaoDoPlano`
+  recusa) e, ao ser enviado para assinar, **não** vira "aguardando o
+  cadastro" — fica rascunho até alguém ATIVAR. E o texto do contrato do
+  DocuSign diz isso: no contrato por fatura não há "autorização de débito".
+  **Uma fatura por contrato e por período**: a rotina procura o par (plano,
+  competência) ANTES de numerar, o índice único `invoices_plano_competencia_key`
+  segura a corrida de duas rodadas (23505 = outra já emitiu), e a régua anda
+  com a condição do valor lido (`next_charge_date = data`). Fatura cujos itens
+  o banco recusou é desfeita e a régua fica — amanhã tenta de novo. O
+  contrato que chegou ao fim se encerra NO DIA DO FIM, não na cobrança
+  seguinte; período vencido antes do fim ainda se cobra. Defeito do contrato
+  (valor gravado que não bate com as linhas, sem linha, ativo sem data) NÃO
+  emite e vira alerta à equipe, um por contrato por dia. 38 casos em
+  `testes/emissao-contratos.mts`, com banco falso — a rotina recebe o aviso
+  por parâmetro para o teste não carregar e-mail.
+  **O valor é o de CADA COBRANÇA** (`monthly_amount`, o nome ficou): num
+  trimestral, o do trimestre. A receita recorrente MENSAL divide pelo
+  intervalo (`valorMensalEquivalente`) no relatório e no painel.
+  **Contrato trazido nasce RASCUNHO.** A migração copia cada contrato antigo
+  que não terminou para `payment_plans`, com as linhas, em rascunho: eles
+  nunca cobraram, e ativar sozinho cobraria em dobro quem a firma já vinha
+  faturando à mão. Ativar é um a um, e a primeira cobrança é a primeira data
+  da régua **a partir de hoje** (`cobrancaAPartirDe`) — nunca janeiro a
+  setembro de uma vez. A lista final da migração marca o rascunho trazido
+  para um cliente que já tem plano ativo de mesmo valor ("REVISAR: duplo").
+  **Editar vale da PRÓXIMA cobrança, com senha, motivo e trilha** (decisão do
+  sócio: valor, itens e desconto). A trilha (`plan_audit`) vem ANTES; no
+  débito ativo o preço da assinatura muda no Stripe ANTES de gravar as linhas,
+  sem proporcional, e volta se gravar falhar; com o link de cadastro na mão do
+  cliente, o link deixa de valer (ele autorizaria o valor velho). Encerrar
+  pede senha e motivo e, no débito, o Stripe TEM de cancelar — a rota antiga
+  engolia a recusa e o cliente seguia sendo debitado de um contrato
+  "encerrado". **Encerrar ≠ pausar**: pausar é reversível, um clique, na
+  trilha; no débito usa `pause_collection: void`; retomar por fatura refaz a
+  régua a partir de hoje (o período parado não se cobra).
+  Continua valendo do módulo antigo: régua **ancorada no início** (trimestral
+  de 10/jan cobra jan · abr · jul · out), dia do **escritório** e não do
+  servidor, dia só até 28. **Não testado daqui**: as chamadas ao Stripe
+  (preço, pausa, cancelamento) — o container não tem chave; a lógica em volta
+  tem teste.
 - **O contrato recorrente é o MOLDE DE UMA FATURA: itens, desconto, prazo**
-  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`, migrações
-  `sql/contrato-recorrente-itens-v1.sql` e `-funcao-v1.sql`). Era uma
+  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`; as linhas
+  moram em `payment_plan_items` e se trocam por `salvar_itens_do_plano`,
+  `sql/contrato-unico-funcao-v1.sql` — a irmã antiga, `salvar_itens_do_contrato`,
+  ficou com a tabela congelada). Era uma
   descrição e um valor — não dava para escrever o acordo real
   ("Bookkeeping 350 + Payroll 120, menos 50, vence 15 dias depois").
   **`amount` e `description` passaram a ser DERIVADOS** das linhas, e a
@@ -520,7 +545,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   escreve (Net 15, Net 30). `vencimentoDaCobranca` soma ao MEIO-DIA UTC —
   somar dias em cima da meia-noite escorrega um dia nas viradas de horário
   de verão.
-  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_contrato`):
+  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_plano`):
   apagar e inserir em duas idas deixaria o contrato SEM NENHUMA LINHA se a
   segunda falhasse — o acordo apagado por uma falha de rede. **E o total é
   recalculado lá dentro**: a tela manda as linhas, número vindo do navegador
@@ -593,7 +618,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `/api/clients/profile` (a porta do cadastro) e `/api/clients/access` (o
   acesso ao portal): bastava passar o id de uma empresa. Também
   `bookkeeping/rules` (que diz o plano de contas e os fornecedores da
-  empresa), `billing/invoices`, `billing/recurring`, `firm/messages`,
+  empresa), `billing/invoices`, `billing/recurring` (hoje `billing/contratos`), `firm/messages`,
   `send-invite` e `fase1/apply-template`. Resumo que AGREGA a carteira não
   pergunta por um cliente: `bookkeeping/overview` e `bookkeeping/alerts` usam
   `empresasVedadas` (`lib/api-auth.ts`), senão o nome e o volume das empresas
@@ -858,8 +883,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   errado, não incompleto) e a edição de fatura (abre sem itens, e salvar dali
   apaga o que estava).
 - **A lista de clientes da fatura e do contrato obedece ao escopo por tipo.**
-  `GET /api/billing/invoices` e `GET /api/billing/recurring` filtram por
-  `empresasVedadas`. O POST já recusava empresa para quem não tem
+  `GET /api/billing/invoices` e `GET /api/billing/contratos` filtram por
+  `clientesOcultos` — e a lista de Parcelamentos (`/api/billing/installment-plan`)
+  também, que mostrava a carteira inteira a qualquer um da equipe. O POST já recusava empresa para quem não tem
   `verEmpresas`; mostrar o nome no seletor e recusar no salvar seria oferecer
   o que não se pode fazer — e a lista de empresas é o que o escopo esconde.
 - **E-mail que não sai diz POR QUE, e o resultado nunca se descarta.**
@@ -1106,15 +1132,14 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 app/dashboard/       área da equipe (clientes, bookkeeping, financeiro, agenda, atendimento)
 app/portal/          área do cliente
 app/api/bookkeeping/ importação (Plaid, CSV, PDF, QuickBooks), regras, relatórios, conciliação
-app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento, relatórios (só owner)
-app/api/plans/       contratos recorrentes
+app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento, contratos, relatórios (só owner)
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)
 app/api/portal/      rotas do cliente: billing (pagar), plan-checkout (débito), contract-sign/return (assinar)
 app/api/stripe/webhook   entrada única dos eventos de pagamento
 app/api/whatsapp/    webhook, fila, conversa, bot
 app/api/sms/webhook  STOP/START e SMS recebidos (Twilio)
-app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes)
-components/          BookkeepingTab, PlansTab, ReconcileTab, SignaturesTab…
+app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes; fatura dos contratos)
+components/          BookkeepingTab, ContratoItens, ReconcileTab, SignaturesTab…
 lib/                 motor de regras, permissões, SMS, contrato, integrações
 sql/ e *.sql         migrações rodadas à mão no SQL Editor do Supabase (idempotentes)
 middleware.ts        controle de acesso por rota
@@ -1122,8 +1147,12 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Módulo Plans × tabela `recurring_plans`: duplicação conhecida; o sócio já
-  decidiu juntar (em andamento).
+- **Contrato recorrente, o que ficou de fora de propósito:** a franquia do
+  bookkeeping (transações incluídas e excedente) não se edita — é termo do
+  contrato, encerrar e criar outro; e parcelamento ANTIGO, sem fatura (do
+  módulo de orçamentos que saiu), que já começou a cobrar não se cancela pelo
+  sistema — não há fatura onde o saldo fique em aberto. A proposta antiga que
+  nunca começou se desfaz em Financeiro → Parcelamentos.
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,

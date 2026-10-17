@@ -36,6 +36,9 @@ export const DEPENDE_DE = {
   // Liga cada login da FIRMA à equipe, e "da firma" é o papel em app_metadata
   // -- antes da migração do papel, ninguém seria da firma e ninguém entraria.
   'sql/equipe-unica-v1.sql':                 ['sql/papel-no-app-metadata-v1.sql'],
+  // O contrato trazido sem autor recebe um socio, e o socio sai de team_members.
+  'sql/contrato-unico-v1.sql':               ['sql/equipe-unica-v1.sql'],
+  'sql/contrato-unico-funcao-v1.sql':        ['sql/contrato-unico-v1.sql'],
 }
 
 /**

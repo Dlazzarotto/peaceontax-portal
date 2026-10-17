@@ -108,6 +108,17 @@ export async function GET() {
   const { data: planosDosContratos } = planIds.length
     ? await db.from('payment_plans').select('id, kind, description, total, monthly_amount, due_day, installments, installment_amount').in('id', planIds)
     : { data: [] as any[] }
+
+  // O intervalo de cada contrato ("/mês", "/trimestre") numa consulta À PARTE
+  // e tolerante: a coluna nasce em sql/contrato-unico-v1.sql, e o portal do
+  // cliente não pode cair se o código subir antes da migração. Sem ela,
+  // tudo é mensal — que é o que tudo era antes dela.
+  const idsDosPlanos = [...new Set([...(planos || []), ...(planosDosContratos || [])].map((p: any) => p.id))]
+  const { data: intervalos } = idsDosPlanos.length
+    ? await db.from('payment_plans').select('id, billing_interval').in('id', idsDosPlanos)
+    : { data: [] as any[] }
+  const intervaloDe = new Map((intervalos || []).map((x: any) => [x.id, x.billing_interval]))
+  for (const p of [...(planos || []), ...(planosDosContratos || [])] as any[]) p.billing_interval = intervaloDe.get(p.id) || 'monthly'
   const planoPorId = new Map((planosDosContratos || []).map((p: any) => [p.id, p]))
 
   // Contrato que o cliente já assinou (a firma assina depois; o envelope ainda

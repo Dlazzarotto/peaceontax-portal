@@ -1,6 +1,6 @@
 'use client'
 import ProfileEditor from '@/components/ProfileEditor'
-import PlansTab from '@/components/PlansTab'
+import ContratosDoCliente from '@/components/ContratosDoCliente'
 import SignaturesTab from '@/components/SignaturesTab'
 import BookkeepingTab from '@/components/BookkeepingTab'
 import { useState, useEffect, useRef } from 'react'
@@ -128,7 +128,7 @@ export default function ClientDetailPage() {
           ['documents', `📁 Documents (${docs.length})`],
           ['messages',  `💬 Messages (${messages.length})`],
           ['quotes',    '💰 Orçamentos e faturas'],
-          ['plans',     '📆 Planos'],
+          ['plans',     '📆 Contratos'],
           ['signatures','✍️ Assinaturas'],
           ['bookkeeping','📊 Bookkeeping'],
           ['profile',   '👤 Profile'],
@@ -289,9 +289,9 @@ export default function ClientDetailPage() {
         </div>
       )}
 
-      {/* PLANS TAB */}
+      {/* CONTRATOS — moram no Financeiro; aqui só aparecem (os Planos saíram) */}
       {tab==='plans' && (
-        <PlansTab clientId={id as string} clientName={client.name} />
+        <ContratosDoCliente clientId={id as string} />
       )}
 
       {/* BOOKKEEPING TAB */}

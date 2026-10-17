@@ -8,6 +8,7 @@ import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { decidirValorDaCobranca } from '@/lib/cobranca-balcao'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
+import { porPeriodo } from '@/lib/contrato-unico'
 import { ROTULO_DA_SITUACAO, type SituacaoFiltro } from '@/lib/escopo-faturas'
 import { formatar as formatarCodigo, formatoValido as codigoBemFormado,
          relogio, segundosRestantes, MINUTOS_DE_VIDA } from '@/lib/codigo-autorizacao'
@@ -137,17 +138,25 @@ export default function BillingPage() {
   const [fPrimeiroVenc, setFPrimeiroVenc] = useState('')
   const [editandoId, setEditandoId] = useState<string | null>(null)
   const [ePass, setEPass] = useState(''); const [eMotivo, setEMotivo] = useState('')
-  // contratos recorrentes
+  // contratos recorrentes — UM cadastro só (payment_plans): os Planos da
+  // ficha do cliente e os Contratos do Financeiro eram o mesmo acordo em dois
+  // lugares (decisão do sócio: juntar e eliminar os Planos).
   const [planos, setPlanos] = useState<any[]>([])
   const [planosDados, setPlanosDados] = useState<any>({})
-  // `cDesc` e `cValor` saíram: o serviço e o valor vivem nas LINHAS do
-  // contrato, e o total é derivado delas.
+  // O serviço e o valor vivem nas LINHAS do contrato; o total é derivado delas.
   const [cCliente, setCCliente] = useState(''); const [cDia, setCDia] = useState('5')
-  const [cAuto, setCAuto] = useState(false)
+  // Como cobrar não tem padrão: débito e fatura são acordos diferentes com o
+  // cliente, e um padrão errado passaria calado.
+  const [cForma, setCForma] = useState<'' | 'fatura' | 'debito'>('')
+  const [cKind, setCKind] = useState<'monthly' | 'bookkeeping'>('monthly')
   const [cIntervalo, setCIntervalo] = useState<'monthly' | 'quarterly' | 'annual'>('monthly')
-  // O contrato virou o molde de uma fatura: linhas, desconto e prazo.
+  const [cInicio, setCInicio] = useState('')
+  const [cTx, setCTx] = useState('100'); const [cExcedente, setCExcedente] = useState('1.25')
+  // O contrato é o molde de uma fatura: linhas, desconto e prazo.
   const [cItens, setCItens] = useState<LinhaDoContrato[]>([{ ...LINHA_VAZIA }])
   const [cDesconto, setCDesconto] = useState('0'); const [cPrazo, setCPrazo] = useState('0')
+  // ?aba=contratos&cliente=<id> (atalho da ficha do cliente): a lista abre só dele.
+  const [fContratoCliente, setFContratoCliente] = useState('')
   // Quem pode mexer em contrato vem PRONTO do servidor (`podeContrato`): a
   // tela não recalcula a regra, senão botão e trava divergem -- foi a falha
   // de método que custou mais caro neste projeto.
@@ -156,7 +165,6 @@ export default function BillingPage() {
   // catálogo de serviços) só existe para a linha aberta — a lição da tela de
   // fornecedores, onde um <select> por linha derrubava a aba.
   const [editando, setEditando] = useState<any>(null)
-  const [edForm, setEdForm] = useState<any>({})
   const [edMotivo, setEdMotivo] = useState(''); const [edSenha, setEdSenha] = useState('')
   const [edItens, setEdItens] = useState<LinhaDoContrato[]>([{ ...LINHA_VAZIA }])
   const [edDesconto, setEdDesconto] = useState('0'); const [edPrazo, setEdPrazo] = useState('0')
@@ -254,11 +262,14 @@ export default function BillingPage() {
     load()
   }
   const loadPlanos = async () => {
-    const d = await jsonSeguro(await fetch('/api/billing/recurring'))
+    const d = await jsonSeguro(await fetch('/api/billing/contratos'))
     // O erro vem PRIMEIRO: lista vazia na tela é uma afirmação ("não há
     // contrato"), e consulta que falha não pode virar afirmação.
     if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
-    if (d?.plans) { setPlanos(d.plans); setPlanosDados(d) }
+    if (d?.contratos) {
+      setPlanos(d.contratos); setPlanosDados(d)
+      if (!cInicio && d.hoje) setCInicio(d.hoje)
+    }
     else setMsg('⚠️ Resposta inesperada ao carregar os contratos.')
   }
   // O período padrão é o dia da FIRMA, que só o servidor sabe (America/
@@ -281,6 +292,12 @@ export default function BillingPage() {
         if (cli) setFCliente(cli)
       }
       if (sp.get('antigos') === '1') setVerAntigos(true)
+      if (sp.get('aba') === 'parcelamentos') setAba('parcelamentos')
+      if (sp.get('aba') === 'contratos') {
+        setAba('contratos')
+        const cli = sp.get('cliente')
+        if (cli) { setFContratoCliente(cli); setCCliente(cli) }
+      }
     } catch { /* sem URL legível, a tela abre como sempre */ }
   }, [])
   const loadAntigos = async () => {
@@ -409,7 +426,18 @@ export default function BillingPage() {
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
-    if (d?.error) { setMsg(`⚠️ ${d.error}`); return }
+    if (d?.error) {
+      setMsg(`⚠️ ${d.error}`)
+      // A fatura já tem plano: em vez de mandar procurar o botão em outra
+      // linha, abre o cancelamento aqui. Era aqui que a equipe travava. (Este
+      // trecho morava no criarContrato, que nunca recebe esta recusa — e a
+      // conferência, que só olhava o ARQUIVO, passava.)
+      if (d?.planoExistente) {
+        const pl = (pcDados.plans || []).find((x: any) => x.id === d.planoExistente.id)
+        if (pl) { setPcCancelar(pl); setPcMotivo(''); setPcSenha('') }
+      }
+      return
+    }
     setMsg(`✓ ${d.message}`)
     if (d.url) window.open(d.url, '_blank')
     setPcFatura(''); setPcEntrada('0'); setPcPrimeira('')
@@ -418,40 +446,70 @@ export default function BillingPage() {
 
   const criarContrato = async () => {
     if (!cCliente) { setMsg('⚠️ Escolha o cliente.'); return }
+    if (!cForma) { setMsg('⚠️ Escolha como cobrar: fatura do sistema ou débito automático.'); return }
     setBusy(true); setMsg('')
-    const d = await fetch('/api/billing/recurring', {
+    const d = await fetch('/api/billing/contratos', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        clientId: cCliente, itens: cItens, desconto: Number(cDesconto) || 0,
-        dueDays: Number(cPrazo) || 0,
-        interval: cIntervalo, dayOfMonth: Number(cDia), autoCharge: cAuto,
+        clientId: cCliente, kind: cKind, forma: cForma,
+        // Bookkeeping é mensal: a franquia de transações é por mês.
+        interval: cKind === 'bookkeeping' ? 'monthly' : cIntervalo,
+        dayOfMonth: Number(cDia), startDate: cInicio || undefined,
+        itens: cItens, desconto: Number(cDesconto) || 0,
+        dueDays: cForma === 'fatura' ? Number(cPrazo) || 0 : 0,
+        includedTransactions: cKind === 'bookkeeping' ? Number(cTx) : undefined,
+        overageRate: cKind === 'bookkeeping' ? Number(cExcedente) : undefined,
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
-    if (!d?.ok) {
-      setMsg(`⚠️ ${d?.error}`)
-      // A fatura já tem plano: em vez de mandar procurar o botão em outra
-      // aba, abre o cancelamento aqui. Era aqui que a equipe travava.
-      if (d?.planoExistente) {
-        const pl = (pcDados.plans || []).find((x: any) => x.id === d.planoExistente.id)
-        if (pl) { setPcCancelar(pl); setPcMotivo(''); setPcSenha('') }
-      }
-      return
-    }
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
     setCItens([{ ...LINHA_VAZIA }]); setCDesconto('0'); setCPrazo('0')
     loadPlanos()
   }
 
-  const alternarContrato = async (pl: any) => {
+  // Ativar (fatura), link do débito, pausar e retomar: um clique, e a trilha
+  // fica no plano. Editar e encerrar têm modal próprio (senha e motivo).
+  const acaoNoContrato = async (pl: any, action: 'ativar' | 'link' | 'pausar' | 'retomar') => {
     setBusy(true); setMsg('')
-    const d = await fetch('/api/billing/recurring', {
+    const d = await fetch('/api/billing/contratos', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: pl.id, action: pl.active ? 'pause' : 'resume' }),
+      body: JSON.stringify({ id: pl.id, action }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
-    setMsg(`✓ ${d.message}`); loadPlanos()
+    if (d.url) {
+      // O link vale 24 horas: copiado na hora, para ir direto ao cliente.
+      try { await navigator.clipboard.writeText(d.url) } catch { /* sem área de transferência, segue o aviso */ }
+      window.open(d.url, '_blank')
+    }
+    setMsg(`✓ ${d.message}${d.url ? ' (copiado)' : ''}`)
+    loadPlanos()
+  }
+
+  // Contrato para assinatura (DocuSign). Empresa exige o cargo de quem assina.
+  const enviarContratoParaAssinar = async (pl: any) => {
+    const cli = (planosDados.clients || []).find((c: any) => c.id === pl.client_id)
+    let signerTitle: string | undefined
+    if (cli?.tipo === 'business') {
+      const t = prompt('Cargo de quem assina pela empresa (ex.: President, Member):')
+      if (!t?.trim()) { setMsg('⚠️ Cliente empresa: o cargo de quem assina é obrigatório.'); return }
+      signerTitle = t.trim()
+    }
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/signatures/contract', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planId: pl.id, signerTitle }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    // O motivo do e-mail vale para as DUAS formas: entre parênteses, senão o
+    // `+` liga antes do `?:` e o motivo só aparecia no débito.
+    setMsg((pl.collection_method === 'fatura'
+      ? '✓ Contrato enviado: o cliente assina no portal (Pagamentos); você assina pelo e-mail do DocuSign. Ativar continua sendo com você — é a ativação que põe a rotina a emitir.'
+      : '✓ Contrato enviado: o cliente assina no portal (Pagamentos) e cadastra o débito em seguida; você assina pelo e-mail do DocuSign.')
+      + (d.email === false && d.emailMotivo ? ` E-mail ao cliente não saiu: ${d.emailMotivo}.` : ''))
+    loadPlanos()
   }
 
   // Abrir a edição é só carregar o que está gravado: o formulário começa
@@ -461,49 +519,40 @@ export default function BillingPage() {
     setEdItens((pl.itens || []).length
       ? pl.itens.map((i: any) => ({
           description: i.description || '', quantity: Number(i.quantity) || 1,
-          unit_price: Number(i.unit_price) || 0,
+          unit_price: Number(i.unit_price) || 0, serviceId: i.service_id || null,
         }))
-      // Contrato de antes da migração: abre com uma linha feita do que
-      // existia, em vez de abrir vazio e apagar o acordo ao salvar.
-      : [{ description: pl.description || 'Serviço', quantity: 1, unit_price: Number(pl.amount) || 0 }])
+      // Sem linha (não deveria acontecer depois da migração): abre com uma
+      // feita do que existe, em vez de abrir vazio e apagar o acordo ao salvar.
+      : [{ description: pl.description || 'Serviço', quantity: 1, unit_price: Number(pl.monthly_amount) || 0 }])
     setEdDesconto(String(Number(pl.discount) || 0))
     setEdPrazo(String(Number(pl.due_days) || 0))
-    setEdForm({
-      interval: pl.interval || 'monthly',
-      dayOfMonth: String(pl.day_of_month ?? 1),
-      startDate: String(pl.start_date || '').slice(0, 10),
-      autoCharge: !!pl.auto_charge,
-    })
     setEdMotivo(''); setEdSenha(''); setMsg('')
   }
 
   const salvarEdicaoContrato = async () => {
     if (!editando) return
     setBusy(true); setMsg('')
-    const d = await fetch('/api/billing/recurring', {
+    const d = await fetch('/api/billing/contratos', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        id: editando.id, action: 'edit',
-        itens: edItens, desconto: Number(edDesconto) || 0, dueDays: Number(edPrazo) || 0,
-        interval: edForm.interval, dayOfMonth: Number(edForm.dayOfMonth),
-        startDate: edForm.startDate, autoCharge: !!edForm.autoCharge,
+        id: editando.id, action: 'editar',
+        itens: edItens, desconto: Number(edDesconto) || 0,
+        ...(editando.collection_method === 'fatura' ? { dueDays: Number(edPrazo) || 0 } : {}),
         motivo: edMotivo, password: edSenha,
       }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false); setEdSenha('')
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
-    // Dizer O QUE mudou e para quando: 'atualizado' sozinho não distingue
-    // o que foi feito do que não foi.
-    setMsg(`✓ ${d.message} ${money(d.total)} · próxima cobrança ${dataUS(d.proxima)}.`)
+    setMsg(`✓ ${d.message}`)
     setEditando(null); loadPlanos()
   }
 
   const encerrarContrato = async () => {
     if (!encerrando) return
     setBusy(true); setMsg('')
-    const d = await fetch('/api/billing/recurring', {
+    const d = await fetch('/api/billing/contratos', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: encerrando.id, action: 'end', motivo: encMotivo, password: encSenha }),
+      body: JSON.stringify({ id: encerrando.id, action: 'encerrar', motivo: encMotivo, password: encSenha }),
     }).then(jsonSeguro).catch(e => ({ error: String(e) }))
     setBusy(false); setEncSenha('')
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
@@ -1348,17 +1397,33 @@ export default function BillingPage() {
                 Novo contrato
               </h2>
               <p style={{ fontSize: 13, color: '#6A7A9A', margin: '0 0 12px' }}>
-                O acordo com o cliente: o quê, quanto, com que frequência e em que dia.
-                A coluna <strong>Próxima</strong> avisa quando a data chega. Se a data passar
-                e nada tiver sido faturado, a linha marca <strong>⚠ a data passou</strong> —
-                confira antes de fechar o mês.
+                O acordo com o cliente: o quê, quanto, com que frequência, em que dia e <strong>como cobrar</strong>.
+                {' '}<strong>Fatura</strong>: a rotina diária emite a fatura do período no dia, com vencimento em N dias,
+                e o cliente paga pelo portal. <strong>Débito</strong>: o cliente assina e cadastra o débito pelo link,
+                e o Stripe cobra no dia. Nasce em rascunho: nada é cobrado até você ativar (fatura) ou o
+                cliente cadastrar o débito. Intervalo e forma não mudam depois — mudar é encerrar e criar outro.
               </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 <select value={cCliente} onChange={e => setCCliente(e.target.value)} style={{ ...inp, flex: '2 1 220px', cursor: 'pointer' }}>
                   <option value="">— cliente —</option>
-                  {(dados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                  {(planosDados.clients || []).map((c: any) => <option key={c.id} value={c.id}>{c.nome}</option>)}
                 </select>
-                <select value={cIntervalo} onChange={e => setCIntervalo(e.target.value as any)}
+                <select value={cForma} onChange={e => setCForma(e.target.value as any)}
+                  style={{ ...inp, width: 230, cursor: 'pointer' }}>
+                  <option value="">— como cobrar —</option>
+                  <option value="fatura">Fatura do sistema (paga pelo portal)</option>
+                  <option value="debito">Débito automático (Stripe)</option>
+                </select>
+                <select value={cKind} onChange={e => setCKind(e.target.value as any)}
+                  style={{ ...inp, width: 190, cursor: 'pointer' }}>
+                  <option value="monthly">Serviço recorrente</option>
+                  <option value="bookkeeping">Bookkeeping (franquia)</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+                <select value={cKind === 'bookkeeping' ? 'monthly' : cIntervalo} disabled={cKind === 'bookkeeping'}
+                  onChange={e => setCIntervalo(e.target.value as any)}
+                  title={cKind === 'bookkeeping' ? 'Bookkeeping é mensal: a franquia de transações é por mês.' : ''}
                   style={{ ...inp, width: 140, cursor: 'pointer' }}>
                   <option value="monthly">mensal</option>
                   <option value="quarterly">trimestral</option>
@@ -1370,10 +1435,28 @@ export default function BillingPage() {
                   <input type="number" min={1} max={28} value={cDia} onChange={e => setCDia(e.target.value)}
                     style={{ ...inp, width: 80 }} />
                 </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13.5, color: '#4A5A70', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={cAuto} onChange={e => setCAuto(e.target.checked)} />
-                  Cobrar automaticamente
+                <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
+                  Início{' '}
+                  <input type="date" value={cInicio} onChange={e => setCInicio(e.target.value)}
+                    style={{ ...inp, width: 170 }} />
                 </label>
+                {cKind === 'bookkeeping' && (
+                  <>
+                    <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
+                      Transações/mês{' '}
+                      <input type="number" min={1} value={cTx} onChange={e => setCTx(e.target.value)}
+                        style={{ ...inp, width: 100 }} />
+                    </label>
+                    <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
+                      Excedente ${' '}
+                      <input type="number" min={0} step="0.01" value={cExcedente} onChange={e => setCExcedente(e.target.value)}
+                        style={{ ...inp, width: 90 }} />
+                    </label>
+                  </>
+                )}
+              </div>
+              <div style={{ fontSize: 11.5, color: '#9AAAB0', marginTop: 6 }}>
+                A régua é ancorada no início: um trimestral que começa em 10/jan cobra jan · abr · jul · out.
               </div>
 
               {/* As linhas do acordo. O total é a soma menos o desconto — um
@@ -1383,105 +1466,143 @@ export default function BillingPage() {
                 <ContratoItens itens={cItens} setItens={setCItens}
                   desconto={cDesconto} setDesconto={setCDesconto}
                   dueDays={cPrazo} setDueDays={setCPrazo}
-                  servicos={dados.services || []} />
+                  servicos={planosDados.services || []}
+                  comPrazo={cForma !== 'debito'}
+                  porPeriodo={porPeriodo(cKind === 'bookkeeping' ? 'monthly' : cIntervalo)} />
               </div>
 
               <div style={{ marginTop: 14 }}>
-                <button onClick={criarContrato} disabled={busy} style={btn('#1A6B4A', busy)}>Criar contrato</button>
+                <button onClick={criarContrato} disabled={busy} style={btn('#1A6B4A', busy)}>Criar contrato (rascunho)</button>
               </div>
             </section>
           )}
 
+          {fContratoCliente && (
+            <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 16px' }}>
+              <span style={{ fontSize: 13.5, color: '#4A5A70' }}>
+                Mostrando só os contratos de <strong>{(planosDados.clients || []).find((c: any) => c.id === fContratoCliente)?.nome || 'um cliente'}</strong>.
+              </span>
+              <button onClick={() => setFContratoCliente('')} style={acaoBtn('#2D3278')}>Ver todos</button>
+            </div>
+          )}
+
           <div style={{ ...card, overflowX: 'auto' as const }}>
-            {planos.length === 0 ? (
-              <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>Nenhum contrato cadastrado.</p>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 720 }}>
+            {(() => {
+              const lista = fContratoCliente ? planos.filter((p: any) => p.client_id === fContratoCliente) : planos
+              if (lista.length === 0) {
+                return <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>
+                  {fContratoCliente ? 'Este cliente não tem contrato.' : 'Nenhum contrato cadastrado.'}
+                </p>
+              }
+              return (
+              <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 820 }}>
                 <thead><tr>
-                  {['Cliente', 'Serviço', 'Valor', 'Repete', 'Dia', 'Próxima', 'Vence', 'Cobrança', 'Situação', ''].map(h => (
+                  {['Cliente', 'Serviço', 'Valor', 'Cobrança', 'Dia', 'Próxima', 'Situação', ''].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 800,
                       color: '#6A7A9A', textTransform: 'uppercase' as const, borderBottom: '1px solid #E2E8F4', whiteSpace: 'nowrap' as const }}>{h}</th>
                   ))}
                 </tr></thead>
                 <tbody>
-                  {planos.map((pl: any) => (
+                  {lista.map((pl: any) => {
+                    const vivo = !['concluído', 'encerrado'].includes(pl.situacao)
+                    return (
                     <tr key={pl.id} style={{ borderBottom: '1px solid #F0F4FA',
-                      opacity: pl.situacao === 'ativo' ? 1 : 0.55, verticalAlign: 'top' as const }}>
-                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>{pl.cliente}</td>
+                      opacity: vivo ? 1 : 0.55, verticalAlign: 'top' as const }}>
+                      <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, color: '#0F2340' }}>
+                        {pl.cliente}
+                        {pl.migrated_from && pl.status === 'draft' && (
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#C06010' }}>
+                            trazido do cadastro antigo — confira e ative
+                          </div>
+                        )}
+                      </td>
                       <td style={{ padding: '10px', fontSize: 14 }}>
                         {pl.description}
-                        {(pl.itens || []).length > 1 && (
-                          <div style={{ fontSize: 11.5, color: '#9AAAB0' }}>{pl.itens.length} itens</div>
-                        )}
+                        <div style={{ fontSize: 11.5, color: '#9AAAB0' }}>
+                          {pl.kind === 'bookkeeping' ? `bookkeeping · ${pl.included_transactions ?? '—'} transações/mês` : ''}
+                          {pl.kind === 'bookkeeping' && (pl.itens || []).length > 1 ? ' · ' : ''}
+                          {(pl.itens || []).length > 1 ? `${pl.itens.length} itens` : ''}
+                        </div>
                       </td>
                       <td style={{ padding: '10px', fontSize: 14, fontWeight: 700, whiteSpace: 'nowrap' as const }}>
-                        {money(pl.amount)}
+                        {money(pl.monthly_amount)}<span style={{ fontWeight: 400, color: '#6A7A9A' }}>{porPeriodo(pl.billing_interval)}</span>
                         {Number(pl.discount) > 0 && (
-                          <div style={{ fontSize: 11.5, fontWeight: 400, color: '#9AAAB0' }}>
-                            já com −{money(pl.discount)}
-                          </div>
+                          <div style={{ fontSize: 11.5, fontWeight: 400, color: '#9AAAB0' }}>já com −{money(pl.discount)}</div>
                         )}
-                      </td>
-                      <td style={{ padding: '10px', fontSize: 13.5 }}>
-                        {pl.interval === 'quarterly' ? 'trimestral' : pl.interval === 'annual' ? 'anual' : 'mensal'}
-                      </td>
-                      <td style={{ padding: '10px', fontSize: 13.5 }}>{pl.day_of_month}</td>
-                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
-                        {dataUS(pl.next_run)}
-                        {/* A data passou e o contrato continua ativo: quem gerasse a
-                            fatura teria movido o next_run. Como ele não andou, nada
-                            gerou — e isso o cliente não vê, a firma não cobra e
-                            ninguém é avisado. */}
-                        {pl.atrasado && (
-                          <div style={{ fontSize: 11, color: '#B02020', fontWeight: 700, marginTop: 2 }}>
-                            ⚠ a data passou e nada foi gerado
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
-                        {pl.vencimento ? dataUS(pl.vencimento) : '—'}
-                        {Number(pl.due_days) > 0 && (
-                          <div style={{ fontSize: 11, color: '#9AAAB0' }}>{pl.due_days} dias</div>
+                        {pl.billing_interval !== 'monthly' && (
+                          <div style={{ fontSize: 11.5, fontWeight: 400, color: '#9AAAB0' }}>≈ {money(pl.mensalEquivalente)}/mês</div>
                         )}
                       </td>
                       <td style={{ padding: '10px', fontSize: 13 }}>
-                        {pl.auto_charge
-                          ? <span style={{ color: '#1A6B4A', fontWeight: 700 }}>automática</span>
-                          : <span style={{ color: '#6A7A9A' }}>manual</span>}
+                        {pl.collection_method === 'fatura'
+                          ? <span style={{ color: '#2D3278', fontWeight: 700 }}>fatura</span>
+                          : <span style={{ color: '#1A6B4A', fontWeight: 700 }}>débito</span>}
+                        <div style={{ fontSize: 11.5, color: '#9AAAB0' }}>
+                          {pl.billing_interval === 'quarterly' ? 'trimestral' : pl.billing_interval === 'annual' ? 'anual' : 'mensal'}
+                          {pl.collection_method === 'fatura' ? ` · vence em ${Number(pl.due_days) || 0} dia(s)` : ''}
+                        </div>
                       </td>
-                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' as const,
-                        color: pl.situacao === 'ativo' ? '#1A6B4A' : pl.situacao === 'encerrado' ? '#B02020' : '#C06010' }}>
-                        {pl.situacao}
-                        {pl.situacao === 'encerrado' && pl.end_date && (
-                          <div style={{ fontSize: 11, fontWeight: 400, color: '#9AAAB0' }}>
-                            em {dataUS(pl.end_date)}
+                      <td style={{ padding: '10px', fontSize: 13.5 }}>{pl.due_day ?? '—'}</td>
+                      <td style={{ padding: '10px', fontSize: 13.5, whiteSpace: 'nowrap' as const }}>
+                        {pl.next_charge_date && vivo ? dataUS(pl.next_charge_date) : '—'}
+                        {pl.vencimento && vivo && (
+                          <div style={{ fontSize: 11, color: '#9AAAB0' }}>vence {dataUS(pl.vencimento)}</div>
+                        )}
+                        {/* A data passou com o contrato por fatura ATIVO: a rotina
+                            diária teria andado a régua. Se não andou, nada foi
+                            emitido — e isso o cliente não vê e ninguém é avisado. */}
+                        {pl.atrasado && (
+                          <div style={{ fontSize: 11, color: '#B02020', fontWeight: 700, marginTop: 2 }}>
+                            ⚠ a data passou e nada foi emitido
                           </div>
                         )}
                       </td>
-                      <td style={{ padding: '10px', whiteSpace: 'nowrap' as const }}>
-                        {/* Contrato encerrado não oferece botão: reativar um acordo
-                            que as duas partes desfizeram seria recriá-lo sem acordo. */}
-                        {podeContrato && pl.situacao !== 'encerrado' && (
-                          <>
-                            <button onClick={() => abrirEdicaoContrato(pl)} disabled={busy} style={acaoBtn('#2D3278')}>
-                              Editar
-                            </button>
-                            <button onClick={() => alternarContrato(pl)} disabled={busy}
-                              style={{ ...acaoBtn(pl.active ? '#C06010' : '#1A6B4A'), marginLeft: 8 }}>
-                              {pl.active ? 'Pausar' : 'Reativar'}
-                            </button>
+                      <td style={{ padding: '10px', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' as const,
+                        color: pl.situacao === 'ativo' ? '#1A6B4A' : !vivo ? '#B02020' : '#C06010' }}>
+                        {pl.situacao}
+                        {!vivo && pl.end_date && (
+                          <div style={{ fontSize: 11, fontWeight: 400, color: '#9AAAB0' }}>em {dataUS(pl.end_date)}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        {/* Encerrado não oferece botão: reativar um acordo que as
+                            duas partes desfizeram seria recriá-lo sem acordo. */}
+                        {podeContrato && vivo && (
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' as const, maxWidth: 300 }}>
+                            <button onClick={() => abrirEdicaoContrato(pl)} disabled={busy} style={acaoBtn('#2D3278')}>Editar</button>
+                            {['draft', 'awaiting_setup'].includes(pl.status) && (
+                              <>
+                                <button onClick={() => window.open(`/api/signatures/contract?planId=${pl.id}&preview=1`, '_blank')}
+                                  style={acaoBtn('#5A1A8A')}>Ver contrato</button>
+                                <button onClick={() => enviarContratoParaAssinar(pl)} disabled={busy} style={acaoBtn('#5A1A8A')}>
+                                  Enviar p/ assinar
+                                </button>
+                              </>
+                            )}
+                            {pl.status === 'draft' && pl.collection_method === 'fatura' && (
+                              <button onClick={() => acaoNoContrato(pl, 'ativar')} disabled={busy} style={acaoBtn('#1A6B4A')}>Ativar</button>
+                            )}
+                            {['draft', 'awaiting_setup'].includes(pl.status) && pl.collection_method === 'debito' && (
+                              <button onClick={() => acaoNoContrato(pl, 'link')} disabled={busy} style={acaoBtn('#F47B20')}>Link do débito</button>
+                            )}
+                            {['active', 'payment_failed'].includes(pl.status) && (
+                              <button onClick={() => acaoNoContrato(pl, 'pausar')} disabled={busy} style={acaoBtn('#C06010')}>Pausar</button>
+                            )}
+                            {pl.status === 'paused' && (
+                              <button onClick={() => acaoNoContrato(pl, 'retomar')} disabled={busy} style={acaoBtn('#1A6B4A')}>Retomar</button>
+                            )}
                             <button onClick={() => { setEncerrando(pl); setEncMotivo(''); setEncSenha(''); setMsg('') }}
-                              disabled={busy} style={{ ...acaoBtn('#B02020'), marginLeft: 8 }}>
-                              Encerrar
-                            </button>
-                          </>
+                              disabled={busy} style={acaoBtn('#B02020')}>Encerrar</button>
+                          </div>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
-            )}
+              )
+            })()}
           </div>
         </>
       )}
@@ -1581,7 +1702,7 @@ export default function BillingPage() {
 
           <div style={{ ...card, overflowX: 'auto' as const }}>
             {(pcDados.plans || []).length === 0 ? (
-              <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>Nenhuma fatura parcelada ainda.</p>
+              <p style={{ fontSize: 15, color: '#4A5A70', margin: 0 }}>Nenhum parcelamento ainda.</p>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse' as const, minWidth: 760 }}>
                 <thead><tr>
@@ -1613,15 +1734,23 @@ export default function BillingPage() {
                         {['awaiting_entry', 'awaiting_setup'].includes(pl.status) && pl.stripe_session_id && (
                           <span style={{ fontSize: 12.5, color: '#6A7A9A', marginRight: 10 }}>aguardando o cliente</span>
                         )}
-                        {!['cancelled', 'completed'].includes(pl.status) && pcDados.perms?.cancelar && (
+                        {!['cancelled', 'completed'].includes(pl.status) && pcDados.perms?.cancelar
+                          // Sem fatura (módulo antigo de orçamentos): só a proposta
+                          // que nunca começou se desfaz — o que já cobra segue até o
+                          // fim, porque não há fatura para o saldo ficar em aberto.
+                          && (!pl.semFatura || nuncaComecou(pl)) && (
                           <button onClick={() => { setPcCancelar(pl); setPcMotivo(''); setPcSenha(''); setMsg('') }}
                             style={{ background: 'none', border: 'none', color: '#B02020',
                               fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
                             {/* Plano que nunca começou: refazer o acordo é o que
                                 a equipe quer, e o cancelamento devolve o
                                 formulário preenchido. */}
-                            {nuncaComecou(pl) ? 'Refazer acordo' : 'Cancelar parcelamento'}
+                            {pl.semFatura ? 'Desistir da proposta' : nuncaComecou(pl) ? 'Refazer acordo' : 'Cancelar parcelamento'}
                           </button>
+                        )}
+                        {pl.semFatura && !nuncaComecou(pl) && !['cancelled', 'completed'].includes(pl.status) && (
+                          <span title="Parcelamento do módulo antigo de orçamentos, sem fatura: segue até o fim. Para interromper, painel do Stripe."
+                            style={{ fontSize: 12, color: '#9AAAB0' }}>antigo, segue até o fim</span>
                         )}
                       </td>
                     </tr>
@@ -2068,17 +2197,33 @@ export default function BillingPage() {
         </div>
       )}
 
-      {/* EDITAR o contrato. Senha e motivo porque isto muda quanto e quando o
-          cliente paga — princípio 3. A trilha fica em recurring_plan_audit. */}
+      {/* EDITAR o contrato: linhas, desconto e prazo, valendo da PRÓXIMA
+          cobrança (decisão do sócio). Senha e motivo porque isto muda quanto
+          o cliente paga — princípio 3. A trilha fica em plan_audit. */}
       {editando && (
         <div onClick={() => !busy && setEditando(null)}
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', zIndex: 400,
                    display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, overflowY: 'auto' }}>
           <div onClick={e => e.stopPropagation()}
-            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 520, width: '100%' }}>
+            style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 560, width: '100%' }}>
             <div style={{ fontWeight: 800, color: '#0f2340', fontSize: 17 }}>Editar contrato</div>
-            <div style={{ fontSize: 13.5, color: '#6A7A9A', margin: '2px 0 14px' }}>
-              {editando.cliente}
+            <div style={{ fontSize: 13.5, color: '#6A7A9A', margin: '2px 0 10px' }}>
+              {editando.cliente} · {editando.collection_method === 'fatura' ? 'fatura' : 'débito'}
+              {' · '}{editando.billing_interval === 'quarterly' ? 'trimestral' : editando.billing_interval === 'annual' ? 'anual' : 'mensal'}
+              {' · dia '}{editando.due_day}
+            </div>
+            {/* O que acontece depende de onde o contrato está: dizer ANTES de
+                salvar é o que evita a surpresa depois. */}
+            <div style={{ fontSize: 12.5, color: '#4A5A70', background: '#F8FAFF', border: '1px solid #E2E8F4',
+                          borderRadius: 9, padding: '8px 12px', marginBottom: 12, lineHeight: 1.5 }}>
+              {editando.collection_method === 'fatura'
+                ? <>Vale a partir da próxima fatura{editando.next_charge_date ? <> ({dataUS(editando.next_charge_date)})</> : ''}. Faturas já emitidas não mudam.</>
+                : editando.temAssinatura
+                  ? <>O preço da assinatura no Stripe muda a partir da <strong>próxima cobrança</strong>, sem cobrança proporcional.</>
+                  : editando.status === 'awaiting_setup'
+                    ? <>O link de cadastro que o cliente tem <strong>deixa de valer</strong> (ele autorizaria o valor antigo) — gere outro depois.</>
+                    : <>Ainda é rascunho: nada foi cobrado.</>}
+              {' '}Intervalo, dia e forma de cobrar não mudam — isso é encerrar e criar outro.
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
@@ -2088,45 +2233,10 @@ export default function BillingPage() {
               <ContratoItens itens={edItens} setItens={setEdItens}
                 desconto={edDesconto} setDesconto={setEdDesconto}
                 dueDays={edPrazo} setDueDays={setEdPrazo}
-                servicos={dados.services || []}
-                emissao={editando.next_run ? String(editando.next_run).slice(0, 10) : null} />
-
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' as const,
-                            borderTop: '1px solid #E2E8F4', paddingTop: 12 }}>
-                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>REPETE</span>
-                  <select value={edForm.interval || 'monthly'}
-                    onChange={e => setEdForm({ ...edForm, interval: e.target.value })}
-                    style={{ ...inp, cursor: 'pointer', width: 140 }}>
-                    <option value="monthly">mensal</option>
-                    <option value="quarterly">trimestral</option>
-                    <option value="annual">anual</option>
-                  </select>
-                </label>
-                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>DIA</span>
-                  <input type="number" min={1} max={28} value={edForm.dayOfMonth || ''}
-                    onChange={e => setEdForm({ ...edForm, dayOfMonth: e.target.value })}
-                    style={{ ...inp, width: 90 }} />
-                </label>
-                <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>INÍCIO</span>
-                  <input type="date" value={edForm.startDate || ''}
-                    onChange={e => setEdForm({ ...edForm, startDate: e.target.value })}
-                    style={{ ...inp, width: 170 }} />
-                </label>
-              </div>
-              <div style={{ fontSize: 11.5, color: '#9AAAB0', marginTop: -4 }}>
-                A régua é ancorada no início: um trimestral que começou em 10/jan cobra
-                jan · abr · jul · out. Mexer no dia, no início ou na frequência recalcula a
-                próxima data.
-              </div>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, color: '#4A5A70', cursor: 'pointer' }}>
-                <input type="checkbox" checked={!!edForm.autoCharge}
-                  onChange={e => setEdForm({ ...edForm, autoCharge: e.target.checked })} />
-                Cobrar automaticamente (exige cartão ou ACH autorizado pelo cliente)
-              </label>
+                servicos={planosDados.services || []}
+                comPrazo={editando.collection_method === 'fatura'}
+                porPeriodo={porPeriodo(editando.billing_interval)}
+                emissao={editando.next_charge_date ? String(editando.next_charge_date).slice(0, 10) : null} />
 
               <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>O QUE ESTÁ MUDANDO E POR QUÊ</span>
@@ -2164,10 +2274,14 @@ export default function BillingPage() {
             style={{ background: '#fff', borderRadius: 16, padding: '22px 24px', maxWidth: 440, width: '100%' }}>
             <div style={{ fontWeight: 800, color: '#B02020', fontSize: 17 }}>Encerrar contrato</div>
             <div style={{ fontSize: 13.5, color: '#4A5A70', margin: '8px 0 14px', lineHeight: 1.5 }}>
-              <strong>{encerrando.cliente}</strong> — {encerrando.description} · {money(encerrando.amount)}
+              <strong>{encerrando.cliente}</strong> — {encerrando.description} · {money(encerrando.monthly_amount)}{porPeriodo(encerrando.billing_interval)}
               <br />
               O contrato sai do ar com a data de hoje e <strong>não volta</strong>: para
               recomeçar com este cliente, crie um novo. O registro fica no histórico.
+              {encerrando.collection_method === 'debito' && encerrando.temAssinatura && (
+                <> A assinatura no Stripe é cancelada junto — se o Stripe recusar, nada é encerrado.</>
+              )}
+              {' '}Faturas já emitidas continuam valendo.
             </div>
             <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
               <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>

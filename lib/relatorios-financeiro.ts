@@ -12,6 +12,7 @@ import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
 import { money, fmtUS } from '@/lib/format'
 import { round2 } from '@/lib/plans'
 import { FIRM } from '@/lib/contract-html'
+import { valorMensalEquivalente } from '@/lib/contrato-unico'
 
 export type Periodo = { from: string; to: string }   // YYYY-MM-DD, inclusivo
 
@@ -109,12 +110,20 @@ export function agregarAberto(faturas: any[], hoje: string) {
   return { linhas, totalFaixas, total: round2(totalFaixas.reduce((s, v) => s + v, 0)) }
 }
 
-/** Contratos mensais (MRR) e parcelamentos em andamento (a receber). */
+/**
+ * Contratos recorrentes (MRR) e parcelamentos em andamento (a receber).
+ *
+ * `monthly_amount` é o valor de CADA COBRANÇA — num trimestral, o do
+ * trimestre. A receita recorrente MENSAL divide pelo intervalo
+ * (valorMensalEquivalente): somar o trimestre como se fosse mês triplicava o
+ * número em que o sócio decide.
+ */
 export function agregarRecorrente(planos: any[]) {
   const mensais = planos.filter(p => p.kind !== 'installment')
+    .map(p => ({ ...p, mensal: valorMensalEquivalente(p.monthly_amount, p.billing_interval) }))
   const parcelados = planos.filter(p => p.kind === 'installment')
   const ativos = (l: any[]) => l.filter(p => p.status === 'active')
-  const mrr = round2(ativos(mensais).reduce((s, p) => s + Number(p.monthly_amount || 0), 0))
+  const mrr = round2(ativos(mensais).reduce((s, p) => s + p.mensal, 0))
   const restante = (p: any) => {
     const pagas = Number(p.paid_installments || 0)
     const n = Number(p.installments || 0)
@@ -122,7 +131,7 @@ export function agregarRecorrente(planos: any[]) {
   }
   const aReceber = round2(parcelados.filter(p => !['completed', 'cancelled'].includes(p.status)).reduce((s, p) => s + restante(p), 0))
   return {
-    mensais: mensais.map(p => ({ ...p, cliente: nomeCliente(p.clients) })).sort((a, b) => Number(b.monthly_amount) - Number(a.monthly_amount)),
+    mensais: mensais.map(p => ({ ...p, cliente: nomeCliente(p.clients) })).sort((a, b) => b.mensal - a.mensal),
     parcelados: parcelados.map(p => ({ ...p, cliente: nomeCliente(p.clients), restante: restante(p) })).sort((a, b) => b.restante - a.restante),
     mrr, ativosMensais: ativos(mensais).length, aReceber,
   }
