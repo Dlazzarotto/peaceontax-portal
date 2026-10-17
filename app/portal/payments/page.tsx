@@ -37,6 +37,9 @@ const T: Record<string, any> = {
     mKlarna: 'Klarna', mKlarnaD: 'Pay in installments with Klarna (approval on the payment screen)',
     mManual: 'Check, Zelle, Venmo', mManualD: 'Payable to Peace on Tax — we record it for you',
     signByEmailHelp: 'Look for an e-mail from DocuSign with the subject “Peace on Tax”. Cannot find it? Message us and we will send it again.',
+    estimates: 'Estimates', discount: 'Discount', total: 'Total',
+    estimateHint: 'To approve, reply to the e-mail or message us under Messages. We turn it into an invoice, and you pay it here.',
+    loadError: 'We could not load your payments right now. Please try again in a moment — if it keeps happening, contact us.',
   },
   pt: {
     title: 'Pagamentos', balance: 'Saldo em aberto', noBalance: 'Nada a pagar no momento',
@@ -63,6 +66,9 @@ const T: Record<string, any> = {
     mKlarna: 'Klarna', mKlarnaD: 'Parcele com a Klarna (a aprovação acontece na tela de pagamento)',
     mManual: 'Cheque, Zelle, Venmo', mManualD: 'Em nome de Peace on Tax — nós registramos para você',
     signByEmailHelp: 'Procure um e-mail do DocuSign com o assunto “Peace on Tax”. Não encontrou? Fale conosco que reenviamos.',
+    estimates: 'Orçamentos', discount: 'Desconto', total: 'Total',
+    estimateHint: 'Para aprovar, responda o e-mail ou fale com a nossa equipe em Mensagens. Nós o transformamos em fatura, e você paga aqui.',
+    loadError: 'Não foi possível carregar seus pagamentos agora. Tente de novo em instantes — se continuar, fale com a nossa equipe.',
   },
   es: {
     title: 'Pagos', balance: 'Saldo pendiente', noBalance: 'Nada que pagar por ahora',
@@ -89,6 +95,9 @@ const T: Record<string, any> = {
     mKlarna: 'Klarna', mKlarnaD: 'Pague en cuotas con Klarna (la aprobación ocurre en la pantalla de pago)',
     mManual: 'Cheque, Zelle, Venmo', mManualD: 'A nombre de Peace on Tax — nosotros lo registramos',
     signByEmailHelp: 'Busque un correo de DocuSign con el asunto “Peace on Tax”. ¿No lo encuentra? Escríbanos y lo reenviamos.',
+    estimates: 'Presupuestos', discount: 'Descuento', total: 'Total',
+    estimateHint: 'Para aprobarlo, responda el correo o escríbanos en Mensajes. Lo convertimos en factura, y usted la paga aquí.',
+    loadError: 'No pudimos cargar sus pagos ahora. Intente de nuevo en un momento — si continúa, contáctenos.',
   },
 }
 
@@ -101,7 +110,18 @@ export default function PaymentsPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [erro, setErro] = useState('')
 
-  const load = () => fetch('/api/portal/billing').then(r => r.json()).then(d => { setData(d); setLoading(false) })
+  // Consulta que falha NÃO vira "nada a pagar": a rota responde o erro, e a
+  // tela o mostrava como saldo zero com o ✅ — o cliente acreditava, e a firma
+  // não recebia. Sem dados, a tela diz que não carregou.
+  const [falhou, setFalhou] = useState(false)
+  const load = () => fetch('/api/portal/billing')
+    .then(r => r.json().then(d => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (!ok || d?.error) { setFalhou(true); setErro(d?.error || ''); setData(null) }
+      else { setFalhou(false); setData(d) }
+      setLoading(false)
+    })
+    .catch(() => { setFalhou(true); setLoading(false) })
   useEffect(() => { load() }, [])
 
   const lang = data?.client?.language || 'en'
@@ -134,11 +154,20 @@ export default function PaymentsPage() {
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: '#6a7a9a' }}>Loading…</div>
+  if (falhou) return (
+    <div>
+      <h1 style={{ fontFamily: 'Georgia,serif', fontSize: 22, color: '#0f2340', marginBottom: 16 }}>{t.title}</h1>
+      <div style={{ background: '#fdecec', color: '#b02020', borderRadius: 10, padding: '14px 16px', fontSize: 14, fontWeight: 600 }}>
+        {erro || t.loadError}
+      </div>
+    </div>
+  )
 
   const faturas: any[] = data?.faturas || []
   const planos: any[] = data?.planos || []
   const contratos: any[] = data?.contratos || []
   const historico: any[] = data?.historico || []
+  const orcamentos: any[] = data?.orcamentos || []
   const saldo = faturas.reduce((s, f) => s + Number(f.saldo || 0), 0)
   const card = { background: '#fff', borderRadius: 14, padding: 22, border: '1px solid #e2e8f4', marginBottom: 20 }
   const h2 = { fontFamily: 'Georgia,serif', fontSize: 16, color: '#0f2340', margin: '0 0 12px' }
@@ -241,6 +270,34 @@ export default function PaymentsPage() {
         ))}
         {saldo > 0 && <div style={{ fontSize: 11, opacity: 0.6, marginTop: 6, textAlign: 'center' }}>Secure payment powered by Stripe</div>}
       </div>
+
+      {/* 3b. Orçamentos enviados — só para ler. Aprovado, vira fatura (acima). */}
+      {orcamentos.length > 0 && (
+        <div style={{ ...card, border: '2px solid #0A6A8A' }}>
+          <h2 style={h2}>📄 {t.estimates}</h2>
+          {orcamentos.map(o => (
+            <div key={o.id} style={{ ...linha, display: 'block' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', fontSize: 14, color: '#1a2a3a' }}>
+                <span><b>{o.number}</b> · {fmtUS(o.issue_date)}</span>
+                <b>{money(o.total)}</b>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                {(o.itens || []).map((i: any, k: number) => (
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, color: '#3a4a5a', padding: '3px 0' }}>
+                    <span>{i.descricao}{i.qtd > 1 ? ` × ${i.qtd}` : ''}</span><span>{money(i.valor)}</span>
+                  </div>
+                ))}
+                {Number(o.discount) > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#b02020', padding: '3px 0' }}>
+                    <span>{t.discount}</span><span>− {money(o.discount)}</span>
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: '#6a7a9a', marginTop: 8, lineHeight: 1.5 }}>{t.estimateHint}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 4. Formas de pagamento */}
       <div style={card}>

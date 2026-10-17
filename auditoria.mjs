@@ -757,9 +757,26 @@ recusar('Enviar nao pega carona em cancelar', 'app/api/billing/invoices/route.ts
         'soltar cancelar passaria a soltar o envio junto, calado')
 checar('Enviar tem trava propria', 'app/api/billing/invoices/route.ts',
        /if \(!perms\.enviar\)/, 'a acao send precisa conferir perms.enviar')
-checar('Criar e enviar passa pela mesma trava', 'app/api/billing/invoices/route.ts',
-       /b\.enviarAgora[\s\S]{0,120}!perms\.enviar/,
-       'o atalho de um clique nao pode furar a permissao de enviar')
+// O "criar e enviar" e o "virar fatura e enviar" passam pela MESMA funcao,
+// e ela comeca pela trava. Conferir so a primeira chamada deixaria a
+// segunda furar a permissao sem ninguem ver.
+{
+  const inv = readFileSync(join(raiz, 'app/api/billing/invoices/route.ts'), 'utf8')
+  const corpoEnviarJa = (() => {
+    const i = inv.indexOf('async function enviarJa(')
+    if (i < 0) return ''
+    const resto = inv.slice(i)
+    const j = resto.slice(1).search(/\n(export )?(async )?function /)
+    return j < 0 ? resto : resto.slice(0, j + 1)
+  })()
+  if (!corpoEnviarJa) falta('Criar e enviar passa pela mesma trava', 'enviarJa nao encontrada -- ancora perdida e FALHA')
+  else if (!(corpoEnviarJa.indexOf('if (!perms.enviar) return') >= 0
+             && corpoEnviarJa.indexOf('if (!perms.enviar) return') < corpoEnviarJa.indexOf('.update(')))
+    falta('Criar e enviar passa pela mesma trava', 'enviarJa tem de recusar (if (!perms.enviar) return) ANTES de mudar o status')
+  else if (!/b\.enviarAgora\s*\?\s*await enviarJa\(/.test(inv) || !/corpo\.enviarAgora\s*\?\s*await enviarJa\(/.test(inv))
+    falta('Criar e enviar passa pela mesma trava', 'o POST e a conversao do orcamento tem de enviar por enviarJa')
+  else ok('Criar e enviar passa pela mesma trava')
+}
 // Fechar a lista e deixar o ?id= aberto e fechar a porta e esquecer a
 // janela: bastaria o id para ver a fatura de qualquer um.
 checar('O ?id= respeita o mesmo escopo', 'app/api/billing/invoices/route.ts',
@@ -1935,9 +1952,107 @@ titulo('A EQUIPE NUM LUGAR SO: O NIVEL MORA EM team_members')
 }
 
 
+titulo('ORCAMENTOS NUM LUGAR SO: O FINANCEIRO')
+// Decisao do socio. O modulo Quotes (aba da ficha do cliente) era uma segunda
+// tabela de orcamentos, com link de pagamento proprio: o dinheiro entrava
+// fora do livro (sem invoice_payments, sem conta de passagem, sem conciliar
+// com o repasse do Stripe). E o orcamento do Financeiro chegava ao cliente
+// como "Fatura ... Ver e pagar", num portal que so listava faturas.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. O modulo saiu, e ninguem mais grava na tabela dele.
+  const sairam = ['components/QuotesTab.tsx', 'app/api/quotes/route.ts', 'app/api/quotes/[id]/route.ts',
+                  'app/api/quotes/perms/route.ts', 'app/api/stripe/checkout/route.ts',
+                  'app/api/portal/quote/route.ts', 'lib/pricing-db.ts']
+  const voltaram = sairam.filter(a => existsSync(join(raiz, a)))
+  if (voltaram.length) falta('O modulo Quotes saiu', `voltaram: ${voltaram.join(', ')}`)
+  else ok('O modulo Quotes saiu')
+  // A ponte (traz os abertos), o webhook (link antigo ainda pago) e o
+  // impresso (recibo do que ja foi pago) sao os unicos que ainda tocam nela.
+  const PODEM = ['app/api/billing/orcamentos-antigos/route.ts', 'app/api/stripe/webhook/route.ts',
+                 'app/api/quotes/[id]/document/route.ts']
+  const gravam = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]) {
+    const nome = rel(arq)
+    if (PODEM.includes(nome)) continue
+    if (/from\(\s*['"]quotes['"]\s*\)/.test(semComent(readFileSync(arq, 'utf8')))) gravam.push(nome)
+  }
+  if (gravam.length) falta('Ninguem mais usa a tabela quotes', `o orcamento mora no Financeiro: ${gravam.join(', ')}`)
+  else ok('Ninguem mais usa a tabela quotes')
+
+  // 2. Quem se paga e a FATURA.
+  checar('Recebimento manual recusa orcamento', 'app/api/billing/payments/route.ts',
+         /if \(inv\.doc_type === 'estimate'\) \{\s*return NextResponse\.json/,
+         'o recebimento lancado num orcamento nao e de fatura nenhuma')
+  checar('O QR do balcao recusa orcamento', 'app/api/billing/cobranca-balcao/route.ts',
+         /if \(inv\.doc_type === 'estimate'\)\s*return \{ erro:/,
+         'a sessao do Stripe com o id do orcamento lancaria o pagamento nele')
+  const tela = ler('app/dashboard/billing/page.tsx')
+  if (/perms\?\.receber && inv\.doc_type !== 'estimate'/.test(tela)
+      && /inv\.doc_type !== 'estimate' && inv\.status !== 'draft' && inv\.status !== 'void' && inv\.saldo > 0 && perms\?\.enviar/.test(tela))
+    ok('A tela nao oferece cobrar nem receber orcamento')
+  else falta('A tela nao oferece cobrar nem receber orcamento', 'Receber, Lembrete e QR apareciam num orcamento enviado')
+
+  // 3. Orcamento vira fatura UMA vez, ligado a ela.
+  const rota = ler('app/api/billing/invoices/route.ts')
+  const conv = (() => {
+    const i = rota.indexOf("if (action === 'converter') {")
+    if (i < 0) return ''
+    const j = rota.indexOf("if (action === 'duplicate')", i)
+    return rota.slice(i, j < 0 ? undefined : j)
+  })()
+  if (!conv) falta('Orcamento vira fatura uma vez so', "acao 'converter' nao encontrada -- ancora perdida e FALHA")
+  else {
+    const iConfere = conv.search(/\.eq\('converted_from', inv\.id\)\.eq\('doc_type', 'invoice'\)/)
+    const iCria = conv.search(/from\('invoices'\)\.insert\(/)
+    if (iConfere >= 0 && iCria > iConfere && /converted_from: inv\.id/.test(conv) && /if \(!perms\.criar\)/.test(conv))
+      ok('Orcamento vira fatura uma vez so')
+    else falta('Orcamento vira fatura uma vez so', 'confere a fatura que ja existe ANTES de criar, liga por converted_from e exige criar')
+  }
+
+  // 4. O orcamento chega como orcamento, e o cliente o ve.
+  checar('O aviso do orcamento nao e o da fatura', 'app/api/billing/invoices/route.ts',
+         /const t = inv\.doc_type === 'estimate' \? \(TO\[lang\] \|\| TO\.en\)/,
+         'o cliente recebia "Fatura EST-... Ver e pagar" e nao achava nada no portal')
+  checar('O portal lista os orcamentos enviados', 'app/api/portal/billing/route.ts',
+         /orcamentos: \(orcs \|\| \[\]\)/, 'o aviso manda o cliente a Pagamentos -> Orcamentos')
+  checar('A pagina do portal mostra os orcamentos', 'app/portal/payments/page.tsx',
+         /orcamentos\.map\(/, 'sem isso o aviso do orcamento volta a apontar para o nada')
+  checar('Pagamentos do portal: consulta que falha nao vira "nada a pagar"', 'app/portal/payments/page.tsx',
+         /if \(!ok \|\| d\?\.error\) \{ setFalhou\(true\)/,
+         'o erro virava saldo zero com o check verde -- o cliente acreditava e a firma nao recebia')
+
+  // 5. O calculo da declaracao: catalogo e documentos que falham nao viram preco.
+  const calc = ler('app/api/billing/orcamento-automatico/route.ts')
+  if (/itensDaDeclaracao\(/.test(calc) && /for \(const \[oque, err\] of/.test(calc) && /cliente\.type === 'business'/.test(calc))
+    ok('O calculo da declaracao nao engole erro e nao calcula empresa')
+  else falta('O calculo da declaracao nao engole erro e nao calcula empresa', 'catalogo vazio vira "a base nao existe"; documentos vazios viram so a base')
+  checar('O calculo conta active nulo como ativo', 'lib/orcamento-automatico.ts',
+         /c && c\.active !== false \? c : null/, 'servico com active nulo sumia do orcamento (lib/catalogo-precos.ts)')
+
+  // 6. Quem chama nao e QUAL cliente: cada verbo confere o dono do documento.
+  const iPatch = rota.indexOf('export async function PATCH')
+  const iSend = rota.indexOf("if (action === 'send')", iPatch)
+  const trechoPatch = iPatch >= 0 && iSend > iPatch ? rota.slice(iPatch, iSend) : ''
+  if (/canAccessClient\(auth, inv\.client_id\)/.test(trechoPatch)
+      && /export async function DELETE[\s\S]*?canAccessClient\(auth, inv\.client_id\)/.test(rota))
+    ok('PATCH e DELETE do Financeiro conferem o dono do documento')
+  else falta('PATCH e DELETE do Financeiro conferem o dono do documento', 'por autorizacao, quem envia sem verEmpresas agia pelo id na fatura de uma empresa')
+  const pags = ler('app/api/billing/payments/route.ts')
+  if ((pags.match(/canAccessClient\(auth, (inv|pag)\.client_id\)/g) || []).length >= 3)
+    ok('Recebimentos conferem o dono (lista, estorno e baixa)')
+  else falta('Recebimentos conferem o dono (lista, estorno e baixa)', 'a lista de pagamentos de uma empresa saia pelo id da fatura')
+  checar('A lista do Financeiro obedece ao escopo', 'app/api/billing/invoices/route.ts',
+         /const visiveis = \(invoices \|\| \[\]\)\.filter\(\(i: any\) => !escopo\.ocultos\.has\(i\.client_id\)\)/,
+         'o seletor escondia o cliente e a lista mostrava as faturas dele')
+}
+
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
-  ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],
   ['Contratos: modulo Plans x recurring_plans', 'components/PlansTab.tsx'],
 ]) if (existsSync(join(raiz, d[1]))) ver(d[0])
 
