@@ -37,6 +37,11 @@ export async function POST(req: NextRequest) {
   if (!['awaiting_entry', 'awaiting_setup'].includes(plan.status)) {
     return NextResponse.json({ error: 'Este plano não está aguardando cadastro.' }, { status: 409 })
   }
+  // A entrada já entrou: um link novo a cobraria de novo. Falta só a equipe
+  // agendar as parcelas — e isso não depende do cliente.
+  if (plan.kind === 'installment' && plan.entry_paid_at && Number(plan.entry_amount || 0) > 0) {
+    return NextResponse.json({ error: 'A entrada já foi recebida. Nossa equipe está concluindo o agendamento das parcelas — nada mais é preciso da sua parte.' }, { status: 409 })
+  }
   // Primeiro a assinatura (autorização do débito), depois a conta
   if (await contratoPendenteDoPlano(db, plan.id)) {
     return NextResponse.json({ error: 'Assine o contrato antes de cadastrar o débito automático.' }, { status: 409 })
