@@ -610,6 +610,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   do mês nasce em aberto no `invoice.finalized` do Stripe e guarda
   `stripe_invoice`; o `invoice.paid` só dá baixa.
 - **O payload do webhook do Stripe é pobre — confira antes de ler um campo.**
+  (E vale para o que se MANDA: parâmetro que a versão da API removeu passa
+  no typecheck e só falha em produção — ver o agendamento das parcelas, logo
+  abaixo.)
   O endpoint está em `2026-06-24.dahlia`: a invoice do evento NÃO traz
   `subscription`, `payment_intent`, `charge`, `paid_out_of_band` nem
   `payments` (expansível). O SDK 17.7.0 ainda declara esses campos nos tipos,
@@ -632,6 +635,49 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cliente é outro (o link deixou de valer), senão ele procura uma cobrança
   que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
   abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
+- **As parcelas são agendadas por `duration`, NUNCA por `iterations` — e
+  até 10/2026 nenhuma foi cobrada** (`lib/agendamento-parcelas.ts`, 44 casos
+  em `testes/agendamento-parcelas.mts`). O webhook criava o
+  `SubscriptionSchedule` logo depois da entrada paga, com
+  `phases[].iterations`; a API **removeu** esse parâmetro na versão
+  `2025-09-30.clover`, e o sistema fala na `2026-06-24.dahlia` desde
+  07/07/2026 — o mesmo dia em que o parcelamento nasceu. O Stripe recusava, a
+  rota respondia 500 com um `console.error`, e mais nada: o plano ficava
+  "aguardando a entrada", a **entrada paga não entrava na fatura** (o
+  lançamento vinha DEPOIS do agendamento), o portal seguia oferecendo "pagar
+  a entrada" (o cliente podia pagar de novo) e o alerta de plano parado dizia
+  à equipe que "nada foi cobrado". **O typecheck passava**: o SDK instalado
+  (17.7.0) ainda declara `iterations` e não conhece `duration` — a mesma
+  armadilha do payload pobre, agora no PARÂMETRO de pedido: quem manda é a
+  versão da API, não os tipos. Conferido no changelog do `stripe-node`
+  ("Remove support for `iterations` on SubscriptionScheduleCreateParams.phases[]").
+  Regras daqui: a fase dura `duration` (intervalo × parcelas da fase); antes
+  de criar, procura-se o agendamento VIVO do plano (`metadata.planId`) e ele é
+  reaproveitado — reenvio do evento ou a equipe agendando não podem cobrar
+  cada parcela duas vezes; **a entrada vai para o livro ANTES do agendamento**
+  (o dinheiro já entrou), com a hora da cobrança e não a de hoje
+  (`lancarRecebimentoStripe` de `lib/recebimento-stripe.ts`, a mesma regra de
+  chaves do webhook); se ela não entra, NÃO se agenda (a fatura pode ter sido
+  quitada por fora); falha de agendamento vira trilha e alerta à equipe (um
+  por plano por dia) e o erro volta ao Stripe para o reenvio; e uma
+  **segunda entrada paga** para o mesmo plano não entra na fatura — vira
+  alerta de estorno. Entrada paga fecha a porta do portal (`entry_paid_at`:
+  `criarSessaoDoPlano`, o portal e a rota recusam um link novo) e deixa de
+  contar como "nunca começou" — cancelar um plano assim como "proposta"
+  diria ao cliente que nada foi cobrado; o cancelamento confere no Stripe e
+  lança a entrada antes. **Recuperação dos que travaram**:
+  `PATCH /api/billing/installment-plan` `action: 'agendar'` (botão
+  "Conferir pagamento e agendar" em Financeiro → Parcelamentos; chave
+  `receber` + senha + motivo). Quem diz o que o cliente fez é o STRIPE
+  (todas as sessões do plano — a paga pode não ser a última gerada), não o
+  banco; a entrada entra com a data em que entrou; as parcelas em aberto têm
+  de somar o saldo da fatura, senão recusa (recebimento por fora no
+  meio-tempo faria o Stripe cobrar de novo); a data da 1ª parcela que já
+  passou é escolhida pela equipe e o cronograma (`invoice_installments`)
+  anda junto, para aviso de cobrança, portal e aging lerem as datas que o
+  Stripe vai seguir. Trilha `scheduled_by_staff` antes de tudo.
+  **Não testado daqui**: a chamada real ao Stripe (o container não tem chave);
+  os parâmetros conferem com os tipos do `stripe-node` 23 (API `2026-09-30`).
 - **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
   `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
   no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.

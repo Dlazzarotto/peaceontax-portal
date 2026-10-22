@@ -46,7 +46,7 @@ export async function GET() {
     // que aguardam cadastro: uma fatura parcelada com plano ATIVO não pode
     // oferecer pagamento à vista (a rota recusa), então a tela precisa saber disso.
     db.from('payment_plans')
-      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date, paid_installments')
+      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date, paid_installments, entry_paid_at')
       .eq('client_id', c.id).in('status', ['awaiting_entry', 'awaiting_setup', 'active', 'paused', 'payment_failed'])
       .order('created_at', { ascending: false }),
     db.from('signature_requests')
@@ -96,7 +96,9 @@ export async function GET() {
   // Sem isso a tela oferece um botão que a rota recusa.
   const comSituacao = (planos || []).map((p: any) => ({
     ...p,
-    podeCadastrar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !planosBloqueados.has(p.id),
+    // Entrada já paga não se oferece de novo: o link cobraria outra vez.
+    podeCadastrar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !planosBloqueados.has(p.id)
+      && !(p.kind === 'installment' && p.entry_paid_at && Number(p.entry_amount || 0) > 0),
     aguardandoContrato: planosBloqueados.has(p.id),
   }))
   // Primeiro assina, depois cadastra o débito: só o que o cliente pode agir agora

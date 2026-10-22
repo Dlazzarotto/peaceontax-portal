@@ -23,6 +23,15 @@ eq('entrada pendente aparece no texto',
   /pagar a entrada/.test(avisoDePlanoParado({ status: 'awaiting_entry', kind: 'installment', installments: 6 }, 9)), true)
 eq('cadastro de debito aparece no texto',
   /cadastrar o débito automático/.test(avisoDePlanoParado({ status: 'awaiting_setup', description: 'Bookkeeping' }, 9)), true)
+// Entrada paga e plano parado: é o agendamento que travou, não o cliente
+eq('entrada paga nao diz que nada foi cobrado',
+  /nada foi cobrado/i.test(avisoDePlanoParado({ status: 'awaiting_entry', kind: 'installment', installments: 6, entry_paid_at: '2026-10-01T15:00:00Z' }, 9)), false)
+eq('entrada paga manda agendar',
+  /PAGOU a entrada[\s\S]*Conferir pagamento e agendar/.test(avisoDePlanoParado({ status: 'awaiting_entry', kind: 'installment', installments: 6, entry_paid_at: '2026-10-01T15:00:00Z' }, 9)), true)
+eq('parcelamento sem registro de entrada aponta a conferencia no Stripe',
+  /Conferir pagamento e agendar/.test(avisoDePlanoParado({ status: 'awaiting_entry', kind: 'installment', installments: 6 }, 9)), true)
+eq('mensalidade nao fala de conferir parcelamento',
+  /Conferir pagamento/.test(avisoDePlanoParado({ status: 'awaiting_setup', kind: 'monthly', description: 'Bookkeeping' }, 9)), false)
 eq('usa o nome da empresa quando ha',
   /Padaria Boa/.test(avisoDePlanoParado({ status: 'awaiting_setup', clients: { name: 'Ana', business_name: 'Padaria Boa' } }, 8)), true)
 
