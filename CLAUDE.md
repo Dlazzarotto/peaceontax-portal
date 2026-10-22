@@ -1355,6 +1355,18 @@ middleware.ts        controle de acesso por rota
   `testes/ordem-das-migracoes.mts`; a auditoria recusa declaração que aponte
   para arquivo inexistente (some em silêncio num rename e a ordem volta à
   alfabética) e recusa o mapa vazio.
+  **"Aplicada", para quem depende, é um `Set` dos caminhos em estado ok**
+  (`aplicadasParaDependencia` de `scripts/livro-de-migracoes.mjs`). O livro é
+  um `Map`, e a ordenação aceitava "Set ou objeto": com o `Map`,
+  `aplicados[x]` dava sempre `undefined` e TODA dependência de migração já
+  aplicada parecia faltar. Ficou latente de 01/10 até a primeira dependência
+  desse tipo (`equipe-unica-v1 → papel-no-app-metadata-v1`): o `--pendentes`
+  do GitHub recusou com exit 3, dizendo que a dependência "não está aplicada
+  nem na lista" três linhas abaixo de listá-la como ok. Os testes passavam
+  porque usavam `Set` — o defeito era a LIGAÇÃO entre os dois módulos, e é
+  ela que o teste exercita agora (pelo `lerLivro` de verdade). A ordenação
+  recusa em voz alta o que não for `Set`; "mudou depois de aplicado" e linha
+  torta não contam como aplicada, de propósito.
   **O livro tem três jeitos de estar torto, e os três faziam migração
   APLICADA parecer NUNCA APLICADA** — o lado que leva a rodar de novo em
   produção (`scripts/livro-de-migracoes.mjs`, puro e com teste). O leitor

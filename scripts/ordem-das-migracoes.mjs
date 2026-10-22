@@ -53,9 +53,20 @@ export const DEPENDE_DE = {
  * APLICADO", que de propósito fica fora do automático.
  */
 export function ordenarPorDependencia(pendentes, aplicados = new Set(), mapa = DEPENDE_DE) {
+  // `aplicados` e um Set de caminhos com estado ok (aplicadasParaDependencia,
+  // de livro-de-migracoes.mjs). O livro cru e um Map, e esta funcao aceitava
+  // "Set ou objeto": com o Map, `aplicados[x]` dava sempre undefined e TODA
+  // dependencia de migracao ja aplicada parecia faltar. Ficou assim de 01/10
+  // ate a primeira dependencia desse tipo (equipe-unica-v1 ->
+  // papel-no-app-metadata-v1) travar o --pendentes. Entrada errada recusa em
+  // voz alta; nunca vira "falta" calada.
+  if (!(aplicados instanceof Set)) {
+    throw new TypeError('ordenarPorDependencia: `aplicados` tem de ser um Set de caminhos com estado ok '
+      + '(aplicadasParaDependencia do livro), nao o livro cru')
+  }
   const lista = Array.from(pendentes || [])
   const naLista = new Set(lista)
-  const temAplicado = (x) => (aplicados instanceof Set ? aplicados.has(x) : !!aplicados?.[x])
+  const temAplicado = (x) => aplicados.has(x)
 
   const faltando = []
   for (const a of lista) {
