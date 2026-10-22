@@ -23,12 +23,22 @@ export function diasParados(desde: string | null | undefined, hoje = new Date())
 /** O texto do alerta, que diz o que falta e o que a equipe pode fazer. */
 export function avisoDePlanoParado(plano: any, dias: number): string {
   const quem = plano.clients?.business_name || plano.clients?.name || 'O cliente'
-  const oque = plano.status === 'awaiting_entry' ? 'pagar a entrada' : 'cadastrar o débito automático'
   const servico = plano.description
     || (plano.kind === 'installment' ? `parcelamento em ${plano.installments}×` : 'serviço mensal')
+  // Entrada PAGA e plano parado não é cliente enrolando: é o agendamento das
+  // parcelas que travou. Dizer "nada foi cobrado" aqui era falso — e fazia a
+  // equipe ligar cobrando quem já tinha pago.
+  if (plano.kind === 'installment' && plano.entry_paid_at) {
+    return `🛑 ${quem} PAGOU a entrada de ${servico} e as parcelas não foram agendadas no Stripe — há ${dias} dias nada é cobrado.`
+      + ' Abra Financeiro → Parcelamentos → "Conferir pagamento e agendar".'
+  }
+  const oque = plano.status === 'awaiting_entry' ? 'pagar a entrada' : 'cadastrar o débito automático'
   return `⏳ ${quem} não concluiu "${oque}" de ${servico} há ${dias} dias.`
-    + ' Nada foi cobrado e nada será até ele concluir.'
+    + ' Pelo que está registrado, nada foi cobrado.'
     + (plano.aguardandoContrato ? ' Ele ainda nem assinou o contrato.' : '')
+    + (plano.kind === 'installment'
+      ? ' Se ele diz que já pagou, use "Conferir pagamento e agendar" em Financeiro → Parcelamentos — o sistema confere no Stripe.'
+      : '')
     + ' Ligue, reenvie o aviso, ou desista do plano no Financeiro.'
 }
 
@@ -42,7 +52,7 @@ export async function alertarPlanosParados(db: any, opts: { dry?: boolean; hoje?
   const dia = hoje.toISOString().slice(0, 10)
 
   const { data: planos } = await db.from('payment_plans')
-    .select('id, client_id, kind, status, description, installments, updated_at, created_at, clients(name, business_name)')
+    .select('id, client_id, kind, status, description, installments, entry_paid_at, updated_at, created_at, clients(name, business_name)')
     .in('status', ['awaiting_entry', 'awaiting_setup'])
   if (!planos?.length) return { alvo: 0, alertados: [] as string[] }
 

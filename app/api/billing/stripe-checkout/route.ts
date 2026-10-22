@@ -1,8 +1,15 @@
 // /api/billing/stripe-checkout
 //
-// POST { invoiceId } → cria a sessão de pagamento no Stripe e devolve a URL.
-// O cartão é digitado na página do Stripe: o número nunca passa pelo nosso
-// servidor (mantém a firma fora do escopo PCI completo).
+// POST { invoiceId, forma?, valor?, confirmarQuitacao? } → cria a sessão de
+// pagamento no Stripe e devolve a URL. O cartão é digitado na página do
+// Stripe: o número nunca passa pelo nosso servidor (mantém a firma fora do
+// escopo PCI completo).
+//
+// `valor` é o que a equipe digitou no Receber; vazio é o saldo. A regra
+// (parcial só em cartão e ACH, nunca em fatura parcelada, piso do Stripe,
+// dentro do saldo) é `decidirValorDaCobranca` de lib/cobranca-balcao.ts — a
+// MESMA que a tela usa para mostrar o valor do botão. Antes a rota cobrava o
+// saldo inteiro ignorando o que a tela mostrava.
 //
 // A confirmação de aprovado/recusado chega pelo webhook, não por aqui.
 
@@ -11,6 +18,7 @@ import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { parcelamentoVivo } from '@/lib/parcelamento'
 import { nomeDaForma } from '@/lib/stripe-formas'
+import { decidirValorDaCobranca } from '@/lib/cobranca-balcao'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -43,7 +51,6 @@ export async function POST(req: NextRequest) {
   // 'todas' = um link só com cartão, ACH e Klarna; o cliente escolhe na página
   // do Stripe (é o mesmo que ele tem no portal). A forma usada vem do webhook.
   const forma = ['card', 'klarna', 'us_bank_account', 'todas'].includes(body.forma) ? body.forma : 'card'
-  const formas = forma === 'todas' ? ['card', 'us_bank_account', 'klarna'] : [forma]
   if (!invoiceId) return NextResponse.json({ error: 'invoiceId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
@@ -59,13 +66,25 @@ export async function POST(req: NextRequest) {
   const saldo = Math.round((Number(inv.total) - Number(inv.paid_total)) * 100) / 100
   if (saldo <= 0) return NextResponse.json({ error: 'Esta fatura já está quitada.' }, { status: 409 })
 
-  // Fatura com parcelamento em andamento: esta rota cobra o SALDO INTEIRO,
-  // então é uma quitação antecipada — legítima, e o webhook encerra o
-  // parcelamento quando o pagamento entra. O que não pode é cobrar sem que
-  // ninguém saiba: o Klarna paga a firma à vista e some com o parcelamento,
-  // e uma parcela em NSF ficaria aberta no Stripe cobrando de novo.
+  // Fatura com parcelamento em andamento: aqui só se cobra o SALDO INTEIRO,
+  // que é uma quitação antecipada — legítima, e o webhook encerra o
+  // parcelamento quando o pagamento entra. Parte do saldo é recusada pela
+  // regra abaixo (o débito automático seguiria correndo em dobro). O que não
+  // pode é cobrar sem que ninguém saiba: o Klarna paga a firma à vista e
+  // some com o parcelamento, e uma parcela em NSF ficaria aberta no Stripe
+  // cobrando de novo.
   const plano = await parcelamentoVivo(db, inv.id)
-  if (plano && !['awaiting_entry', 'awaiting_setup', 'awaiting_signature', 'draft'].includes(plano.status)) {
+  const parcelado = !!plano && !['awaiting_entry', 'awaiting_setup', 'awaiting_signature', 'draft'].includes(plano.status)
+
+  // O valor é o que a equipe digitou — a MESMA regra da tela. Vazio é o
+  // saldo; parcial só em cartão e ACH; a recusa diz o saldo.
+  const decisao = decidirValorDaCobranca({ saldo, pedido: body.valor, forma, parcelado })
+  if (decisao.ok === false) return NextResponse.json({ error: decisao.motivo, saldo }, { status: 400 })
+  const { valor, parcial } = decisao
+  // 'todas' com valor parcial não oferece Klarna: ela só quita por inteiro.
+  const formas = forma === 'todas' ? (parcial ? ['card', 'us_bank_account'] : ['card', 'us_bank_account', 'klarna']) : [forma]
+
+  if (parcelado) {
     if (body.confirmarQuitacao !== true) {
       return NextResponse.json({
         error: `Esta fatura está parcelada e o débito automático está em andamento (${plano.paid_installments || 0}/${plano.installments} pagas). Cobrar aqui quita o saldo de $${saldo.toFixed(2)} de uma vez e ENCERRA o parcelamento. Confirme para seguir.`,
@@ -81,8 +100,8 @@ export async function POST(req: NextRequest) {
     mode: 'payment',
     ...Object.fromEntries(formas.map((f, i) => [`payment_method_types[${i}]`, f])),
     'line_items[0][price_data][currency]': 'usd',
-    'line_items[0][price_data][unit_amount]': String(Math.round(saldo * 100)),
-    'line_items[0][price_data][product_data][name]': `Fatura ${inv.number} — ${cli.business_name || cli.name || 'Cliente'}`,
+    'line_items[0][price_data][unit_amount]': String(Math.round(valor * 100)),
+    'line_items[0][price_data][product_data][name]': `Fatura ${inv.number} — ${cli.business_name || cli.name || 'Cliente'}${parcial ? ' — pagamento parcial' : ''}`,
     'line_items[0][quantity]': '1',
     'metadata[invoice_id]': inv.id,
     'metadata[forma]': forma,
@@ -135,16 +154,22 @@ export async function POST(req: NextRequest) {
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'stripe_link', performed_by: auth.userId,
-    staff_level: perms.nivel, next: { session: sessao.id, valor: saldo },
+    staff_level: perms.nivel, next: { session: sessao.id, valor, saldo, parcial, forma },
   }).then(() => null, () => null)
 
+  // A mensagem diz o que foi cobrado E o que sobra: "link de $250" numa
+  // fatura de $1.000 sem essa frase parece erro.
+  const dolar = (n: number) => `$${n.toFixed(2)}`
+  const quanto = parcial
+    ? `${dolar(valor)} (PARCIAL — saldo ${dolar(saldo)}; os ${dolar(Math.round((saldo - valor) * 100) / 100)} restantes seguem em aberto)`
+    : dolar(valor)
   return NextResponse.json({
-    ok: true, url: sessao.url, valor: saldo,
+    ok: true, url: sessao.url, valor, saldo, parcial,
     forma,
     message: forma === 'klarna'
-      ? `Link Klarna de $${saldo.toFixed(2)} gerado para ${inv.number} — o cliente parcela e você recebe o valor integral.`
+      ? `Link Klarna de ${quanto} gerado para ${inv.number} — o cliente parcela e você recebe o valor integral.`
       : forma === 'todas'
-      ? `Link de $${saldo.toFixed(2)} gerado para ${inv.number}: o cliente escolhe cartão, débito em conta ou Klarna. Vale por 24 horas; no portal ele sempre tem um link novo.`
-      : `Link de pagamento de $${saldo.toFixed(2)} gerado para ${inv.number}.`,
+      ? `Link de ${quanto} gerado para ${inv.number}: o cliente escolhe cartão, débito em conta${parcial ? '' : ' ou Klarna'}. Vale por 24 horas; no portal ele sempre tem um link novo.`
+      : `Link de pagamento de ${quanto} gerado para ${inv.number}.`,
   })
 }
