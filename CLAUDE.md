@@ -676,6 +676,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   passou é escolhida pela equipe e o cronograma (`invoice_installments`)
   anda junto, para aviso de cobrança, portal e aging lerem as datas que o
   Stripe vai seguir. Trilha `scheduled_by_staff` antes de tudo.
+  **Duas guardas que só passaram a importar quando o agendamento voltou a
+  funcionar** (`decidirEntradaDoWebhook`, pura, com a tabela inteira e uma
+  varredura em teste): **(1) só o plano que ESPERA o cliente se põe a
+  cobrar** (`ESPERANDO_O_CLIENTE`: rascunho e os dois `awaiting_*`). A guarda
+  era "já está ativo" — e o evento antigo reenviado (o Stripe reenvia por
+  dias; o painel deixa reenviar à mão) REATIVAVA o plano cancelado e agendava
+  as parcelas de um acordo desfeito; o mandato (sem entrada) tinha a mesma
+  guarda. Dinheiro de entrada num plano encerrado vira alerta, nunca
+  lançamento. **(2) Entrada DEVOLVIDA ou contestada não é entrada.** O
+  `payment_status` da sessão continua `paid` depois do reembolso; quem diz é
+  a cobrança (`amount_refunded`, `disputed`, lidos em `pagamentoDaSessao`, e a
+  cobrança não expandida é BUSCADA, não presumida limpa). Devolução parcial
+  também tira: lançar o valor cheio seria receita que não existe. Webhook,
+  "Conferir pagamento e agendar" e o cancelamento usam `entradaIntegra`; no
+  cancelamento, a que voltou não se lança, mas também não deixa o plano com
+  cara de proposta (o cliente pagou e viu voltar — "nada foi cobrado" seria
+  falso). O alerta diz o que fazer em cada caso: "agendar" não serve à
+  entrada devolvida (ele recusa), e a entrada em dobro é estorno.
   **Não testado daqui**: a chamada real ao Stripe (o container não tem chave);
   os parâmetros conferem com os tipos do `stripe-node` 23 (API `2026-09-30`).
 - **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
