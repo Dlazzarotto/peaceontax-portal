@@ -1715,6 +1715,27 @@ titulo('A ORDEM DAS MIGRACOES APONTA PARA ARQUIVO QUE EXISTE')
       `nao existem: ${sumidos.join(', ')} -- a dependencia some em silencio e a ordem volta a alfabetica`)
   else
     ok(`A ordem das migracoes aponta para arquivo que existe (${pares.length} declaracoes)`)
+
+  // A ordenacao recebe o conjunto do que esta APLICADO, e o livro e um Map.
+  // A funcao aceitava "Set ou objeto" e o migrar.mjs passava o Map cru:
+  // `aplicados[x]` dava sempre undefined e TODA dependencia de migracao ja
+  // aplicada parecia faltar -- o --pendentes do GitHub recusou a
+  // equipe-unica-v1 (exit 3) com a dependencia dela listada como ok. Os
+  // testes passavam com Set: o defeito estava na LIGACAO entre os modulos.
+  const semComent = s => s.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const mig = semComent(readFileSync(join(raiz, 'scripts/migrar.mjs'), 'utf8'))
+  const ord = semComent(readFileSync(join(raiz, 'scripts/ordem-das-migracoes.mjs'), 'utf8'))
+  const chamadas = mig.match(/ordenarPorDependencia\([^\n]*/g) || []
+  const problemas = []
+  if (!chamadas.length) problemas.push('migrar.mjs nao chama ordenarPorDependencia -- ancora perdida e FALHA')
+  for (const c of chamadas)
+    if (!/ordenarPorDependencia\(paraAplicar, aplicadasParaDependencia\(livro, noDisco\)\)/.test(c))
+      problemas.push(`chamada sem o conjunto do que esta ok: ${c.trim().slice(0, 90)}`)
+  if (!/if \(!\(aplicados instanceof Set\)\) \{\s*throw new TypeError/.test(ord))
+    problemas.push('ordenarPorDependencia voltou a aceitar o livro cru em silencio')
+  problemas.length
+    ? falta('A ordem das migracoes recebe o que esta aplicado, nao o livro cru', problemas.join(' · '))
+    : ok('A ordem das migracoes recebe o que esta aplicado (Set de ok), nao o livro cru')
 }
 
 
