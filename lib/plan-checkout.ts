@@ -78,6 +78,12 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
 
   if (plan.kind === 'installment') {
     const entrada = Number(plan.entry_amount || 0)
+    // Entrada JÁ paga (o agendamento das parcelas travou depois dela): um
+    // link novo cobraria a entrada outra vez. Quem conclui é a equipe, em
+    // Financeiro → Parcelamentos → "Conferir pagamento e agendar".
+    if (entrada > 0 && plan.entry_paid_at) {
+      throw new Error('A entrada deste parcelamento já foi paga — falta só agendar as parcelas (Financeiro → Parcelamentos).')
+    }
     const metadata: Record<string, string> = {
       planId, clientId: plan.client_id,
       planKind: entrada > 0 ? 'installment_entry' : 'installment_setup',

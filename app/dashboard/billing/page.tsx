@@ -208,6 +208,13 @@ export default function BillingPage() {
   const [pcCancelar, setPcCancelar] = useState<any | null>(null)
   const [pcMotivo, setPcMotivo]     = useState('')
   const [pcSenha, setPcSenha]       = useState('')
+  // Agendar as parcelas de um parcelamento que travou depois da entrada: o
+  // servidor confere no Stripe o que o cliente fez antes de qualquer coisa.
+  const [pcAgendar, setPcAgendar]   = useState<any | null>(null)
+  const [agPrimeira, setAgPrimeira] = useState('')
+  const [agMotivo, setAgMotivo]     = useState('')
+  const [agSenha, setAgSenha]       = useState('')
+  const [agErro, setAgErro]         = useState('')
   // Caminho preferido: o código que o gerente dita da aba Autorização, no
   // login dele. A senha fica como reserva — senha de terceiro digitada na
   // máquina do balcão é o que queríamos parar de pedir.
@@ -340,6 +347,30 @@ export default function BillingPage() {
     }
 
     setPcCancelar(null); setPcMotivo('')
+    loadParcelamentos(); load()
+  }
+
+  const abrirAgendar = (pl: any) => {
+    // A data combinada vale se ainda não passou; senão a equipe escolhe.
+    const original = pl.next_charge_date ? String(pl.next_charge_date).slice(0, 10) : ''
+    setAgPrimeira(original && pcDados.hoje && original > pcDados.hoje ? original : '')
+    setAgMotivo(''); setAgSenha(''); setAgErro(''); setMsg('')
+    setPcAgendar(pl)
+  }
+
+  const agendarParcelamento = async () => {
+    if (!pcAgendar) return
+    setBusy(true); setAgErro('')
+    const d = await fetch('/api/billing/installment-plan', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planId: pcAgendar.id, action: 'agendar', primeira: agPrimeira || undefined, motivo: agMotivo, password: agSenha }),
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false); setAgSenha('')
+    // A recusa fica NO modal: "o cliente não pagou" ou "escolha a nova data"
+    // é resposta para quem está com ele aberto, não um aviso lá em cima.
+    if (!d?.ok) { setAgErro(d?.error || 'Não foi possível agendar.'); return }
+    setMsg(`✓ ${d.message}`)
+    setPcAgendar(null)
     loadParcelamentos(); load()
   }
 
@@ -1734,6 +1765,16 @@ export default function BillingPage() {
                         {['awaiting_entry', 'awaiting_setup'].includes(pl.status) && pl.stripe_session_id && (
                           <span style={{ fontSize: 12.5, color: '#6A7A9A', marginRight: 10 }}>aguardando o cliente</span>
                         )}
+                        {/* Aguardando o cliente e sem agendamento: pode ser que ele já
+                            tenha pago e o agendamento tenha travado. Quem diz é o
+                            Stripe — o servidor confere antes de fazer qualquer coisa. */}
+                        {pl.podeAgendar && pcDados.perms?.receber && (
+                          <button onClick={() => abrirAgendar(pl)}
+                            style={{ background: 'none', border: 'none', color: '#1A6B4A', marginRight: 12,
+                              fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
+                            Conferir pagamento e agendar
+                          </button>
+                        )}
                         {!['cancelled', 'completed'].includes(pl.status) && pcDados.perms?.cancelar
                           // Sem fatura (módulo antigo de orçamentos): só a proposta
                           // que nunca começou se desfaz — o que já cobra segue até o
@@ -1748,7 +1789,8 @@ export default function BillingPage() {
                             {pl.semFatura ? 'Desistir da proposta' : nuncaComecou(pl) ? 'Refazer acordo' : 'Cancelar parcelamento'}
                           </button>
                         )}
-                        {pl.semFatura && !nuncaComecou(pl) && !['cancelled', 'completed'].includes(pl.status) && (
+                        {/* O travado (aguardando, com a entrada paga) não "segue" nada: para ele há o agendar. */}
+                        {pl.semFatura && !nuncaComecou(pl) && !pl.podeAgendar && !['cancelled', 'completed'].includes(pl.status) && (
                           <span title="Parcelamento do módulo antigo de orçamentos, sem fatura: segue até o fim. Para interromper, painel do Stripe."
                             style={{ fontSize: 12, color: '#9AAAB0' }}>antigo, segue até o fim</span>
                         )}
@@ -1860,10 +1902,13 @@ export default function BillingPage() {
             </h3>
             <p style={{ fontSize: 13, color: '#4A5A70', margin: '0 0 14px', lineHeight: 1.6 }}>
               {nuncaComecou(pcCancelar) ? (
-                <>O cliente nunca cadastrou o débito: <strong>nada foi cobrado</strong> e
-                não há nada a parar no Stripe. O link que ele recebeu deixa de
-                valer e a fatura segue em aberto — depois disso você pode
-                criar o acordo novo.</>
+                <>Pelo que está registrado, o cliente nunca cadastrou o débito: nada
+                a parar no Stripe. O link que ele recebeu deixa de valer e a fatura
+                segue em aberto — depois disso você pode criar o acordo novo.
+                {Number(pcCancelar.entry_amount) > 0 && (
+                  <> <strong>Antes, o sistema confere no Stripe</strong>: se a entrada
+                  tiver sido paga, ela entra na fatura e o aviso ao cliente muda.</>
+                )}</>
               ) : (
                 <>O débito automático para de cobrar e as parcelas que faltam são
                 canceladas. <strong>A fatura continua em aberto com o saldo</strong> —
@@ -1898,6 +1943,69 @@ export default function BillingPage() {
                 style={btn('#B02020', busy || pcMotivo.trim().length < 5 || !pcSenha)}>
                   {busy ? 'Cancelando…'
                   : nuncaComecou(pcCancelar) ? 'Encerrar proposta' : 'Cancelar parcelamento'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Agendar as parcelas que travaram. O servidor confere no Stripe se o
+          cliente pagou a entrada (ou autorizou o débito); se pagou, lança a
+          entrada na fatura com a data em que ela entrou, re-data o cronograma
+          a partir da 1ª parcela escolhida e agenda. Se não pagou, diz isso. */}
+      {pcAgendar && (
+        <div onClick={() => !busy && setPcAgendar(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,35,64,0.6)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, width: '100%', maxWidth: 480, padding: '20px 22px' }}>
+            <h3 style={{ fontFamily: 'Georgia,serif', fontSize: 18, color: '#0F2340', margin: '0 0 4px', fontWeight: 400 }}>
+              Conferir pagamento e agendar — {pcAgendar.numero}
+            </h3>
+            <p style={{ fontSize: 13, color: '#4A5A70', margin: '0 0 12px', lineHeight: 1.6 }}>
+              {pcAgendar.cliente} · {pcAgendar.installments}× {money(pcAgendar.installment_amount)}
+              {Number(pcAgendar.entry_amount) > 0 ? <> · entrada de {money(pcAgendar.entry_amount)}</> : null}
+              <br />
+              O sistema confere no Stripe o que o cliente fez. Se a entrada foi paga (ou o débito
+              autorizado), ela entra na fatura com a data em que entrou, o cronograma passa a
+              começar na data abaixo e o Stripe começa a cobrar. Se não foi, nada muda.
+            </p>
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>
+              1ª parcela {pcAgendar.next_charge_date ? <>(combinada: {dataUS(pcAgendar.next_charge_date)})</> : null}
+            </label>
+            <input type="date" value={agPrimeira} min={pcDados.hoje || undefined}
+              onChange={e => setAgPrimeira(e.target.value)}
+              style={{ ...inp, width: '100%', marginBottom: 4, boxSizing: 'border-box' as const }} />
+            <div style={{ fontSize: 11.5, color: '#9AAAB0', marginBottom: 10 }}>
+              Hoje = a 1ª parcela é cobrada na hora; as outras seguem a frequência combinada a partir dela.
+            </div>
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>
+              Motivo * (fica na trilha do plano)
+            </label>
+            <input value={agMotivo} onChange={e => setAgMotivo(e.target.value)}
+              placeholder="ex.: entrada paga em 10/2026 e o agendamento não tinha sido criado"
+              style={{ ...inp, width: '100%', marginBottom: 10, boxSizing: 'border-box' as const }} />
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 800, color: '#6A7A9A', marginBottom: 3 }}>
+              Sua senha *
+            </label>
+            <input type="password" value={agSenha} onChange={e => setAgSenha(e.target.value)}
+              autoComplete="new-password"
+              style={{ ...inp, width: '100%', marginBottom: 12, boxSizing: 'border-box' as const }} />
+
+            {agErro && (
+              <div style={{ background: '#FDECEC', color: '#B02020', borderRadius: 10, padding: '10px 12px',
+                fontSize: 13, fontWeight: 600, marginBottom: 12, lineHeight: 1.5 }}>⚠️ {agErro}</div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setPcAgendar(null)} disabled={busy} style={btn('#6A7A9A')}>Voltar</button>
+              <button onClick={agendarParcelamento}
+                disabled={busy || agMotivo.trim().length < 5 || !agSenha}
+                style={btn('#1A6B4A', busy || agMotivo.trim().length < 5 || !agSenha)}>
+                {busy ? 'Conferindo…' : 'Conferir e agendar'}
               </button>
             </div>
           </div>
