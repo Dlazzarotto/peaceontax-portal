@@ -529,7 +529,7 @@ async function desistirDaPropostaAntiga(db: any, plano: any, userId: string, mot
   // de novo — e a desistência é recusada, dizendo o que fazer.
   if (planoNuncaComecou(plano) && Number(plano.entry_amount || 0) > 0 && plano.stripe_customer_id && process.env.STRIPE_SECRET_KEY) {
     let pago: PagamentoDaSessao | null
-    try { pago = await entradaPagaNoStripe(plano) } catch (e) {
+    try { pago = (await oQueOClienteFez(plano)).find(f => f.modo === 'payment' && f.concluido) || null } catch (e) {
       // Consulta que falha não é "não pagou".
       return NextResponse.json({ error: `Não deu para conferir no Stripe se a entrada foi paga: ${(e as Error).message}. Nada foi feito.` }, { status: 502 })
     }
