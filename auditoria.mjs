@@ -2385,9 +2385,10 @@ titulo('CONTRATO RECORRENTE NUM LUGAR SO (payment_plans)')
     const ip = ler('app/api/billing/installment-plan/route.ts')
     const i = ip.indexOf('async function desistirDaPropostaAntiga(')
     const corpo = i >= 0 ? ip.slice(i, ip.indexOf('\n}\n', i)) : ''
-    const iConf = corpo.indexOf('await oQueOClienteFez(plano)'), iCanc = corpo.indexOf("status: 'cancelled'")
+    const iConf = corpo.indexOf('entrada = await entradaNoStripe(plano)'), iCanc = corpo.indexOf("status: 'cancelled'")
     if (!corpo) falta('Proposta antiga so se desiste depois de perguntar ao Stripe', 'desistirDaPropostaAntiga nao encontrada -- ancora perdida e FALHA')
-    else if (!(iConf >= 0 && iCanc > iConf) || !/entry_paid_at: quando\.toISOString\(\)/.test(corpo))
+    else if (!(iConf >= 0 && iCanc > iConf) || !/entry_paid_at: quando\.toISOString\(\)/.test(corpo)
+             || !/const pago = entrada\.integra\s*\n/.test(corpo) || !/avisarNoPortal\(db, plano\.client_id, entradaVoltou\s*\?/.test(corpo))
       falta('Proposta antiga so se desiste depois de perguntar ao Stripe',
             'a entrada paga no Stripe nao e conferida (ou nao fica registrada) antes de desistir: o cliente ouviria que nada foi cobrado')
     else ok('Proposta antiga so se desiste depois de perguntar ao Stripe')

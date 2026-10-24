@@ -541,12 +541,19 @@ async function desistirDaPropostaAntiga(db: any, plano: any, userId: string, mot
   // cliente que "nada foi cobrado" seria falso, e sem fatura não há onde
   // lançá-la. Fica registrado que entrou — o portal para de oferecer pagá-la
   // de novo — e a desistência é recusada, dizendo o que fazer.
+  // A que VOLTOU (devolvida, contestada — entradaQueVoltou) não está com a
+  // firma: a desistência segue, porque o agendar recusa entrada devolvida e
+  // recusar aqui também deixaria o plano sem saída. Mas o aviso não diz que
+  // "nada foi cobrado": o cliente pagou e viu o dinheiro voltar.
+  let entradaVoltou: PagamentoDaSessao | null = null
   if (planoNuncaComecou(plano) && Number(plano.entry_amount || 0) > 0 && plano.stripe_customer_id && process.env.STRIPE_SECRET_KEY) {
-    let pago: PagamentoDaSessao | null
-    try { pago = (await oQueOClienteFez(plano)).find(f => f.modo === 'payment' && f.concluido) || null } catch (e) {
+    let entrada: { integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }
+    try { entrada = await entradaNoStripe(plano) } catch (e) {
       // Consulta que falha não é "não pagou".
       return NextResponse.json({ error: `Não deu para conferir no Stripe se a entrada foi paga: ${(e as Error).message}. Nada foi feito.` }, { status: 502 })
     }
+    entradaVoltou = entrada.integra ? null : entrada.voltou
+    const pago = entrada.integra
     if (pago) {
       const quando = pago.quando || new Date()
       await db.from('payment_plans').update({ entry_paid_at: quando.toISOString(), updated_at: new Date().toISOString() })
@@ -564,7 +571,9 @@ async function desistirDaPropostaAntiga(db: any, plano: any, userId: string, mot
   // A trilha ANTES (princípio 2): falhou, não desiste.
   const { error: errT } = await db.from('plan_audit').insert({
     plan_id: plano.id, action: 'cancelled', reason: motivo, performed_by: userId,
-    snapshot: { previous_status: plano.status, semFatura: true, proposta: true },
+    snapshot: { previous_status: plano.status, semFatura: true, proposta: !entradaVoltou,
+      ...(entradaVoltou ? { entradaQueVoltou: { sessao: entradaVoltou.sessao, valor: entradaVoltou.valor,
+                                               devolvido: entradaVoltou.devolvido, contestado: entradaVoltou.contestado } } : {}) },
   })
   if (errT) return NextResponse.json({ error: `Nada foi feito: não deu para gravar a trilha (${errT.message}).` }, { status: 500 })
   // O link que ficou com o cliente deixa de valer.
@@ -575,11 +584,16 @@ async function desistirDaPropostaAntiga(db: any, plano: any, userId: string, mot
     status: 'cancelled', cancel_reason: motivo, stripe_session_id: null, updated_at: new Date().toISOString(),
   }).eq('id', plano.id).in('status', ['draft', 'awaiting_entry', 'awaiting_setup'])
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  const aviso = await avisarNoPortal(db, plano.client_id,
-    '📆 A proposta de parcelamento que estava aguardando o seu cadastro foi encerrada — o link não vale mais, e nada foi cobrado. Fale com a nossa equipe se quiser combinar de novo.')
+  const aviso = await avisarNoPortal(db, plano.client_id, entradaVoltou
+    ? '📆 A proposta de parcelamento que estava aguardando o seu cadastro foi encerrada — o link não vale mais. Fale com a nossa equipe se quiser combinar de novo.'
+    : '📆 A proposta de parcelamento que estava aguardando o seu cadastro foi encerrada — o link não vale mais, e nada foi cobrado. Fale com a nossa equipe se quiser combinar de novo.')
   return NextResponse.json({
     ok: true, nuncaComecou: false,
-    message: 'Proposta antiga encerrada: nada tinha sido cobrado, e o link do cliente deixou de valer.'
+    message: (entradaVoltou
+      ? `Proposta antiga encerrada, e o link do cliente deixou de valer. A entrada paga no Stripe foi ${entradaVoltou.contestado ? 'CONTESTADA' : 'DEVOLVIDA'}`
+        + (entradaVoltou.contestado || entradaVoltou.devolvido < entradaVoltou.valor - 0.004
+          ? ' — parte dela pode ter ficado com a firma: confira no painel do Stripe.' : '.')
+      : 'Proposta antiga encerrada: nada tinha sido cobrado, e o link do cliente deixou de valer.')
       + (aviso.ok ? '' : ` O aviso no portal não saiu: ${aviso.motivo}.`),
   })
 }

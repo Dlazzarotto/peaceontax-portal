@@ -1235,6 +1235,10 @@ middleware.ts        controle de acesso por rota
   a entrada PAGA tinha cara de proposta, e desistir dizia ao cliente que nada
   foi cobrado. Achou a entrada paga, registra `entry_paid_at` e recusa: o
   caminho é "Conferir pagamento e agendar", que também aparece para o antigo.
+  Entrada que VOLTOU (devolvida ou contestada, `entradaQueVoltou`) não está
+  com a firma: aí a desistência segue — o agendar recusa entrada devolvida, e
+  recusar aqui também deixaria o plano sem saída —, mas o aviso ao cliente não
+  diz que "nada foi cobrado".
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,
