@@ -19,11 +19,20 @@
 -- bank_accounts, invoices). Depender de "nao existe policy" e fragil: a
 -- proxima policy criada no painel reabre o acesso sem aviso.
 --
--- POR QUE FECHAR E SEGURO
+-- RODE DEPOIS DO MERGE DESTE PR (e do deploy). Antes dele, duas telas liam
+-- estas tabelas direto do navegador e cairiam: a pagina publica /agendar
+-- (meeting_types, com a anon key -- o cliente nao conseguiria agendar) e a
+-- agenda da equipe (staff_availability, com a sessao). A primeira versao
+-- deste cabecalho dizia "zero .from() em client component" e estava ERRADA:
+-- a conferencia nao tinha sido feita. As duas telas passaram a ir por
+-- /api/agenda/tipos e /api/agenda/disponibilidade, e a auditoria agora
+-- recusa tela que leia tabela direto ("O navegador nao le tabela direto").
+--
+-- POR QUE FECHAR E SEGURO (depois do deploy)
 -- Nenhum componente do navegador nem a sessao do cliente le essas tabelas
--- direto (conferido: zero `.from()` em client component, zero em supabaseServer
--- com sessao anon). As rotas publicas tambem nao usam a anon key: /api/agenda/
--- slots e /bookings e /api/invite/[token] usam a SERVICE ROLE. Quem trabalha
+-- direto -- a auditoria confere os arquivos do navegador, um a um. As rotas
+-- publicas tambem nao usam a anon key: /api/agenda/slots, /bookings, /tipos e
+-- /api/invite/[token] usam a SERVICE ROLE. Quem trabalha
 -- essas tabelas e o servidor com a service role, que passa POR CIMA da RLS e
 -- NAO perde nada com o revoke (o revoke so tira anon/authenticated). E a
 -- convencao da casa: "tabela nova nasce FECHADA; quem trabalha nelas e o
