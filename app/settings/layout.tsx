@@ -22,7 +22,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
         <div style={{ background: '#fff', borderRadius: 12, padding: 14, border: '1px solid #e2e8f4', alignSelf: 'start' }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#6a7a9a', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, padding: '0 4px' }}>Settings</div>
           <Link href="/settings/users" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 8, textDecoration: 'none', fontSize: 13, color: '#1a2a3a', marginBottom: 2 }}>
-            👥 Team Members
+            👥 Equipe
           </Link>
         </div>
         <main>{children}</main>

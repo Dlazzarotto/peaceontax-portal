@@ -4,15 +4,19 @@
 // dizia "Invalid or expired invitation" porque não havia o que chamar.
 //
 // GET  → devolve os dados do convite (nome, e-mail, papel) para a tela
-// POST → cria o login com a senha, grava o papel e REGISTRA O NÍVEL em
-//        staff_roles, que é a fonte única de permissão do sistema.
+// POST → cria o login com a senha, grava o papel e LIGA a pessoa à sua linha
+//        em team_members, onde mora o nível (lib/equipe.ts). A linha que o
+//        CRM já tinha é completada, não duplicada.
 //
 // Pública por natureza (quem aceita ainda não tem login), protegida pelo
 // token aleatório de 64 caracteres e pela validade de 7 dias.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { nivelDoPapel } from '@/lib/staff-perms'
+import { getStaffLevel, nivelDoPapel } from '@/lib/staff-perms'
+import { ehDaFirma } from '@/lib/papeis'
+import { todosOsLogins, vincularNaEquipe } from '@/lib/equipe-servidor'
+import { buscaLiteral } from '@/lib/clientes-grupos'
 
 export const dynamic = 'force-dynamic'
 
@@ -94,6 +98,7 @@ export async function POST(
     // Cria o login. Se o e-mail já existir, atualiza a senha em vez de falhar
     // (caso de convite reenviado ou pessoa que já tinha conta).
     let userId: string | null = null
+    let papelFinal = papel
 
     const { data: criado, error: errCriar } = await db.auth.admin.createUser({
       email: convite.email,
@@ -110,19 +115,29 @@ export async function POST(
       if (!jaExiste) {
         return NextResponse.json({ error: errCriar.message }, { status: 400 })
       }
-      // Localiza o usuário existente pelo e-mail
-      const { data: lista } = await db.auth.admin.listUsers()
-      const achado = lista?.users?.find(
-        (u: any) => String(u.email).toLowerCase() === String(convite.email).toLowerCase())
+      // Localiza o usuário existente pelo e-mail — em TODAS as páginas: o
+      // listUsers() sem página só olhava os 50 primeiros logins.
+      const { logins, erro: errLogins } = await todosOsLogins(db)
+      if (errLogins) {
+        return NextResponse.json({ error: `Não foi possível conferir os logins: ${errLogins}` }, { status: 500 })
+      }
+      const achado = logins.find(
+        u => String(u.email).toLowerCase() === String(convite.email).toLowerCase())
       if (!achado) {
         return NextResponse.json({ error: 'Não foi possível criar a conta. Contate o administrador.' }, { status: 500 })
       }
       userId = achado.id
+      const { data: atual } = await db.auth.admin.getUserById(userId)
+      const appAtual = (atual?.user?.app_metadata || {}) as Record<string, unknown>
+      // Quem JÁ É da firma mantém o papel: o nível dele mora na equipe e só
+      // muda pelo sócio. Um convite antigo, aceito depois de a pessoa ter
+      // sido rebaixada, regravava o papel — e o papel é a reserva do nível.
+      papelFinal = ehDaFirma(appAtual.role) ? String(appAtual.role) : papel
       await db.auth.admin.updateUserById(userId, {
         password: String(password),
-        app_metadata:  { ...(achado.app_metadata || {}), ...appMetadata },
+        app_metadata:  { ...appAtual, role: papelFinal },
         // role sai de user_metadata: fica um lugar so, e o forjavel nao e ele
-        user_metadata: { ...(achado.user_metadata || {}), ...metadata, role: undefined },
+        user_metadata: { ...(atual?.user?.user_metadata || {}), ...metadata, role: undefined },
       })
     }
 
@@ -130,25 +145,34 @@ export async function POST(
       return NextResponse.json({ error: 'Não foi possível criar a conta' }, { status: 500 })
     }
 
-    // ── A peça que faltava: gravar o nível de permissão ──
+    // ── A pessoa na equipe: o nível mora aqui ──
     // Admin e Owner viram 'owner'; Manager vira 'manager'; Staff vira 'junior'.
-    const nivel = nivelDoPapel(papel)
-    const { error: errNivel } = await db.from('staff_roles').upsert({
-      user_id: userId,
-      level: nivel,
-      display_name: convite.name,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id' })
-    if (errNivel) {
-      console.error('staff_roles upsert:', errNivel)
-      // Não derruba o cadastro: getStaffLevel tem reserva pelo metadata
+    // Quem já tinha linha não tem o nível tocado (vincularNaEquipe).
+    const vinculo = await vincularNaEquipe({
+      userId, email: convite.email, nome: convite.name, nivel: nivelDoPapel(papelFinal),
+    }, db)
+    if (vinculo.erro) {
+      // Não derruba o cadastro: sem a linha, getStaffLevel usa o papel do
+      // login — o mesmo nível do convite. A tela Equipe mostra a pessoa como
+      // "sem cadastro" para o sócio acertar.
+      console.error('equipe: vinculo do convite', vinculo.acao, vinculo.erro)
     }
+    const nivel = await getStaffLevel(userId)
 
     // Marca o convite como usado — o mesmo link não serve duas vezes
     await db.from('staff_invitations').update({
       status: 'accepted',
       registered_at: new Date().toISOString(),
     }).eq('id', convite.id)
+
+    // E os OUTROS convites pendentes do mesmo e-mail deixam de valer: o
+    // "Reenviar" criava um link novo sem matar o anterior, e um link velho
+    // com outro nível continuava abrindo a conta por sete dias.
+    await db.from('staff_invitations')
+      .update({ expires_at: new Date().toISOString() })
+      .ilike('email', buscaLiteral(convite.email))
+      .eq('status', 'pending')
+      .neq('id', convite.id)
 
     return NextResponse.json({
       ok: true,

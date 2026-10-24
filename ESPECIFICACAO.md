@@ -30,13 +30,13 @@ Estes princípios foram estabelecidos ao longo da construção e explicam por qu
 
 ## 3. Níveis de acesso
 
-Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, que é traduzido para um dos três níveis.
+Fonte única de permissão: a coluna `level` de `team_members` — a pessoa da equipe é **uma linha só**, com o nome de responsável no CRM, o login, o nível e o PIN (seção 3.4). O convite escolhe o nível; convites antigos com papel Admin continuam valendo como sócio.
 
 | Convite | Nível | Alcance |
 |---|---|---|
-| Owner · Admin | `owner` | tudo, inclusive relatórios e totais do negócio |
-| Manager | `manager` | opera o dia a dia; **não** vê faturamento consolidado |
-| Staff | `junior` | acesso restrito; ações sensíveis exigem PIN de gerente |
+| Sócio (antes Owner · Admin) | `owner` | tudo, inclusive relatórios e totais do negócio e a equipe |
+| Gerente | `manager` | opera o dia a dia; **não** vê faturamento consolidado |
+| Assistente | `junior` | acesso restrito; ações sensíveis exigem PIN de gerente |
 
 **Matriz do financeiro:**
 
@@ -51,7 +51,7 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 | Relatórios e totais | ❌ | ❌ | ✅ |
 | Ver conversas de atendimento | ❌ | ✅ | ✅ |
 
-O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
+O cliente só acessa o próprio cadastro. Login da firma sem linha na equipe recebe o nível que o papel do login dá (o aceite do convite que falhou ao gravar não tranca ninguém); consulta do nível que **falha** e quem **saiu** da equipe valem assistente — o nível mais restrito.
 
 **O assistente fica em Pessoa física, e não baixa arquivo.**
 `canAccessClient` — o funil por onde ~40 rotas passam — era
@@ -223,12 +223,13 @@ cliques não podem virar três autorizações.
 São decisões separadas e não podem ser confundidas:
 
 1. **A porta — firma ou cliente?** Vem de `lib/papeis.ts`, e só de lá.
-   `user_metadata.role` do login é comparado com uma **lista fechada**:
+   `app_metadata.role` do login (o campo que só a service role escreve) é
+   comparado com uma **lista fechada**:
    `firm · owner · admin · manager · staff`. Papel fora da lista é **cliente**.
    Errar para o lado restritivo tranca um funcionário, que o sócio libera em
    um minuto; errar para o outro abre a carteira inteira.
 2. **O poder dentro da firma — owner, manager ou junior?** Vem de
-   `staff_roles`, por `lib/staff-perms.ts`, como na tabela acima.
+   `team_members.level`, por `lib/staff-perms.ts`, como na tabela acima.
 
 **Por que isto está escrito aqui.** O sistema tinha duas linguagens para a
 mesma coisa: o convite gravava `firm | admin | manager | staff`, e a porta
@@ -269,16 +270,56 @@ Duas regras que saíram daí:
   reescrevia o metadata inteiro: corpo sem `role` rebaixava um membro da
   firma a cliente e apagava `must_change_password`.
 
-Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso —
-a mudança de papel ali também atualiza `staff_roles`, senão a tela diz
-"Manager" e o sistema continua tratando como assistente.
+Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso.
 
-**O nível só é reescrito quando o papel muda.** Papel e nível podem
-discordar de propósito: existe hoje quem tem papel `firm` e nível `manager`,
-afinado à mão em `/api/account/team`. Sincronizar em toda gravação faria uma
-edição de telefone promover essa pessoa a sócia — e ela passaria a ver o
-faturamento consolidado, sem ninguém pedir. Quem manda no que a pessoa PODE
-é sempre o `staff_roles`.
+### 3.4 A equipe num lugar só (decisão do sócio)
+
+A firma tinha **três cadastros da mesma gente**, cada um com a sua tela, e
+eles discordavam: `team_members` (o nome de responsável no CRM, em `/team`,
+com um "rótulo" de função que qualquer assistente trocava e que a tela
+mostrava como "Sócio"), os logins com o papel da porta (Settings → Team
+Members) e `staff_roles`, o nível de verdade, trocado em Minha Conta sem
+senha, sem motivo e sem rastro. Agora cada pessoa é **uma linha de
+`team_members`**: nome, e-mail, login (`user_id`), nível (`level`) e PIN, na
+tela **Equipe** (`/settings/users`). As regras estão em `lib/equipe.ts`, com
+teste.
+
+- **Editar não mexe no nível.** Era o defeito mudo que levou à unificação:
+  ao editar o telefone em Team Members, a rota comparava o papel com
+  `user_metadata.role` para saber se ele tinha mudado — e a migração do papel
+  tirou o papel de lá. O "mudou" dava sempre verdadeiro e o nível era
+  reescrito pelo papel: quem tinha papel `firm` e nível `manager` virava
+  sócio; quem foi promovido em Minha Conta voltava a assistente.
+- **O nível muda por um ato próprio**: só o sócio, nunca o próprio, com a
+  **senha do sócio e o motivo**, e a trilha (`team_member_audit`) gravada
+  **antes** — se ela falhar, a mudança é recusada. Passar a Assistente apaga
+  o PIN. O papel da porta acompanha o nível (é a reserva do nível; os dois
+  discordando é o defeito acima).
+- **Quem sai da equipe sai inteiro**: desativar bloqueia o login, tira o
+  nome do seletor de responsável e o **PIN deixa de aprovar** — antes o PIN
+  de um gerente desligado continuava liberando desconto e troca de acesso
+  no balcão. Os clientes que a pessoa atendeu continuam com o nome dela.
+- **Convite é para quem ainda não tem login.** Reconvidar quem já é da
+  equipe regravava o nível pelo convite, e o "Reenviar" não matava o link
+  anterior — um link velho, com outro nível, abria a conta por sete dias.
+  Agora o convite novo encerra os pendentes do mesmo e-mail, e o aceite
+  encerra os outros. Login de cliente também é recusado: o aceite
+  transformaria o portal dele em acesso da firma.
+- **Aceitar o convite completa a linha do CRM** (mesmo e-mail, ou mesmo
+  nome sem e-mail), em vez de pôr a pessoa duas vezes no seletor — a mesma
+  regra do cadastro de cliente. Quem já tinha linha não tem o nível tocado.
+- **Responsável sem login** continua existindo (entra no seletor do CRM e
+  não entra no sistema); incluir, renomear e desativar é do sócio. Nível só
+  existe para quem tem login.
+- `staff_roles` ficou **congelada** como rastro: a service role não grava
+  mais nela. A lista de logins passou a ler **todas** as páginas — a de
+  antes devolvia os 50 primeiros, e gente da equipe sumia da tela.
+
+Migração: `sql/equipe-unica-v1.sql`, que **precisa rodar antes de o código
+subir**. Ela fecha `team_members` ao navegador (o nível passa a morar lá),
+liga cada login da firma à sua linha sem mudar o nível de ninguém, cria a
+trilha e congela `staff_roles`; decide pelo estado de destino (rodar de novo
+não traz de volta nível velho). Testada no PG 16.
 
 ---
 
@@ -598,6 +639,7 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **Forma de pagamento desativada no Stripe não derruba mais o pagamento inteiro.** Cartão, débito em conta (ACH) e Klarna só funcionam se estiverem ativados na conta (Settings → Payment methods). Quando o código pedia uma forma que a conta não tinha, o Stripe recusava a **sessão inteira** — o link nem nascia. No cadastro do débito de um parcelamento, que sempre pedia cartão + ACH, isso deixava o cliente sem pagar a entrada e sem autorizar as parcelas, com a rota respondendo "tente de novo" sem dizer o motivo. Agora `lib/stripe-formas.ts` tira a forma recusada e refaz a sessão com o que sobrou (cartão é o piso), em todos os caminhos: pagamento à vista do portal, entrada do parcelamento, cadastro sem entrada e mensalidade. O que a conta recusou vai para `plan_audit`/log e para um alerta à equipe; se a sessão não nascer de jeito nenhum, o motivo real vai para `plan_alerts` e `invoice_audit.checkout_failed` em vez de morrer no log. O link do Financeiro passou a nomear a forma que o Stripe citou (antes dizia "todas não está habilitado"). Sem migração.
 - **Cobrar pelo Stripe cobra o valor digitado, não o saldo inteiro.** No Receber, o botão "Cobrar no cartão" mostrava o valor digitado, mas a chamada não o mandava e a rota criava a sessão do Stripe sempre pelo saldo — quem ia receber uma parte no cartão ou no ACH via o total da fatura na página do Stripe. Agora o valor viaja e a tela e a rota decidem pela mesma regra (`decidirValorDaCobranca`): vazio é o saldo; o resto tem de ser centavos, acima do piso do Stripe (US$ 0,50) e dentro do saldo, e a recusa diz o saldo. Parcial só em cartão e ACH: Klarna financia a fatura inteira, então é sempre o saldo; fatura parcelada cobrada em parte deixaria o débito automático correndo em dobro, então nela só a quitação (com a confirmação que já existia) ou a parcela por fora. O recebimento parcial já entrava certo pelo webhook (ele grava o valor da sessão) e a fatura fica parcial. QR do balcão e portal seguem pelo saldo inteiro, por desenho. Sem migração.
 - **O idioma do cliente não bloqueia mais o Plaid.** `/api/plaid/link-token` mandava o idioma do cadastro sem conferir se o Plaid o atende; recusado o idioma, a chamada morria e o cliente não conseguia conectar o banco. Agora o idioma é filtrado pela lista que o Plaid aceita (`zh` cai para inglês, `fr` passou a ser respeitado em vez de virar inglês) e, se ainda assim for recusado, a tela abre **em inglês** em vez de não abrir. O motivo real fica no log.
+- **A equipe num lugar só (decisão do sócio).** `team_members`, os logins e `staff_roles` viraram uma linha por pessoa, na tela Equipe — a seção 3.4 conta as regras. De passagem, quatro defeitos: editar o telefone reescrevia o nível; o PIN de quem saiu continuava aprovando; a lista lia só os 50 primeiros logins; e o convite antigo continuava valendo depois de reenviado com outro nível. O Atendimento deixou de ter a sua própria definição de nível. Migração: `sql/equipe-unica-v1.sql`, antes do deploy.
 - **A lista "Formas de pagamento" do portal era confundida com botões.** Ficava no fim da página, em inglês para todos, e era o que o cliente tentava clicar quando a fatura não oferecia ação. Agora diz que é informativa e acompanha o idioma. O contrato mandado pelo fluxo antigo (e-mail do DocuSign), que só exibia "assine pelo e-mail" e travava a fatura, passou a dizer onde procurar e o que fazer se não achar.
 
 - **Menu da firma num componente só, e que recolhe ao escolher.** A sanfona do celular era um `<details>` nativo dentro de um Server Component: como a navegação do App Router não recarrega a página, ela continuava **aberta** depois da escolha e só fechava clicando no ☰ de novo. Agora é `components/FirmNav.tsx`, client component, que fecha na escolha e na troca de rota, marca o item ativo e fecha o "Listas" ao clicar fora. De quebra, os outros três layouts da firma (`/clients`, `/invitations`, `/settings`) traziam um menu pela metade, com três itens — quem entrava lá perdia o caminho para Bookkeeping, Financeiro e Atendimento. Os quatro passaram a usar o mesmo menu, encerrando a duplicação que estava na lista de dívidas.
@@ -655,8 +697,6 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 **Decisões pendentes:**
 - Módulo Plans × tabela `recurring_plans` (duplicação a resolver)
 - Orçamentos: módulo Quotes × estimates do financeiro
-- `staff_roles` × `team_members` (permissão × CRM)
-- Menu repetido em quatro layouts
 - Domínio próprio `portal.peaceontax.com`
 
 ---
