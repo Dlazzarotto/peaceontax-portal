@@ -39,7 +39,10 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
-import { agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, metodoDoTipo } from '@/lib/agendamento-parcelas'
+import {
+  agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, metodoDoTipo,
+  decidirEntradaDoWebhook, ESPERANDO_O_CLIENTE,
+} from '@/lib/agendamento-parcelas'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
@@ -893,13 +896,38 @@ async function handleInstallmentEntry(
 ) {
   const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
   if (!plan) return
-  if (plan.status === 'active' && !plan.invoice_id) return  // idempotência (plano antigo, sem fatura)
+
+  const pag = await pagamentoDaSessao(stripe, session)
+  const entryPaidAt = pag.quando || new Date(session.created * 1000)
+  const pago = session.payment_status === 'paid'
+
+  // Esta sessão já está no livro? Só se pergunta com fatura, e só pela
+  // entrada que está com a firma (a devolvida decide antes).
+  let noLivro = false
+  if (plan.invoice_id && pago && !(pag.devolvido > 0) && !pag.contestado) {
+    const filtro = filtroDeRecebimento(session.id, pag.intent)
+    const { data: ja, error: errJa } = filtro
+      ? await db.from('invoice_payments').select('id').or(filtro).limit(1)
+      : { data: [] as any[], error: null }
+    if (errJa) throw new Error(`não deu para conferir a entrada: ${errJa.message}`)
+    noLivro = !!ja?.length
+  }
+
+  // A decisão é pura e tem a tabela inteira em teste
+  // (decidirEntradaDoWebhook, lib/agendamento-parcelas.ts). O evento volta:
+  // o Stripe reenvia, e o painel deixa reenviar à mão. Antes a única guarda
+  // era "já está ativo" — e um evento antigo reativava o plano CANCELADO e
+  // agendava as parcelas de um acordo desfeito.
+  const decisao = decidirEntradaDoWebhook({
+    status: String(plan.status), pago, devolvido: pag.devolvido, contestado: pag.contestado,
+    comFatura: !!plan.invoice_id, noLivro, entradaRegistrada: !!plan.entry_paid_at,
+  })
+  if (decisao.acao === 'nada') return
 
   // Débito em conta (ACH): o 'completed' chega com o dinheiro ainda em trânsito.
   // Ativar aqui criaria o agendamento e lançaria uma entrada que pode ser
   // devolvida dias depois. Esperamos o async_payment_succeeded.
-  if (session.payment_status !== 'paid') {
-    if (plan.status === 'active') return
+  if (decisao.acao === 'aguardar_banco') {
     await db.from('plan_audit').insert({
       plan_id: planId, action: 'entry_processing',
       snapshot: { session: session.id, status: session.payment_status, valor: Number(session.amount_total || 0) / 100 },
@@ -909,26 +937,19 @@ async function handleInstallmentEntry(
     return
   }
 
-  const pag = await pagamentoDaSessao(stripe, session)
-  const entryPaidAt = pag.quando || new Date(session.created * 1000)
-
-  // Esta sessão já está no livro? Reenvio do mesmo evento segue (pode faltar
-  // o agendamento). Uma SEGUNDA entrada paga para o mesmo plano não: enquanto
-  // o agendamento travava, o portal seguia oferecendo "pagar a entrada", e o
-  // cliente podia pagar de novo. Esse dinheiro não é da fatura — é estorno.
-  if (plan.invoice_id) {
-    const filtro = filtroDeRecebimento(session.id, pag.intent)
-    const { data: ja, error: errJa } = filtro
-      ? await db.from('invoice_payments').select('id').or(filtro).limit(1)
-      : { data: [] as any[], error: null }
-    if (errJa) throw new Error(`não deu para conferir a entrada: ${errJa.message}`)
-    if (!ja?.length && (plan.status === 'active' || plan.entry_paid_at)) {
-      await falhaNoParcelamento(db, plan, 'entrada_em_dobro',
-        `o cliente pagou a entrada DE NOVO ($${pag.valor.toFixed(2)}, sessão ${session.id}) e o parcelamento já tinha entrada — estorne este pagamento no painel do Stripe`)
-      return
-    }
+  if (decisao.acao === 'alertar') {
+    const valor = `$${pag.valor.toFixed(2)}`
+    const motivo = decisao.tipo === 'entrada_devolvida'
+      ? `a entrada (${valor}, sessão ${session.id}) foi paga e depois ${pag.contestado ? 'CONTESTADA' : `DEVOLVIDA ($${pag.devolvido.toFixed(2)})`} no Stripe — as parcelas NÃO foram agendadas: não há entrada com a firma`
+      : decisao.tipo === 'entrada_em_plano_encerrado'
+      ? `o cliente pagou ${valor} (sessão ${session.id}) num parcelamento já ${plan.status === 'completed' ? 'CONCLUÍDO' : 'CANCELADO'} — nada foi lançado nem agendado`
+      // Enquanto o agendamento travava, o portal seguia oferecendo "pagar a
+      // entrada", e o cliente podia pagar de novo. Esse dinheiro não é da
+      // fatura — é estorno.
+      : `o cliente pagou a entrada DE NOVO (${valor}, sessão ${session.id}) e o parcelamento já tinha entrada`
+    await falhaNoParcelamento(db, plan, decisao.tipo, motivo)
+    return
   }
-  if (plan.status === 'active') return  // idempotência
 
   // 1. A ENTRADA PRIMEIRO. O dinheiro já entrou: lançá-lo não pode depender
   //    do agendamento dar certo. Era o que acontecia — o agendamento falhava
@@ -1001,6 +1022,14 @@ async function agendarOuAvisar(
   }
 }
 
+/** O que a equipe faz em cada caso. O agendar não serve a todos: na entrada devolvida ele recusa. */
+const O_QUE_FAZER: Record<string, string> = {
+  entrada_em_dobro: 'Estorne o pagamento a mais no painel do Stripe (Refund).',
+  entrada_devolvida: 'Não há entrada com a firma: cancele o parcelamento em Financeiro → Parcelamentos e, se for o caso, faça outro acordo.',
+  entrada_em_plano_encerrado: 'Confira no painel do Stripe: estorne, ou lance o recebimento à mão se o valor é devido.',
+}
+const AGENDAR = 'Abra Financeiro → Parcelamentos → "Conferir pagamento e agendar".'
+
 /**
  * O parcelamento travou: trilha e alerta à equipe, UM por plano por dia — o
  * Stripe reenvia o evento várias vezes, e cada reenvio não pode virar alerta.
@@ -1016,7 +1045,7 @@ async function falhaNoParcelamento(db: ReturnType<typeof adminDb>, plan: any, ti
     .then(() => null, () => null)
   await db.from('plan_alerts').insert({
     plan_id: plan.id, client_id: plan.client_id, type: tipo,
-    message: `🛑 ${plan.description || 'Parcelamento'}: ${motivo}. Abra Financeiro → Parcelamentos → "Conferir pagamento e agendar".`,
+    message: `🛑 ${plan.description || 'Parcelamento'}: ${motivo}. ${O_QUE_FAZER[tipo] || AGENDAR}`,
   }).then(() => null, () => null)
 }
 
@@ -1026,7 +1055,11 @@ async function handleInstallmentSetup(
   session: Stripe.Checkout.Session, planId: string,
 ) {
   const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
-  if (!plan || plan.status === 'active') return   // idempotência
+  // Só o plano que ESPERA o cliente se põe a cobrar. Ativo é reenvio; o que
+  // já andou (parcela recusada, pausado) ou acabou (cancelado, concluído)
+  // não volta a agendar por um evento antigo — era o que acontecia com a
+  // guarda "só o ativo": o plano cancelado era reativado.
+  if (!plan || !ESPERANDO_O_CLIENTE.includes(String(plan.status))) return
 
   const pag = await pagamentoDaSessao(stripe, session)
   if (!pag.paymentMethod) return

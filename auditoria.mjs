@@ -1860,14 +1860,38 @@ titulo('AS PARCELAS SAO AGENDADAS NO STRIPE (iterations saiu da API)')
       const iLanca = entry.indexOf('lancarRecebimentoStripe(db, {')
       const iAgenda = entry.indexOf('agendarOuAvisar(')
       if (!(iLanca >= 0 && iAgenda > iLanca)) problemas.push('a entrada paga nao e lancada ANTES do agendamento')
-      if (!/'entrada_em_dobro'/.test(entry)) problemas.push('uma segunda entrada paga nao vira alerta de estorno')
+      // A decisao (pura, testada) vem antes de lancar e de agendar, e o que
+      // ela recusa sai da funcao: plano encerrado nao volta a cobrar, entrada
+      // devolvida nao e entrada, a segunda entrada vira alerta de estorno.
+      const iDecide = entry.indexOf('decidirEntradaDoWebhook({')
+      if (!(iDecide >= 0 && iLanca > iDecide)) problemas.push('a decisao da entrada nao vem antes de lancar e agendar')
+      if (!/if \(decisao\.acao === 'nada'\) return/.test(entry)
+          || !/if \(decisao\.acao === 'alertar'\) \{[\s\S]{0,1500}?await falhaNoParcelamento\(db, plan, decisao\.tipo, motivo\)\s*return\s*\}/.test(entry))
+        problemas.push('o que a decisao recusa segue adiante (plano cancelado reativado, entrada devolvida lancada)')
+      if (!/devolvido: pag\.devolvido, contestado: pag\.contestado/.test(entry)) problemas.push('a decisao nao recebe a devolucao e a contestacao da cobranca')
+    }
+    // O mandato (parcelamento sem entrada) so poe a cobrar o plano que espera o cliente.
+    {
+      const k = wh.indexOf('async function handleInstallmentSetup(')
+      const setup = k >= 0 ? wh.slice(k, wh.indexOf('\nasync function ', k + 10)) : ''
+      const iGuarda = setup.indexOf('!ESPERANDO_O_CLIENTE.includes(String(plan.status))'), iAg = setup.indexOf('agendarOuAvisar(')
+      if (!setup) problemas.push('handleInstallmentSetup nao encontrado -- ancora perdida e FALHA')
+      else if (!(iGuarda >= 0 && iAg > iGuarda)) problemas.push('o mandato reativa plano cancelado ou que ja andou (a guarda era so "ativo")')
     }
     if ((wh.match(/await agendarOuAvisar\(/g) || []).length < 2) problemas.push('entrada e mandato nao passam pelos dois o mesmo caminho')
     if (!/catch \(e\) \{\s*await falhaNoParcelamento\(db, plan, 'agendamento_falhou'[\s\S]{0,200}?throw e/.test(wh)) problemas.push('falha no agendamento nao avisa a equipe (volta a ser so console.error)')
     problemas.length
       ? falta('Webhook: entrada lancada antes, falha avisada', problemas.join(' · '))
-      : ok('Webhook: entrada lancada antes, falha avisada, entrada em dobro vira estorno')
+      : ok('Webhook: entrada lancada antes, falha avisada; encerrado nao volta, devolvida nao conta, em dobro vira estorno')
   }
+
+  // 3b. A cobranca diz o que aconteceu DEPOIS: o status da sessao continua
+  //     'paid' depois do reembolso.
+  if (/devolvido: Number\(charge\?\.amount_refunded \|\| 0\) \/ 100/.test(ag) && /contestado: !!charge\?\.disputed/.test(ag)
+      && /export function entradaIntegra\(p: PagamentoDaSessao\): boolean \{\s*return p\.modo === 'payment' && p\.concluido && !\(p\.devolvido > 0\) && !p\.contestado/.test(ag))
+    ok('Entrada devolvida ou contestada nao conta como paga')
+  else falta('Entrada devolvida ou contestada nao conta como paga',
+    'payment_status continua paid depois do reembolso: a entrada devolvida seria lancada e as parcelas agendadas')
 
   // 4. Entrada paga nao se oferece de novo (o link novo cobraria outra vez).
   const ck = ler('lib/plan-checkout.ts'), pb = ler('app/api/portal/billing/route.ts'), pc = ler('app/api/portal/plan-checkout/route.ts')
@@ -1899,8 +1923,12 @@ titulo('AS PARCELAS SAO AGENDADAS NO STRIPE (iterations saiu da API)')
     // Cancelar "como proposta" um plano cuja entrada foi paga dizia ao cliente que nada foi cobrado.
     const iCancel = ip.indexOf('export async function PATCH')
     const cancel = iCancel >= 0 ? ip.slice(iCancel) : ''
-    const iConf = cancel.indexOf('await entradaPagaNoStripe(plano)'), iEnc = cancel.indexOf('encerrarParcelamento(')
+    const iConf = cancel.indexOf('entrada = await entradaNoStripe(plano)'), iEnc = cancel.indexOf('encerrarParcelamento(')
     if (!(iConf >= 0 && iEnc > iConf)) problemas.push('cancelar nao confere no Stripe se a entrada foi paga')
+    if (!/const pago = entrada\.integra\s*\n/.test(cancel) || !/const nuncaComecou = planoNuncaComecou\(plano\) && !entradaVoltou/.test(cancel))
+      problemas.push('cancelar lanca a entrada que voltou, ou diz ao cliente que nada foi cobrado')
+    if (!/const entradasPagas = feitos\.filter\(f => entradaIntegra\(f\) && f\.paymentMethod\)/.test(ip))
+      problemas.push('agendar conta como entrada a que foi devolvida ou contestada')
     if (!/&& !p\?\.entry_paid_at/.test(ip)) problemas.push('entrada paga ainda conta como "nunca comecou"')
     problemas.length
       ? falta('Agendar o parcelamento travado: Stripe, conta, senha e trilha', problemas.join(' · '))

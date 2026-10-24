@@ -7,9 +7,15 @@
 // parcela por parcela, nenhuma fase leva `iterations`, e um agendamento que
 // já existe é reaproveitado (reenvio do evento ou a equipe agendando à mão
 // não podem cobrar cada parcela duas vezes).
+//
+// E o que o webhook faz com a sessão da entrada quando ela volta: plano
+// cancelado não é reativado por evento antigo, e entrada DEVOLVIDA ou
+// contestada não é entrada (o status da sessão continua 'paid' depois do
+// reembolso — quem diz é a cobrança).
 
 import {
   fasesDoParcelamento, agendarParcelas, pagamentoDaSessao, metodoDoTipo, type ContaDasFases,
+  entradaIntegra, entradaQueVoltou, decidirEntradaDoWebhook, ESPERANDO_O_CLIENTE, ENCERRADOS,
 } from '../lib/agendamento-parcelas.ts'
 import { montarCronograma } from '../lib/cronograma-parcelas.ts'
 
@@ -82,7 +88,7 @@ eq('ultima abaixo de 50 centavos recusa', /0,50/.test(erro({ frequencia: 'monthl
 }
 
 // ── O Stripe falso ──
-function stripeFalso(agendamentos: any[] = []) {
+function stripeFalso(agendamentos: any[] = [], cobrancas: Record<string, any> = {}) {
   const chamadas: any[] = []
   const s: any = {
     chamadas,
@@ -95,7 +101,11 @@ function stripeFalso(agendamentos: any[] = []) {
       create: async (p: any) => { chamadas.push(['create', p]); return { id: 'sub_sched_1', subscription: null, phases: [{ start_date: p.start_date }] } },
     },
     paymentIntents: {
-      retrieve: async (id: string) => ({ id, created: 1_790_000_000, payment_method: { id: 'pm_card', type: 'card' }, latest_charge: { created: 1_790_000_100 } }),
+      retrieve: async (id: string) => ({ id, created: 1_790_000_000, payment_method: { id: 'pm_card', type: 'card' },
+        latest_charge: id in cobrancas ? cobrancas[id] : { created: 1_790_000_100, amount_refunded: 0, disputed: false } }),
+    },
+    charges: {
+      retrieve: async (id: string) => { chamadas.push(['charges.retrieve', id]); return { id, created: 1_790_000_300, amount_refunded: 25000, refunded: true, disputed: false } },
     },
     setupIntents: {
       retrieve: async (id: string) => ({ id, status: 'succeeded', created: 1_790_000_200, payment_method: { id: 'pm_ach', type: 'us_bank_account' } }),
@@ -168,6 +178,75 @@ const futuro = new Date(Date.now() + 10 * 86400_000)
   eq('sem entrada: o debito autorizado', [mandato.modo, mandato.concluido, mandato.paymentMethod, mandato.tipo], ['setup', true, 'pm_ach', 'us_bank_account'])
 }
 eq('forma para o livro', [metodoDoTipo('us_bank_account'), metodoDoTipo('klarna'), metodoDoTipo('card'), metodoDoTipo(null)], ['ach', 'external', 'card', 'card'])
+
+// ── Entrada que VOLTOU: o status da sessão continua 'paid' depois do reembolso ──
+{
+  const sessao = (pi: string) => ({ id: 'cs_' + pi, mode: 'payment', status: 'complete', payment_status: 'paid', payment_intent: pi, amount_total: 25000 }) as any
+  const st = stripeFalso([], {
+    pi_inteira: { created: 1_790_000_100, amount_refunded: 0, refunded: false, disputed: false },
+    pi_devolvida: { created: 1_790_000_100, amount_refunded: 25000, refunded: true, disputed: false },
+    pi_parcial: { created: 1_790_000_100, amount_refunded: 5000, refunded: false, disputed: false },
+    pi_contestada: { created: 1_790_000_100, amount_refunded: 0, refunded: false, disputed: true },
+    pi_sem_expand: 'ch_solta',
+  })
+  const inteira = await pagamentoDaSessao(st, sessao('pi_inteira'))
+  const devolvida = await pagamentoDaSessao(st, sessao('pi_devolvida'))
+  const parcial = await pagamentoDaSessao(st, sessao('pi_parcial'))
+  const contestada = await pagamentoDaSessao(st, sessao('pi_contestada'))
+  eq('inteira: com a firma', [inteira.devolvido, inteira.contestado, entradaIntegra(inteira), entradaQueVoltou(inteira)], [0, false, true, false])
+  eq('devolvida: a sessao segue "concluida", mas nao e entrada', [devolvida.concluido, devolvida.devolvido, entradaIntegra(devolvida), entradaQueVoltou(devolvida)], [true, 250, false, true])
+  eq('devolucao PARCIAL tambem nao e entrada (lancar o cheio seria receita que nao existe)', [parcial.devolvido, entradaIntegra(parcial), entradaQueVoltou(parcial)], [50, false, true])
+  eq('contestada nao e entrada', [contestada.contestado, entradaIntegra(contestada), entradaQueVoltou(contestada)], [true, false, true])
+  const solta = await pagamentoDaSessao(st, sessao('pi_sem_expand'))
+  eq('cobranca nao expandida: busca, nao presume que nada voltou', [st.chamadas.some((c: any) => c[0] === 'charges.retrieve' && c[1] === 'ch_solta'), solta.devolvido, entradaIntegra(solta)], [true, 250, false])
+  const ach = await pagamentoDaSessao(st, { id: 'cs_ach', mode: 'payment', status: 'complete', payment_status: 'unpaid', payment_intent: 'pi_x', amount_total: 25000 } as any)
+  eq('ACH a caminho nao e entrada nem voltou', [entradaIntegra(ach), entradaQueVoltou(ach)], [false, false])
+  const mandato = await pagamentoDaSessao(st, { id: 'cs_m', mode: 'setup', status: 'complete', setup_intent: 'seti_1' } as any)
+  eq('mandato nao e entrada', [entradaIntegra(mandato), entradaQueVoltou(mandato), mandato.devolvido, mandato.contestado], [false, false, 0, false])
+}
+
+// ── O webhook e a sessão da entrada, que chega e VOLTA (reenvio do Stripe ou do painel) ──
+{
+  const d = (o: Partial<Parameters<typeof decidirEntradaDoWebhook>[0]>) => decidirEntradaDoWebhook({
+    status: 'awaiting_entry', pago: true, devolvido: 0, contestado: false, comFatura: true, noLivro: false, entradaRegistrada: false, ...o,
+  })
+  eq('as listas', [ESPERANDO_O_CLIENTE, ENCERRADOS], [['draft', 'awaiting_entry', 'awaiting_setup'], ['cancelled', 'completed']])
+  eq('primeira vez: lanca e agenda', d({}), { acao: 'seguir' })
+  eq('reenvio com a entrada ja no livro e o agendamento por fazer: segue (o lancamento nao duplica)', d({ noLivro: true }), { acao: 'seguir' })
+  eq('rascunho tambem espera o cliente', d({ status: 'draft' }), { acao: 'seguir' })
+  eq('ACH a caminho no plano que espera: aguarda o banco', d({ pago: false }), { acao: 'aguardar_banco' })
+  eq('ACH a caminho no plano ativo: nada', d({ pago: false, status: 'active' }), { acao: 'nada' })
+  eq('ACH a caminho no plano CANCELADO: nada (nao avisa o cliente de um acordo desfeito)', d({ pago: false, status: 'cancelled' }), { acao: 'nada' })
+  // O defeito: a unica guarda era "ja esta ativo", e o evento antigo reativava o cancelado.
+  eq('CANCELADO com a entrada no livro (o cancelamento a lancou): nada — nao reativa', d({ status: 'cancelled', noLivro: true, entradaRegistrada: true }), { acao: 'nada' })
+  eq('CONCLUIDO com a entrada no livro: nada', d({ status: 'completed', noLivro: true, entradaRegistrada: true }), { acao: 'nada' })
+  eq('CANCELADO e dinheiro fora do livro: alerta, nada lancado nem agendado', d({ status: 'cancelled' }), { acao: 'alertar', tipo: 'entrada_em_plano_encerrado' })
+  eq('CANCELADO com outra entrada registrada e esta fora do livro: alerta', d({ status: 'cancelled', entradaRegistrada: true }), { acao: 'alertar', tipo: 'entrada_em_plano_encerrado' })
+  eq('ativo, esta no livro: reenvio, nada', d({ status: 'active', noLivro: true, entradaRegistrada: true }), { acao: 'nada' })
+  eq('ativo, esta FORA do livro: segunda entrada, estorno', d({ status: 'active', entradaRegistrada: true }), { acao: 'alertar', tipo: 'entrada_em_dobro' })
+  eq('parcela recusada / pausado nao voltam a agendar', [d({ status: 'payment_failed', noLivro: true }), d({ status: 'paused', noLivro: true })], [{ acao: 'nada' }, { acao: 'nada' }])
+  eq('esperando, com entrada ja registrada e esta fora do livro: segunda entrada', d({ entradaRegistrada: true }), { acao: 'alertar', tipo: 'entrada_em_dobro' })
+  eq('DEVOLVIDA no plano que espera: alerta, nada lancado nem agendado', d({ devolvido: 250 }), { acao: 'alertar', tipo: 'entrada_devolvida' })
+  eq('devolucao parcial no plano que espera: alerta', d({ devolvido: 50 }), { acao: 'alertar', tipo: 'entrada_devolvida' })
+  eq('CONTESTADA no plano que espera: alerta', d({ contestado: true }), { acao: 'alertar', tipo: 'entrada_devolvida' })
+  eq('devolvida vence o "ja esta no livro" (o estorno pode ter falhado)', d({ devolvido: 250, noLivro: true }), { acao: 'alertar', tipo: 'entrada_devolvida' })
+  eq('devolvida em plano ativo ou cancelado: quem cuida e o estorno (charge.refunded)', [d({ devolvido: 250, status: 'active' }), d({ devolvido: 250, status: 'cancelled' })], [{ acao: 'nada' }, { acao: 'nada' }])
+  eq('sem fatura (antigo), esperando: segue', d({ comFatura: false }), { acao: 'seguir' })
+  eq('sem fatura, ativo: nada (reenvio)', d({ comFatura: false, status: 'active' }), { acao: 'nada' })
+  eq('sem fatura, CANCELADO: alerta (nao ha livro para saber se e reenvio)', d({ comFatura: false, status: 'cancelled' }), { acao: 'alertar', tipo: 'entrada_em_plano_encerrado' })
+  eq('situacao desconhecida nao poe a cobrar', d({ status: 'qualquer_coisa', noLivro: true }), { acao: 'nada' })
+  // Varredura: nenhuma combinacao poe a cobrar um plano que nao espera o cliente,
+  // nem conta como entrada o dinheiro que voltou.
+  let maus = 0
+  for (const status of ['draft', 'awaiting_entry', 'awaiting_setup', 'active', 'payment_failed', 'paused', 'cancelled', 'completed', 'xyz'])
+    for (const pago of [true, false]) for (const devolvido of [0, 50]) for (const contestado of [false, true])
+      for (const comFatura of [true, false]) for (const noLivro of [true, false]) for (const entradaRegistrada of [true, false]) {
+        const r = decidirEntradaDoWebhook({ status, pago, devolvido, contestado, comFatura, noLivro, entradaRegistrada })
+        if (r.acao === 'seguir' && (!ESPERANDO_O_CLIENTE.includes(status) || !pago || devolvido > 0 || contestado)) maus++
+        if (r.acao === 'aguardar_banco' && (pago || !ESPERANDO_O_CLIENTE.includes(status))) maus++
+      }
+  eq('varredura: so o plano que espera, com a entrada paga e inteira, segue', maus, 0)
+}
 
 console.log(`agendamento-parcelas: ${passou} passaram, ${falhou} falharam`)
 process.exit(falhou ? 1 : 0)
