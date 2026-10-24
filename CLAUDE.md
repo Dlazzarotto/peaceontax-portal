@@ -1094,6 +1094,15 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   usam — item novo entra lá, uma vez. É client component de propósito: com
   `<details>` nativo a sanfona do celular ficava ABERTA depois de escolher,
   porque a navegação do App Router não recarrega a página.
+- **Texto de `<style>` no JSX não leva `<`, `>` nem `&`** — nem em
+  comentário do CSS. O React escapa esse texto no HTML do servidor (`>` vira
+  `&gt;`) e o navegador não desescapa dentro de `<style>`: o texto do servidor
+  e o do cliente diferem, a hidratação falha e o React refaz a página INTEIRA
+  no navegador. Era assim em toda página da firma, por dois comentários do CSS
+  do menu (`(>= 1100px)`, `(< 1100px)`), e no painel, onde `.pnl-haste > div`
+  era seletor inválido até o React refazer a página. Combinador de filho vira
+  descendente ou classe. A auditoria lê todo `<style>{…}</style>` (literal ou
+  `const` do mesmo arquivo) e âncora perdida é FALHA.
 - **Todo impresso leva `META_RELATORIO` e `barraDoRelatorio`** (de
   `lib/relatorio-barra.ts`). Sem o viewport o celular desenha a página a
   ~980px e a barra sai do alcance. A barra tem Voltar (contextual), um

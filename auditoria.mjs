@@ -148,6 +148,40 @@ checar('Menu recolhe ao escolher', 'components/FirmNav.tsx', 'const fechar = ()'
 for (const lay of ['app/dashboard/layout.tsx', 'app/clients/layout.tsx', 'app/invitations/layout.tsx', 'app/settings/layout.tsx'])
   checar(`Layout usa o FirmNav: ${lay.split('/')[1]}`, lay, 'FirmNav', 'layout com menu proprio volta a divergir')
 
+titulo('TEXTO DE <style> NAO LEVA < > &')
+// O React escapa o texto de <style>{...}</style> no HTML do servidor (">" vira
+// "&gt;") e o navegador NAO desescapa dentro de <style>: o texto que chega e o
+// que o cliente monta diferem, a hidratacao falha e o React refaz a pagina
+// INTEIRA no navegador. Era assim em toda pagina da firma -- por dois
+// comentarios do CSS do menu, "(>= 1100px)" e "(< 1100px)" -- e no painel, onde
+// ".pnl-haste > div" ainda era seletor invalido ate o React refazer a pagina.
+// Le o texto do <style> (literal ou const do mesmo arquivo, fora os ${...}).
+{
+  const estilos = []
+  for (const p of arquivos(raiz, ['.tsx'])) {
+    const src = readFileSync(p, 'utf8')
+    for (const m of src.matchAll(/<style[^>]*>\{\s*(`([\s\S]*?)`|(\w+))\s*\}<\/style>/g)) {
+      let css = m[2]
+      if (m[3]) css = (new RegExp(`const ${m[3]}\\s*=\\s*\`([\\s\\S]*?)\``).exec(src) || [])[1]
+      estilos.push({ arq: rel(p), nome: m[3] || 'literal', css })
+    }
+  }
+  if (estilos.length === 0) {
+    falta('Texto de <style> sem < > &', 'ancora perdida: nenhum <style>{...}</style> encontrado -- a conferencia nao estaria conferindo nada')
+  } else {
+    const ruins = []
+    for (const e of estilos) {
+      if (e.css == null) { ruins.push(`${e.arq}: nao consegui ler ${e.nome} (use literal ou const do mesmo arquivo)`); continue }
+      const texto = e.css.replace(/\$\{[^}]*\}/g, '')
+      const linha = texto.split('\n').find(l => /[<>&]/.test(l))
+      if (linha) ruins.push(`${e.arq}: "${linha.trim().slice(0, 60)}"`)
+    }
+    ruins.length === 0
+      ? ok(`Texto de <style> sem < > & (${estilos.length} blocos)`)
+      : falta('Texto de <style> sem < > &', `${ruins.join(' · ')} -- o servidor escapa, a hidratacao falha e a pagina e refeita inteira no navegador`)
+  }
+}
+
 titulo('CADASTRO DE CLIENTE')
 checar('Corpo do pedido nao vai direto para o insert', 'app/api/clients/route.ts', 'camposDoCliente', 'qualquer campo enviado entrava na tabela, inclusive user_id')
 checar('Cadastrar manda o convite de acesso', 'app/api/clients/route.ts', 'deveConvidar', 'cliente ficava cadastrado sem nunca receber o login')
