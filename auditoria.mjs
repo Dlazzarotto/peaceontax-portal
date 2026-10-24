@@ -188,10 +188,104 @@ titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
   checar('O cartao de credito fica fora do 1099', V, /type === 'credit_card'/, 'pagamento no cartao vai no 1099-K, nao no NEC/MISC')
   // A RECUSA, nao a mencao: a funcao aparece tambem na linha que tira a marca
   // de quem muda de grupo, e a primeira versao passava com a recusa desligada.
-  checar('A marca do 1099 so vai em conta de despesa', 'app/api/bookkeeping/categories/route.ts',
-         /if \(formulario && !ehContaDeDespesa\(grupoFinal\)\)\s*\{[\s\S]{0,160}?Só conta de despesa vai para o 1099/,
+  // A regra saiu da rota para lib/plano-de-contas.ts (a tela e a rota chamam
+  // a mesma), e o banco recusa de novo na gravacao.
+  checar('A marca do 1099 so vai em conta de despesa', 'lib/plano-de-contas.ts',
+         /if \(f && !ehContaDeDespesa\(kind\)\) return recusa\('Só conta de despesa vai para o 1099\.'\)/,
          'receita marcada para o 1099 nao faz sentido')
+  checar('O banco tambem recusa 1099 fora de despesa', 'sql/plano-de-contas-edicao-funcao-v1.sql',
+         /p_form_1099 is not null and \(p_form_1099 not in \('NEC', 'MISC'\) or not v_despesa\)/,
+         'a gravacao aceitaria a marca numa conta de receita')
   checar('A tela marca o 1099 pela rota', 'app/dashboard/accounts/page.tsx', /form1099:/, 'botao do 1099 sem chamada a rota')
+}
+
+titulo('PLANO DE CONTAS: EDITAR E UMA TRANSACAO, E A CONTA DO SISTEMA NAO MUDA')
+// O lancamento guarda o NOME da conta, e o P&L trata nome que o plano nao tem
+// como DESPESA (`kindMap[c] || 'expense'`). A rota renomeava a conta e depois,
+// em idas separadas e sem olhar erro, os lancamentos, as regras e as
+// sub-contas: um renomear pela metade mandava a receita da conta antiga para
+// as despesas de todos os clientes, e a tela dizia "conta atualizada". Apagar
+// tinha o mesmo desenho. E renomear 'Transfer' ou 'Credit Card Payment' fazia
+// o motor seguir gravando o nome antigo: toda transferencia nova virava
+// despesa. Agora a regra e de lib/plano-de-contas.ts (a tela e a rota chamam a
+// mesma) e a gravacao e uma funcao do banco, com trilha, tudo ou nada.
+{
+  const R = 'app/api/bookkeeping/categories/route.ts'
+  const T = 'app/dashboard/accounts/page.tsx'
+  const M = 'lib/plano-de-contas.ts'
+  const F = 'sql/plano-de-contas-edicao-funcao-v1.sql'
+  checar('Editar passa pela regra testada', R, /planoDaEdicao\(\{/, 'regra de edicao feita na rota diverge da que a tela mostra e o teste confere')
+  checar('Editar grava numa transacao do banco', R, /db\.rpc\('editar_conta_do_plano'/, 'renomear em idas separadas deixa o livro pela metade quando uma falha')
+  checar('Apagar passa pela regra e pela transacao', R, /planoDaRemocao\(\{[\s\S]*?db\.rpc\('apagar_conta_do_plano'/, 'apagar com o movimento em idas separadas deixa lancamento com nome de conta que sumiu')
+  checar('Desativar confere lancamento E regra, e grava pela transacao', R,
+         /recusaDaDesativacao\([\s\S]{0,400}?db\.rpc\('situacao_da_conta_do_plano'/,
+         'regra apontando para conta inativa segue lancando nela a cada importacao')
+  // Pela AUSENCIA: a rota nao mexe em lancamento, regra, conta a pagar nem no
+  // proprio plano por fora da funcao (o insert do POST e a unica escrita).
+  recusar('A rota nao reescreve lancamento, regra ou conta a pagar por conta propria', R,
+          /\.from\('(bank_transactions|bookkeeping_rules|firm_bills)'\)\s*\.(update|delete|insert)\(/,
+          'a cascata fora da transacao e o defeito que isto conserta')
+  recusar('A rota nao altera nem apaga conta por fora da transacao', R,
+          /\.from\('bookkeeping_categories'\)\s*\.(update|delete)\(/,
+          'conta alterada sem a cascata e sem a trilha')
+  recusar('Sub-conta nao se acha por LIKE', R, /\.like\(\s*'name'/,
+          'LIKE le "_" e "%" do nome como curinga: renomear Meals_Entertainment levava MealsXEntertainment junto')
+  checar('A funcao acha sub-conta pelo prefixo exato', F, /left\(f\.name, char_length\(v_prefixo\)\) = v_prefixo/,
+         'sem o prefixo exato a cascata pega conta de outro nome')
+  {
+    const sql = existsSync(join(raiz, F)) ? readFileSync(join(raiz, F), 'utf8') : ''
+    const contar = re => (sql.match(re) || []).length
+    contar(/for update;/g) >= 3 && contar(/'mudou_no_meio'/g) >= 3
+      ? ok('As tres funcoes travam a conta e recusam se ela mudou desde a leitura')
+      : falta('As tres funcoes travam a conta e recusam se ela mudou desde a leitura',
+              'duas edicoes ao mesmo tempo deixariam os lancamentos com o nome de uma e a conta com o da outra')
+    contar(/insert into bookkeeping_category_audit/g) >= 3
+      ? ok('As tres funcoes gravam a trilha na mesma transacao')
+      : falta('As tres funcoes gravam a trilha na mesma transacao', 'mudanca no plano de todos os clientes sem rastro (principio 2)')
+    const motivoNasDuas = contar(/'motivo_obrigatorio'/g) >= 2
+    motivoNasDuas
+      ? ok('O banco recusa editar ou apagar conta em uso sem motivo')
+      : falta('O banco recusa editar ou apagar conta em uso sem motivo', 'trilha de mudanca no livro nascendo sem o porque')
+  }
+  checar('Conta em uso mudando pede motivo', R, /if \(plano\.exigeMotivo && motivo\.length < MOTIVO_MINIMO\)/, 'a mudanca alcanca o livro de todos os clientes')
+  checar('Mudar o grupo de conta em uso pede a senha', R, /if \(plano\.exigeSenha\) \{\s*const recusa = await conferirSenha\(/,
+         'o grupo muda o P&L e o Balanco de anos ja declarados (principio 3)')
+  checar('A senha vem do grupo que muda numa conta em uso', M, /const exigeSenha = mudouGrupo && lancamentos > 0/,
+         'pedir senha onde nao precisa ensina a digitar sem ler; nao pedir onde precisa e o principio 3 quebrado')
+  checar('A tela mostra a previa pela mesma regra da rota', T, /planoDaEdicao\(\{/, 'a tela que calcula por conta propria promete o que a rota recusa')
+  checar('Cada conta da lista tem o Editar', T, /lista\.map\(c => \{[\s\S]*?abrirEdicao\(c\)[\s\S]{0,200}?Editar/, 'o botao de editar e por conta, na propria linha')
+  // As contas que o CODIGO grava pelo nome: todo literal que os pontos que
+  // escrevem `category:` usam tem de estar na lista do sistema. Pega o motor
+  // ganhando uma conta nova sem a trava. Nao segue variavel (`cat`, `cat0`):
+  // os literais delas sao os mesmos dois, ja na lista.
+  {
+    const mod = existsSync(join(raiz, M)) ? readFileSync(join(raiz, M), 'utf8') : ''
+    const bloco = (/export const CONTAS_DO_SISTEMA[^{]*\{([\s\S]*?)\n\}/.exec(mod) || [])[1] || ''
+    const literais = new Set([...bloco.matchAll(/^\s*'([^']+)':/gm)].map(m => m[1]))
+    const constantes = new Set([...bloco.matchAll(/^\s*\[(CONTA_[A-Z_]+)\]:/gm)].map(m => m[1]))
+    const usados = [], ids = []
+    for (const arq of ['lib/apply-rules.ts', 'app/api/bookkeeping/categorize/route.ts', 'app/api/bookkeeping/rules/route.ts',
+                       'app/api/bookkeeping/transfer-match/route.ts', 'lib/caixa-recebimentos.ts', 'lib/deposito-match.ts']) {
+      if (!existsSync(join(raiz, arq))) continue
+      const src = readFileSync(join(raiz, arq), 'utf8')
+      for (const m of src.matchAll(/\bcategory:\s*([^,\n}]+)/g)) {
+        for (const l of m[1].matchAll(/'([^']+)'/g)) usados.push({ nome: l[1], arq })
+        for (const k of m[1].matchAll(/\b(CONTA_[A-Z_]+)\b/g)) ids.push({ nome: k[1], arq })
+      }
+    }
+    if (!bloco || usados.length === 0 || ids.length === 0) {
+      falta('Conta que o codigo grava pelo nome e conta do sistema',
+            'ancora perdida: nao achei CONTAS_DO_SISTEMA ou nenhum `category:` com nome fixo -- a conferencia nao estaria conferindo nada')
+    } else {
+      const soltos = [...usados.filter(u => !literais.has(u.nome)), ...ids.filter(u => !constantes.has(u.nome))]
+      soltos.length === 0
+        ? ok(`Conta que o codigo grava pelo nome e conta do sistema (${new Set(usados.map(u => u.nome)).size} literais, ${new Set(ids.map(u => u.nome)).size} constantes)`)
+        : falta('Conta que o codigo grava pelo nome e conta do sistema',
+                `fora de CONTAS_DO_SISTEMA: ${soltos.map(s => `"${s.nome}" (${s.arq})`).join(', ')} -- renomear a conta faria o codigo gravar um nome que o plano nao tem, e o P&L o contaria como despesa`)
+    }
+  }
+  checar('A rota recusa nome repetido sem diferenca de caixa ao criar', R, /chaveDaConta\(c\.name\) === chaveDaConta\(clean\)/,
+         '"office supplies" ao lado de "Office Supplies" divide o P&L de todos os clientes em duas linhas')
 }
 
 titulo('IMPRESSO NAO PUBLICA TEXTO DO BANCO SEM ESCAPAR')

@@ -1080,6 +1080,38 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   de contas lia só os primeiros mil lançamentos. A auditoria exige o módulo,
   recusa a lista fixa e o limite no código da rota, e recusa texto do banco
   cru nos quatro impressos. 45 casos em `testes/relatorio-1099.mts`.
+- **Plano de contas: editar é UMA transação, e a conta que o código grava
+  não muda** (`lib/plano-de-contas.ts`, `/api/bookkeeping/categories`, tela
+  `/dashboard/accounts`, migrações `sql/plano-de-contas-edicao-v1.sql` e
+  `-funcao-v1.sql`). O lançamento guarda o NOME da conta, e o P&L trata nome
+  que o plano não tem como **despesa** (`kindMap[c] || 'expense'`). A rota
+  renomeava a conta e depois, em idas separadas e sem olhar erro, os
+  lançamentos, as regras e as sub-contas: um renomear pela metade mandava a
+  receita da conta antiga para as despesas de **todos** os clientes, com a
+  tela dizendo "conta atualizada". Apagar tinha o mesmo desenho, e a sub-conta
+  era achada por `LIKE`, que lê `_` e `%` do nome como curinga. Agora cada
+  conta tem **Editar** (nome, conta-mãe, grupo, 1099), e cada ato é UMA função
+  do banco — `editar_conta_do_plano`, `situacao_da_conta_do_plano`,
+  `apagar_conta_do_plano` —: trava a linha, recusa se a conta mudou desde a
+  leitura (`mudou_no_meio`), leva lançamentos, regras, contas a pagar e
+  sub-contas juntos e grava a trilha (`bookkeeping_category_audit`) na mesma
+  transação. Testado no PG 16 com uma falha forçada no meio (nada fica) e com
+  duas sessões editando a mesma conta (a segunda espera a trava e recusa).
+  **A conta que o código grava pelo nome não muda de nome, de grupo nem sai do
+  plano** (`CONTAS_DO_SISTEMA`: `Transfer` e `Credit Card Payment` do motor,
+  as três do caixa pelas constantes de `deposito-match`) — renomear
+  `Transfer` faria toda transferência nova virar despesa. A auditoria casa
+  todo `category:` com nome fixo dos pontos que gravam com essa lista, e
+  âncora perdida é FALHA. Sub-conta fica no grupo da mãe (o P&L agrupa pelo
+  prefixo), mudar o grupo da mãe leva as filhas, e conta com filhas não vira
+  sub-conta. **Conta em uso** mudando de nome ou de grupo pede motivo; mudando
+  de **grupo** pede também a senha, porque muda o P&L e o Balanço de anos já
+  declarados (princípio 3). Desativar exige zero lançamento E zero regra (a
+  regra seguiria lançando na conta inativa); apagar conta em uso exige
+  destino do mesmo grupo e ATIVO (o Balanço só lê conta ativa). Nome
+  repetido é recusado sem diferença de maiúscula e acento. A tela chama
+  `planoDaEdicao` e `pedidoDoFormulario`, as mesmas da rota, para mostrar
+  antes o que muda. 123 casos em `testes/plano-de-contas.mts`.
 - **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
   sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
   saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem

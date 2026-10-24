@@ -39,6 +39,8 @@ export const DEPENDE_DE = {
   // O contrato trazido sem autor recebe um socio, e o socio sai de team_members.
   'sql/contrato-unico-v1.sql':               ['sql/equipe-unica-v1.sql'],
   'sql/contrato-unico-funcao-v1.sql':        ['sql/contrato-unico-v1.sql'],
+  // As funcoes do plano de contas gravam na trilha e leem a marca do 1099.
+  'sql/plano-de-contas-edicao-funcao-v1.sql': ['sql/plano-de-contas-edicao-v1.sql', 'sql/plano-de-contas-1099-v1.sql'],
 }
 
 /**
