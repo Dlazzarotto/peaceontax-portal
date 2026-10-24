@@ -331,7 +331,7 @@ Cadastro de pessoas físicas e jurídicas, com etapa do serviço, documentos, ag
 
 **Portal do cliente:** Home · Documentos · Organizador fiscal · Bancos · **Contabilidade** · Mensagens · Pagamentos.
 
-A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimonial**, **Fornecedores** e **1099**, com seletor de ano e impressão no mesmo padrão da firma.
+A aba Contabilidade (só para empresa) reúne **DRE (P&L)**, **Balanço Patrimonial**, **Fornecedores** e **1099**, com seletor de período (este mês, mês passado, último trimestre, este ano, ano passado ou datas livres — o mesmo da equipe e do Financeiro; o Balanço é "em tal data" e usa o fim do período; o 1099 é por ano-calendário e usa o ano do fim) e impressão no mesmo padrão da firma.
 
 ### 4.2 Bookkeeping
 
@@ -501,7 +501,7 @@ não projeta: zero, numa tela, é uma afirmação, e aqui seria a pior possível
 
 **Conciliação bancária** no padrão QuickBooks: só fecha com diferença zero. Permite **incluir lançamento manual** durante a conciliação — para cheque não compensado, dinheiro em espécie ou ajuste — restrito a sócio e gerente, com senha e alerta de duplicidade.
 
-**Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.
+**Relatórios:** DRE, Balanço, Fornecedores, Detalhe por conta contábil e 1099. Todos escolhem o período pelo mesmo seletor da casa (este mês, mês passado, último trimestre completo, este ano, ano passado ou datas livres, com "hoje" pelo dia do escritório); o Balanço é "em tal data" (o fim do período) e o 1099 é por ano-calendário (o ano do fim do período, dito na tela e no impresso). O filtro é pela data do lançamento e a leitura é paginada — nenhum relatório sai truncado em mil linhas. Formato formal preto e branco, timbre com a logo, subtotais em negrito, total em linha dupla, sem parênteses (sinal de menos), Georgia/Times.
 
 ### 4.3 Financeiro (faturamento)
 
