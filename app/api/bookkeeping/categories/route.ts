@@ -1,39 +1,61 @@
-// GET  /api/bookkeeping/categories — lista (equipe)
+// GET  /api/bookkeeping/categories — lista (equipe); com ?all=1 traz também as
+//      inativas, o uso de cada conta e a marca do 1099 (tela Plano de contas)
 // POST /api/bookkeeping/categories { name, kind, parent? } — cria (manager/owner)
 //   parent: nome de categoria existente do MESMO kind → sub-conta "Pai: Filho"
+// PATCH { id, name?, kind?, active?, form1099? } — altera (manager/owner)
+//   form1099: 'NEC' | 'MISC' | null — o botão do 1099 de cada conta de despesa
+//   (lib/relatorio-1099.ts). Toda despesa paga numa conta marcada entra na
+//   lista do 1099 do cliente.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
+import { todasAsLinhas } from '@/lib/paginar'
+import { colunaAusente } from '@/lib/caixa-firma'
+import { ehContaDeDespesa, formularioDoPedido } from '@/lib/relatorio-1099'
+
+const COLUNAS = 'id, name, kind, active'
+const MIGRACAO_1099 = 'sql/plano-de-contas-1099-v1.sql'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   const todas = req.nextUrl.searchParams.get('all') === '1'
-  let q = serviceDb()
-    .from('bookkeeping_categories')
-    .select('id, name, kind, active')
-  if (!todas) q = q.eq('active', true)
-  const { data, error } = await q.order('kind').order('name')
+  const db = serviceDb()
+  const ler = (colunas: string) => {
+    let q = db.from('bookkeeping_categories').select(colunas)
+    if (!todas) q = q.eq('active', true)
+    return q.order('kind').order('name')
+  }
+  // A marca do 1099 só vai para a tela do plano de contas. A lista curta
+  // (classificação, conciliação) não depende dela: coluna nova num select de
+  // que a mesa de trabalho depende é risco entre o deploy e a migração.
+  let { data, error } = await ler(todas ? `${COLUNAS}, form_1099` : COLUNAS)
+  let semColuna1099 = false
+  if (error && todas && colunaAusente(error)) {
+    semColuna1099 = true
+    ;({ data, error } = await ler(COLUNAS))
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Quantos lançamentos usam cada conta — é o que diz se dá para apagar
+  if (!todas) return NextResponse.json({ categories: data || [] })
+
+  // Quantos lançamentos usam cada conta — é o que diz se dá para apagar.
+  // Em páginas de 1000: o laço anterior pedia 10000 por vez, o PostgREST
+  // devolvia 1000 e o laço parava achando que tinha acabado. Conta usada
+  // além do milésimo lançamento aparecia como "sem uso".
+  const { data: usadas, error: errUso } = await todasAsLinhas<{ category: string }>(() =>
+    db.from('bank_transactions').select('category').not('category', 'is', null))
+  if (errUso) return NextResponse.json({ error: `Não foi possível contar o uso das contas: ${errUso.message}` }, { status: 500 })
   const uso: Record<string, number> = {}
-  const db = serviceDb()
-  for (let i = 0; ; i += 10000) {
-    const { data: pag } = await db.from('bank_transactions')
-      .select('category').not('category', 'is', null)
-      .range(i, i + 9999)
-    if (!pag || pag.length === 0) break
-    for (const t of pag) {
-      const c = String((t as any).category)
-      uso[c] = (uso[c] || 0) + 1
-    }
-    if (pag.length < 10000) break
+  for (const t of usadas) {
+    const c = String(t.category)
+    uso[c] = (uso[c] || 0) + 1
   }
 
   return NextResponse.json({
     categories: (data || []).map((c: any) => ({ ...c, usos: uso[c.name] || 0 })),
+    ...(semColuna1099 ? { semColuna1099: true, migracao1099: MIGRACAO_1099 } : {}),
   })
 }
 
@@ -70,11 +92,15 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true })
 }
 
-// PATCH /api/bookkeeping/categories { id, name?, kind?, active? }
+// PATCH /api/bookkeeping/categories { id, name?, kind?, active?, form1099? }
 //
 // Renomear propaga para os lançamentos e para as regras que usam a conta —
 // senão o livro fica apontando para um nome que não existe mais.
 // Sub-contas ("Pai: Filho") acompanham a mãe.
+//
+// O 1099 só se marca em conta de DESPESA (`ehContaDeDespesa`). Conta que
+// muda para outro grupo perde a marca na mesma gravação: receita marcada para
+// o 1099 não faz sentido, e ninguém olharia para ela de novo.
 export async function PATCH(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
@@ -87,8 +113,15 @@ export async function PATCH(req: NextRequest) {
   if (!b.id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
   const db = serviceDb()
-  const { data: atual } = await db.from('bookkeeping_categories')
-    .select('id, name, kind, active').eq('id', b.id).single()
+  let semColuna1099 = false
+  let { data: atual, error: errAtual } = await db.from('bookkeeping_categories')
+    .select(`${COLUNAS}, form_1099`).eq('id', b.id).maybeSingle()
+  if (errAtual && colunaAusente(errAtual)) {
+    semColuna1099 = true
+    ;({ data: atual, error: errAtual } = await db.from('bookkeeping_categories')
+      .select(COLUNAS).eq('id', b.id).maybeSingle())
+  }
+  if (errAtual) return NextResponse.json({ error: errAtual.message }, { status: 500 })
   if (!atual) return NextResponse.json({ error: 'Conta não encontrada' }, { status: 404 })
 
   // Desativar: só quando ninguém está usando
@@ -130,6 +163,22 @@ export async function PATCH(req: NextRequest) {
     }
     upd.kind = b.kind
   }
+  const grupoFinal = String(upd.kind || atual.kind)
+  if (b.form1099 !== undefined) {
+    if (semColuna1099) {
+      return NextResponse.json({ error: `O botão do 1099 precisa da migração ${MIGRACAO_1099}. Rode no SQL Editor e tente de novo.` }, { status: 409 })
+    }
+    const formulario = formularioDoPedido(b.form1099)
+    if (formulario === undefined) {
+      return NextResponse.json({ error: 'Formulário do 1099 inválido: use NEC, MISC ou nenhum.' }, { status: 400 })
+    }
+    if (formulario && !ehContaDeDespesa(grupoFinal)) {
+      return NextResponse.json({ error: 'Só conta de despesa vai para o 1099.' }, { status: 400 })
+    }
+    if (formulario !== ((atual as any).form_1099 ?? null)) upd.form_1099 = formulario
+  } else if (upd.kind && !ehContaDeDespesa(grupoFinal) && (atual as any).form_1099) {
+    upd.form_1099 = null
+  }
   if (Object.keys(upd).length === 0) {
     return NextResponse.json({ error: 'Nada para alterar.' }, { status: 400 })
   }
@@ -165,9 +214,13 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
+  const sobre1099 = upd.form_1099 === undefined ? ''
+    : upd.form_1099
+      ? ` · marcada para o 1099-${upd.form_1099}: toda despesa paga nela entra na lista do 1099`
+      : ' · fora do 1099'
   return NextResponse.json({
     ok: true, name: novoNome,
-    message: `Conta atualizada${upd.name ? ` para "${novoNome}"` : ''}`
+    message: `Conta atualizada${upd.name ? ` para "${novoNome}"` : ''}` + sobre1099
       + (lancamentos ? ` · ${lancamentos} lançamento(s) atualizados` : '')
       + (regras ? ` · ${regras} regra(s)` : '')
       + (subcontas ? ` · ${subcontas} sub-conta(s)` : ''),

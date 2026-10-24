@@ -166,7 +166,7 @@ export async function GET(req: NextRequest) {
   </div>
 
   <div class="muted">${FIRM.name} · ${FIRM.address} · ${FIRM.phone}</div>
-  <h1>${displayName}</h1>
+  <h1>${escaparHtml(displayName)}</h1>
   <h2>Account detail: <b>${escaparHtml(category)}</b> — ${period} <span class="muted">(register only: approved entries)</span></h2>
 
   <div style="margin-bottom:12px">
