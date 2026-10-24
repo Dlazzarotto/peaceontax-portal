@@ -90,7 +90,13 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ received: true })
       }
 
-      // ---- Fase 2: cotação à vista ----
+      // ---- Fase 2: cotação à vista (LEGADO) ----
+      // O módulo Quotes saiu: o orçamento mora no Financeiro e quem se paga é
+      // a fatura. Fica o tratamento para um link antigo que ainda seja pago
+      // (a sessão vale 24h; um cliente pode ter guardado a aba aberta) — sem
+      // ele o pagamento cairia nos ramos abaixo e não seria anotado em lugar
+      // nenhum. O que chega aqui fica fora do livro, e a tela do Financeiro
+      // lista ("pagos pelo link antigo").
       if (meta.quoteId) {
         await handleQuotePaid(db, session)
         return NextResponse.json({ received: true })

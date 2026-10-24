@@ -237,7 +237,8 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   move apenas o FLUXO (`stage`, `assignee`, `notes`) e recusa campo de
   cadastro apontando o caminho certo — aceitava nome, e-mail e telefone sem
   nada disso, e trocar o e-mail troca o acesso do cliente ao portal. Aqui
-  era PIN e virou senha (princípio 3); o PIN segue em uso nos orçamentos.
+  era PIN e virou senha (princípio 3); o PIN segue em uso na troca de acesso
+  do cliente ao portal (`/api/clients/access`).
 - **Recebimento: cartão e Zelle sozinho, o resto com senha de gerente/sócio**
   (`lib/recebimento-aprovacao.ts`). `FORMAS_LIVRES` é uma lista de LIVRES,
   não de bloqueadas — forma nova nasce pedindo aprovação. Espécie é o caso
@@ -1005,6 +1006,31 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   instante fica de fora nem conta duas vezes na emenda de um mês com o outro.
   Os dois domingos de horário de verão estão nos testes (dia de 23 e de 25
   horas).
+- **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
+  sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
+  saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem
+  conta de passagem, sem conciliar com o repasse do Stripe —, e o checkout
+  dela nem passava por `sessaoComFormasDisponiveis`. O que ela fazia:
+  **cálculo da declaração** pelos documentos (`lib/orcamento-automatico.ts`,
+  48 casos; `/api/billing/orcamento-automatico`, só pessoa física, erro de
+  consulta nunca vira preço) — e três defeitos do cálculo antigo: todo 1099
+  era Schedule C (INT/DIV são Schedule B, o B é Schedule D), 1098-T/E não
+  são hipoteca, 1095-B/C não pedem 8962, e `active` nulo era pulado.
+  **Virar fatura** (`action: 'converter'`, chave `criar`): uma fatura por
+  orçamento, conferida ANTES de criar, ligada por `converted_from`, com o
+  vencimento do orçamento (ou hoje, se já passou); o status `accepted` é tentado e a recusa do CHECK (23514)
+  é esperada — o vínculo é `converted_from`. **Orçamento não se cobra nem
+  recebe**: `/api/billing/payments` e o QR do balcão recusam, a tela não
+  oferece. O aviso do orçamento tem texto próprio (`TO` em
+  `avisarClienteDaFatura`) e o portal o lista em Pagamentos → Orçamentos.
+  Os abertos do módulo antigo vêm pela ponte `/api/billing/orcamentos-antigos`
+  (sócio e gerente; reserva a linha antes de criar, desfaz se falhar); os
+  pagos pelo link antigo só se listam (fora do livro: decisão do sócio) e o
+  impresso antigo fica para o recibo. O webhook mantém `handleQuotePaid`
+  para um link antigo pago depois. De passagem: PATCH/DELETE do Financeiro
+  e as três entradas de recebimentos passaram a conferir `canAccessClient`
+  do documento, a lista obedece a `clientesOcultos`, e Pagamentos do portal
+  não diz mais "nada a pagar" quando a consulta falha.
 - **Excedente de transações: franquia MENSAL, apuração ANUAL, e o
   bookkeeping só CONTA** (`lib/excedente-transacoes.ts`, 30 casos em
   `testes/excedente-transacoes.mts`). `included_transactions` é POR MÊS
@@ -1166,7 +1192,7 @@ app/api/stripe/webhook   entrada única dos eventos de pagamento
 app/api/whatsapp/    webhook, fila, conversa, bot
 app/api/sms/webhook  STOP/START e SMS recebidos (Twilio)
 app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes)
-components/          BookkeepingTab, PlansTab, QuotesTab, ReconcileTab, SignaturesTab…
+components/          BookkeepingTab, PlansTab, ReconcileTab, SignaturesTab…
 lib/                 motor de regras, permissões, SMS, contrato, integrações
 sql/ e *.sql         migrações rodadas à mão no SQL Editor do Supabase (idempotentes)
 middleware.ts        controle de acesso por rota
@@ -1174,8 +1200,8 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro.
-  Duplicações conhecidas; o sócio já decidiu juntar as duas (em andamento).
+- Módulo Plans × tabela `recurring_plans`: duplicação conhecida; o sócio já
+  decidiu juntar (em andamento).
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,

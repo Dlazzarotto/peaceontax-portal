@@ -17,6 +17,8 @@ interface Inv {
   issue_date: string; due_date: string | null; total: number; paid_total: number; saldo: number
   payment_plan: string; expected_method: string | null
   ach_desde?: string | null; ach_valor?: number | null
+  /** Orçamento que já virou fatura: o número dela. */
+  convertidoEm?: string | null
 }
 interface Item { description: string; qty: number; unitPrice: number; serviceId?: string }
 
@@ -174,6 +176,14 @@ export default function BillingPage() {
   const [fDesconto, setFDesconto] = useState('0')
   const [fNotas, setFNotas] = useState('')
   const [itens, setItens] = useState<Item[]>([{ description: '', qty: 1, unitPrice: 0 }])
+  // Orçamento da declaração pelos documentos (pessoa física): era o "Gerar
+  // cotação automática" da aba Quotes do cliente. Preenche os itens; a equipe
+  // revisa e salva.
+  const [anoDecl, setAnoDecl] = useState(String(new Date().getFullYear() - 1))
+  const [calculo, setCalculo] = useState('')
+  // Orçamentos do módulo antigo ainda abertos — a ponte para cá
+  const [antigos, setAntigos] = useState<any | null>(null)
+  const [verAntigos, setVerAntigos] = useState(false)
 
   // recebimento
   const [receber, setReceber] = useState<Inv | null>(null)
@@ -265,6 +275,32 @@ export default function BillingPage() {
     if (!fDe && dados?.escopo?.hoje) { setFDe(dados.escopo.hoje); setFAte(dados.escopo.hoje) }
   }, [dados?.escopo?.hoje, fDe])
   useEffect(() => { load() }, [filtroDoc, fSituacao, fDe, fAte, fSoMinhas])
+  // Atalho da ficha do cliente: ?novo=estimate&cliente=<id> abre o formulário
+  // com o cliente escolhido; ?antigos=1 abre os orçamentos do módulo antigo.
+  // Lido da URL no navegador: useSearchParams pediria Suspense na página toda.
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search)
+      const novo = sp.get('novo')
+      if (novo === 'estimate' || novo === 'invoice') {
+        setFTipo(novo); setAbrirNovo(true); setAba('docs')
+        const cli = sp.get('cliente')
+        if (cli) setFCliente(cli)
+      }
+      if (sp.get('antigos') === '1') setVerAntigos(true)
+    } catch { /* sem URL legível, a tela abre como sempre */ }
+  }, [])
+  const loadAntigos = async () => {
+    const d = await fetch('/api/billing/orcamentos-antigos').then(jsonSeguro).catch(e => ({ error: String(e) }))
+    // Falha aqui vira aviso, não "não há nada": dizer que não há orçamento
+    // antigo quando a consulta falhou faria alguém concluir que já foi tudo.
+    if (d?.abertos) setAntigos(d)
+    else setAntigos({ erro: d?.error || 'Não foi possível ler os orçamentos antigos.' })
+  }
+  useEffect(() => {
+    if (aba === 'docs' && (perms?.nivel === 'owner' || perms?.nivel === 'manager')) loadAntigos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aba, perms?.nivel])
   useEffect(() => { if (aba === 'contratos') loadPlanos() }, [aba])
 
   const cancelarParcelamento = async () => {
@@ -545,6 +581,36 @@ export default function BillingPage() {
     setAbrirNovo(false); setItens([{ description: '', qty: 1, unitPrice: 0 }])
     setFVenc(''); setFNotas(''); setFDesconto('0')
     load()
+  }
+
+  const tipoDoCliente = (id: string) => (dados?.clients || []).find((c: any) => c.id === id)?.tipo
+
+  const calcularDeclaracao = async () => {
+    if (!fCliente) { setMsg('⚠️ Escolha o cliente.'); return }
+    if (itens.some(i => i.description.trim()) &&
+        !confirm('Substituir os itens do formulário pelos calculados pelos documentos?')) return
+    setBusy(true); setMsg(''); setCalculo('')
+    const d = await fetch(`/api/billing/orcamento-automatico?clientId=${encodeURIComponent(fCliente)}&ano=${encodeURIComponent(anoDecl)}`)
+      .then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    if (!d?.itens) { setMsg(`⚠️ ${d?.error || 'Não foi possível calcular.'}`); return }
+    setItens(d.itens.map((i: any) => ({ serviceId: i.serviceId, description: i.description, qty: i.qty, unitPrice: i.unitPrice })))
+    const p = d.perfil || {}
+    const tipos1099 = Object.entries(p.por1099 || {})
+      .map(([k, n]) => `${n} 1099-${k === 'nao_identificado' ? 'sem tipo' : String(k).toUpperCase()}`).join(', ')
+    setCalculo(`Declaração ${anoDecl}: ${p.documentos || 0} documento(s) · ${p.w2 || 0} W-2${tipos1099 ? ` · ${tipos1099}` : ''} → ${money(d.total)}. Revise antes de salvar.${d.aviso ? ` ⚠️ ${d.aviso}` : ''}`)
+  }
+
+  const trazerAntigos = async () => {
+    const n = antigos?.abertos?.length || 0
+    if (!n || !confirm(`Trazer ${n} orçamento(s) do módulo antigo para o Financeiro?\n\nCada um vira um orçamento em RASCUNHO aqui, com os mesmos itens; o antigo fica no histórico, encerrado com o motivo.`)) return
+    setBusy(true); setMsg('')
+    const d = await fetch('/api/billing/orcamentos-antigos', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    }).then(jsonSeguro).catch(e => ({ error: String(e) }))
+    setBusy(false)
+    setMsg(d?.ok ? `✓ ${d.message}` : `⚠️ ${d?.message || d?.error}`)
+    loadAntigos(); load()
   }
 
   const salvarNovoCliente = async () => {
@@ -907,6 +973,52 @@ export default function BillingPage() {
       </div>
 
       {aba === 'docs' && (<>
+      {antigos?.erro && (
+        <div style={{ ...card, background: '#FFF8E8', color: '#7A5A10', fontSize: 13.5 }}>⚠️ {antigos.erro}</div>
+      )}
+      {(antigos?.abertos?.length > 0 || antigos?.pagos?.length > 0 || antigos?.parcelados?.length > 0) && (
+        <div style={{ ...card, border: '2px solid #0A6A8A' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14, color: '#0F2340' }}>
+              📦 <b>Orçamentos do módulo antigo</b> (a aba Quotes do cliente, que saiu):{' '}
+              {antigos.abertos.length} aberto(s){antigos.pagos.length ? ` · ${antigos.pagos.length} pago(s) pelo link antigo` : ''}
+              {antigos.parcelados.length ? ` · ${antigos.parcelados.length} parcelado(s)` : ''}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {antigos.abertos.length > 0 && (
+                <button onClick={trazerAntigos} disabled={busy} style={btn('#0A6A8A', busy)}>Trazer os abertos para cá</button>
+              )}
+              <button onClick={() => setVerAntigos(v => !v)} style={acaoBtn('#6A7A9A')}>{verAntigos ? 'esconder' : 'ver a lista'}</button>
+            </div>
+          </div>
+          {verAntigos && (
+            <div style={{ marginTop: 12, fontSize: 13, color: '#3A4A5A', lineHeight: 1.6 }}>
+              {antigos.abertos.map((q: any) => (
+                <div key={q.id}>• {q.cliente} · declaração {q.ano || '—'} · {money(q.total)} · {q.status === 'sent' ? 'enviado' : 'rascunho'}</div>
+              ))}
+              {antigos.pagos.length > 0 && (
+                <div style={{ marginTop: 10, padding: '10px 12px', background: '#FFF8E8', borderRadius: 8, color: '#7A5A10' }}>
+                  <b>Pagos pelo link antigo — FORA do livro do caixa.</b> O recebimento entrou numa tabela à parte, sem
+                  {' '}<code>invoice_payments</code>: não está nos relatórios nem na conciliação do repasse do Stripe.
+                  Lançar é decisão do sócio (é receita da data do pagamento).
+                  {antigos.pagos.map((q: any) => (
+                    <div key={q.id}>
+                      • {q.cliente} · {money(q.total)} · pago em {dataUS(String(q.pagoEm || '').slice(0, 10))}
+                      {q.stripe ? ` · Stripe ${q.stripe}` : ''} · <a href={`/api/quotes/${q.id}/document`} target="_blank" rel="noreferrer">recibo</a>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {antigos.parcelados.length > 0 && (
+                <div style={{ marginTop: 10, color: '#6A7A9A' }}>
+                  Parcelados pelo plano antigo (não vêm para cá — o plano já cobra):
+                  {antigos.parcelados.map((q: any) => <div key={q.id}>• {q.cliente} · {money(q.total)}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ ...card, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar número ou cliente"
           style={{ ...inp, flex: '1 1 220px' }} />
@@ -1067,6 +1179,21 @@ export default function BillingPage() {
           <button onClick={() => setItens(a => [...a, { description: '', qty: 1, unitPrice: 0 }])}
             style={{ ...acaoBtn('#2D3278'), marginBottom: 12 }}>➕ adicionar item</button>
 
+          {/* Só orçamento de pessoa física: a declaração de empresa depende de
+              avaliação, e a rota recusa. */}
+          {fTipo === 'estimate' && !editandoId && fCliente && tipoDoCliente(fCliente) !== 'business' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12,
+              padding: '10px 12px', background: '#F0F7FA', border: '1px solid #CFE3EC', borderRadius: 10 }}>
+              <span style={{ fontSize: 13.5, color: '#0A6A8A', fontWeight: 700 }}>Declaração</span>
+              <select value={anoDecl} onChange={e => setAnoDecl(e.target.value)} style={{ ...inp, cursor: 'pointer' }}>
+                {Array.from({ length: 6 }, (_, k) => String(new Date().getFullYear() - 1 - k)).map(a => <option key={a}>{a}</option>)}
+              </select>
+              <button onClick={calcularDeclaracao} disabled={busy} style={acaoBtn('#0A6A8A')}>📊 Calcular pelos documentos</button>
+              <span style={{ fontSize: 12, color: '#6A7A9A' }}>preenche os itens pela tabela de Preços; revise antes de salvar</span>
+              {calculo && <div style={{ width: '100%', fontSize: 12.5, color: '#3A4A5A', lineHeight: 1.5 }}>{calculo}</div>}
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             {perms?.darDesconto && (
               <label style={{ fontSize: 13.5, color: '#4A5A70' }}>
@@ -1154,6 +1281,11 @@ export default function BillingPage() {
                       <td style={{ padding: '10px' }}>
                         <span style={{ fontSize: 12.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20,
                           color: st.cor, background: `${st.cor}14`, whiteSpace: 'nowrap' as const }}>{st.rotulo}</span>
+                        {inv.convertidoEm && (
+                          <div style={{ marginTop: 4, fontSize: 11.5, fontWeight: 700, color: '#0A6A8A', whiteSpace: 'nowrap' as const }}>
+                            → virou {inv.convertidoEm}
+                          </div>
+                        )}
                         {/* Débito em conta a caminho: sem isto a fatura parecia
                             simplesmente não paga, e a equipe cobrava ou dava
                             baixa por fora em cima de dinheiro já enviado. */}
@@ -1176,7 +1308,19 @@ export default function BillingPage() {
                         {/* Fatura em aberto que já saiu do rascunho — inclusive a de
                             mensalidade, que nasce enviada pelo Stripe e nunca teve
                             botão. Reenviar repete o documento; Lembrete cobra. */}
-                        {inv.status !== 'draft' && inv.status !== 'void' && inv.saldo > 0 && perms?.enviar && (<>
+                        {/* ORÇAMENTO não se cobra nem recebe: quem paga é a fatura.
+                            A tela oferecia Lembrete, QR e Receber num orçamento,
+                            e o recebimento lançado nele não era de fatura nenhuma. */}
+                        {inv.doc_type === 'estimate' && inv.status !== 'draft' && inv.status !== 'void' && !inv.convertidoEm && perms?.enviar && (
+                          <button onClick={() => acao(inv, 'resend', `Reenviar o orçamento ${inv.number} para ${inv.cliente}?`)}
+                            disabled={busy} style={acaoBtn('#2D3278')}>Reenviar</button>
+                        )}
+                        {inv.doc_type === 'estimate' && inv.status !== 'void' && !inv.convertidoEm && perms?.criar && (
+                          <button onClick={() => acao(inv, 'converter',
+                              `O cliente aprovou ${inv.number}?\n\nVira uma FATURA (rascunho) com os mesmos itens e o desconto, no vencimento do orçamento (ou hoje, se ele já passou). O orçamento fica no histórico, ligado a ela. A fatura é que se envia, parcela e recebe.`)}
+                            disabled={busy} style={acaoBtn('#0A6A8A')}>Virar fatura</button>
+                        )}
+                        {inv.doc_type !== 'estimate' && inv.status !== 'draft' && inv.status !== 'void' && inv.saldo > 0 && perms?.enviar && (<>
                           <button onClick={() => acao(inv, 'resend',
                               `Reenviar ${inv.number} para ${inv.cliente}?\n\nMesmo aviso da emissão: "aqui está sua fatura, com o link de pagamento". Nada muda no valor nem na situação.`)}
                             disabled={busy} style={acaoBtn('#2D3278')}>Reenviar</button>
@@ -1191,7 +1335,7 @@ export default function BillingPage() {
                           <button onClick={() => abrirQrBalcao(inv)} disabled={busy}
                             style={acaoBtn('#5B3FB5')}>QR no balcão</button>
                         </>)}
-                        {perms?.receber && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
+                        {perms?.receber && inv.doc_type !== 'estimate' && inv.saldo > 0 && inv.status !== 'void' && inv.status !== 'draft' && (
                           <button onClick={() => abrirRecebimento(inv)} style={acaoBtn('#1A6B4A')}>Receber</button>
                         )}
                         {perms?.estornar && Number(inv.paid_total) > 0 && (
@@ -1200,7 +1344,7 @@ export default function BillingPage() {
                           </button>
                         )}
 
-                        {perms?.editar && Number(inv.paid_total) === 0 && inv.status !== 'void' && (
+                        {perms?.editar && Number(inv.paid_total) === 0 && inv.status !== 'void' && !inv.convertidoEm && (
                           <button onClick={() => abrirEdicao(inv)} disabled={busy} style={acaoBtn('#5A1A8A')}>Editar</button>
                         )}
                         {perms?.duplicar && (

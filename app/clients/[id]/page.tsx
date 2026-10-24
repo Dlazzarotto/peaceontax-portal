@@ -1,5 +1,4 @@
 'use client'
-import QuotesTab from '@/components/QuotesTab'
 import ProfileEditor from '@/components/ProfileEditor'
 import PlansTab from '@/components/PlansTab'
 import SignaturesTab from '@/components/SignaturesTab'
@@ -128,7 +127,7 @@ export default function ClientDetailPage() {
         {([
           ['documents', `📁 Documents (${docs.length})`],
           ['messages',  `💬 Messages (${messages.length})`],
-          ['quotes',    '💰 Quotes'],
+          ['quotes',    '💰 Orçamentos e faturas'],
           ['plans',     '📆 Planos'],
           ['signatures','✍️ Assinaturas'],
           ['bookkeeping','📊 Bookkeeping'],
@@ -259,9 +258,35 @@ export default function ClientDetailPage() {
         </div>
       )}
 
-      {/* QUOTES TAB */}
+      {/* ORÇAMENTOS E FATURAS — moram no Financeiro (decisão do sócio).
+          Esta aba era o módulo Quotes: uma segunda tabela de orçamentos, com
+          link de pagamento próprio e o dinheiro fora do livro. Os abertos
+          de lá se trazem pelo Financeiro (painel "módulo antigo"). */}
       {tab==='quotes' && (
-        <QuotesTab clientId={id as string} clientName={client.name} clientType={client.type} />
+        <div style={{ background:'#fff', borderRadius:14, padding:22, border:'1px solid #e2e8f4' }}>
+          <h3 style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0f2340', margin:'0 0 8px' }}>
+            💰 Orçamentos e faturas de {client.name}
+          </h3>
+          <p style={{ fontSize:13.5, color:'#4a5a70', margin:'0 0 16px', lineHeight:1.55 }}>
+            Ficam num lugar só: o Financeiro. Lá o orçamento de pessoa física se calcula pelos documentos
+            da declaração, vira fatura quando o cliente aprova, e a fatura é que se envia, parcela e recebe —
+            com o recebimento no livro do caixa.
+          </p>
+          <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+            <a href={`/dashboard/billing?novo=estimate&cliente=${id}`}
+              style={{ padding:'10px 18px', background:'#0A6A8A', color:'#fff', borderRadius:10, fontSize:14, fontWeight:700, textDecoration:'none' }}>
+              📄 Novo orçamento
+            </a>
+            <a href={`/dashboard/billing?novo=invoice&cliente=${id}`}
+              style={{ padding:'10px 18px', background:'#2D3278', color:'#fff', borderRadius:10, fontSize:14, fontWeight:700, textDecoration:'none' }}>
+              🧾 Nova fatura
+            </a>
+            <a href="/dashboard/billing"
+              style={{ padding:'10px 18px', background:'#f0f4fa', color:'#2D3278', border:'1px solid #e2e8f4', borderRadius:10, fontSize:14, fontWeight:700, textDecoration:'none' }}>
+              Abrir o Financeiro
+            </a>
+          </div>
+        </div>
       )}
 
       {/* PLANS TAB */}
