@@ -42,7 +42,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito, avisoDeBaixaComAchEmTransito, limparAchEmTransito } from '@/lib/ach-transito'
@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
     db.from('invoice_payments')
       .select('id, amount, method, reference, received_at, stripe_object')
       .eq('invoice_id', invoiceId).order('received_at', { ascending: false }),
-    db.from('invoices').select('stripe_invoice, status, total, paid_total').eq('id', invoiceId).maybeSingle(),
+    db.from('invoices').select('client_id, stripe_invoice, status, total, paid_total').eq('id', invoiceId).maybeSingle(),
     db.from('invoice_installments').select('seq, amount, last_error, attempts')
       .eq('invoice_id', invoiceId).eq('status', 'failed').order('seq'),
   ])
@@ -77,6 +77,12 @@ export async function GET(req: NextRequest) {
   // como se a fatura estivesse quitada. Sem as parcelas, a que falhou some.
   if (errInv)    return NextResponse.json({ error: `Fatura: ${errInv.message}` }, { status: 500 })
   if (errFalhas) return NextResponse.json({ error: `Parcelas: ${errFalhas.message}` }, { status: 500 })
+  // isStaff diz QUEM chama; QUAL cliente é canAccessClient. A rota de
+  // recebimentos não conferia: a lista de pagamentos de uma empresa saía a
+  // quem não pode abri-la, pelo id da fatura.
+  if (inv && !(await canAccessClient(auth, inv.client_id))) {
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  }
 
   // Situação da cobrança automática, para a tela mostrar o que pode ser feito
   const aberta = !!inv && !['paid', 'void', 'draft'].includes(inv.status)
@@ -108,6 +114,9 @@ export async function POST(req: NextRequest) {
     const { data: pag } = await dbR.from('invoice_payments')
       .select('*').eq('id', b.paymentId).single()
     if (!pag) return NextResponse.json({ error: 'Pagamento não encontrado' }, { status: 404 })
+    if (!(await canAccessClient(auth, pag.client_id))) {
+      return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+    }
 
     const motivo = String(b.reason || '').trim()
 
@@ -195,10 +204,19 @@ export async function POST(req: NextRequest) {
 
   const db = serviceDb()
   const { data: inv } = await db.from('invoices')
-    .select('id, client_id, number, total, paid_total, status, stripe_invoice, ach_desde, ach_valor')
+    .select('id, client_id, number, doc_type, total, paid_total, status, stripe_invoice, ach_desde, ach_valor')
     .eq('id', b.invoiceId).single()
   if (!inv) return NextResponse.json({ error: 'Fatura não encontrada' }, { status: 404 })
   if (inv.status === 'void') return NextResponse.json({ error: 'Fatura cancelada não recebe pagamento.' }, { status: 409 })
+  if (!(await canAccessClient(auth, inv.client_id))) {
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  }
+  // Quem recebe é a FATURA. Recebimento lançado num orçamento entrava no livro
+  // pendurado num documento que ninguém cobra, e o orçamento ficava "pago" sem
+  // nunca ter virado fatura. Aprovado, ele vira fatura (Virar fatura).
+  if (inv.doc_type === 'estimate') {
+    return NextResponse.json({ error: `${inv.number} é orçamento: use Virar fatura e receba na fatura.` }, { status: 409 })
+  }
 
   // Débito em conta a caminho: receber por fora agora vira baixa EM DOBRO
   // quando o banco confirmar. Não se proíbe — o cliente pode ter cancelado o

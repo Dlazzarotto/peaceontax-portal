@@ -30,13 +30,13 @@ Estes princípios foram estabelecidos ao longo da construção e explicam por qu
 
 ## 3. Níveis de acesso
 
-Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, que é traduzido para um dos três níveis.
+Fonte única de permissão: a coluna `level` de `team_members` — a pessoa da equipe é **uma linha só**, com o nome de responsável no CRM, o login, o nível e o PIN (seção 3.4). O convite escolhe o nível; convites antigos com papel Admin continuam valendo como sócio.
 
 | Convite | Nível | Alcance |
 |---|---|---|
-| Owner · Admin | `owner` | tudo, inclusive relatórios e totais do negócio |
-| Manager | `manager` | opera o dia a dia; **não** vê faturamento consolidado |
-| Staff | `junior` | acesso restrito; ações sensíveis exigem PIN de gerente |
+| Sócio (antes Owner · Admin) | `owner` | tudo, inclusive relatórios e totais do negócio e a equipe |
+| Gerente | `manager` | opera o dia a dia; **não** vê faturamento consolidado |
+| Assistente | `junior` | acesso restrito; ações sensíveis exigem PIN de gerente |
 
 **Matriz do financeiro:**
 
@@ -51,7 +51,7 @@ Fonte única de permissão: tabela `staff_roles`. O convite escolhe um papel, qu
 | Relatórios e totais | ❌ | ❌ | ✅ |
 | Ver conversas de atendimento | ❌ | ✅ | ✅ |
 
-O cliente só acessa o próprio cadastro. Quem não tem registro em `staff_roles` é tratado como assistente — o nível mais restrito.
+O cliente só acessa o próprio cadastro. Login da firma sem linha na equipe recebe o nível que o papel do login dá (o aceite do convite que falhou ao gravar não tranca ninguém); consulta do nível que **falha** e quem **saiu** da equipe valem assistente — o nível mais restrito.
 
 **O assistente fica em Pessoa física, e não baixa arquivo.**
 `canAccessClient` — o funil por onde ~40 rotas passam — era
@@ -223,12 +223,13 @@ cliques não podem virar três autorizações.
 São decisões separadas e não podem ser confundidas:
 
 1. **A porta — firma ou cliente?** Vem de `lib/papeis.ts`, e só de lá.
-   `user_metadata.role` do login é comparado com uma **lista fechada**:
+   `app_metadata.role` do login (o campo que só a service role escreve) é
+   comparado com uma **lista fechada**:
    `firm · owner · admin · manager · staff`. Papel fora da lista é **cliente**.
    Errar para o lado restritivo tranca um funcionário, que o sócio libera em
    um minuto; errar para o outro abre a carteira inteira.
 2. **O poder dentro da firma — owner, manager ou junior?** Vem de
-   `staff_roles`, por `lib/staff-perms.ts`, como na tabela acima.
+   `team_members.level`, por `lib/staff-perms.ts`, como na tabela acima.
 
 **Por que isto está escrito aqui.** O sistema tinha duas linguagens para a
 mesma coisa: o convite gravava `firm | admin | manager | staff`, e a porta
@@ -269,16 +270,56 @@ Duas regras que saíram daí:
   reescrevia o metadata inteiro: corpo sem `role` rebaixava um membro da
   firma a cliente e apagava `must_change_password`.
 
-Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso —
-a mudança de papel ali também atualiza `staff_roles`, senão a tela diz
-"Manager" e o sistema continua tratando como assistente.
+Gerenciar a equipe é do **sócio**, e ninguém altera o próprio acesso.
 
-**O nível só é reescrito quando o papel muda.** Papel e nível podem
-discordar de propósito: existe hoje quem tem papel `firm` e nível `manager`,
-afinado à mão em `/api/account/team`. Sincronizar em toda gravação faria uma
-edição de telefone promover essa pessoa a sócia — e ela passaria a ver o
-faturamento consolidado, sem ninguém pedir. Quem manda no que a pessoa PODE
-é sempre o `staff_roles`.
+### 3.4 A equipe num lugar só (decisão do sócio)
+
+A firma tinha **três cadastros da mesma gente**, cada um com a sua tela, e
+eles discordavam: `team_members` (o nome de responsável no CRM, em `/team`,
+com um "rótulo" de função que qualquer assistente trocava e que a tela
+mostrava como "Sócio"), os logins com o papel da porta (Settings → Team
+Members) e `staff_roles`, o nível de verdade, trocado em Minha Conta sem
+senha, sem motivo e sem rastro. Agora cada pessoa é **uma linha de
+`team_members`**: nome, e-mail, login (`user_id`), nível (`level`) e PIN, na
+tela **Equipe** (`/settings/users`). As regras estão em `lib/equipe.ts`, com
+teste.
+
+- **Editar não mexe no nível.** Era o defeito mudo que levou à unificação:
+  ao editar o telefone em Team Members, a rota comparava o papel com
+  `user_metadata.role` para saber se ele tinha mudado — e a migração do papel
+  tirou o papel de lá. O "mudou" dava sempre verdadeiro e o nível era
+  reescrito pelo papel: quem tinha papel `firm` e nível `manager` virava
+  sócio; quem foi promovido em Minha Conta voltava a assistente.
+- **O nível muda por um ato próprio**: só o sócio, nunca o próprio, com a
+  **senha do sócio e o motivo**, e a trilha (`team_member_audit`) gravada
+  **antes** — se ela falhar, a mudança é recusada. Passar a Assistente apaga
+  o PIN. O papel da porta acompanha o nível (é a reserva do nível; os dois
+  discordando é o defeito acima).
+- **Quem sai da equipe sai inteiro**: desativar bloqueia o login, tira o
+  nome do seletor de responsável e o **PIN deixa de aprovar** — antes o PIN
+  de um gerente desligado continuava liberando desconto e troca de acesso
+  no balcão. Os clientes que a pessoa atendeu continuam com o nome dela.
+- **Convite é para quem ainda não tem login.** Reconvidar quem já é da
+  equipe regravava o nível pelo convite, e o "Reenviar" não matava o link
+  anterior — um link velho, com outro nível, abria a conta por sete dias.
+  Agora o convite novo encerra os pendentes do mesmo e-mail, e o aceite
+  encerra os outros. Login de cliente também é recusado: o aceite
+  transformaria o portal dele em acesso da firma.
+- **Aceitar o convite completa a linha do CRM** (mesmo e-mail, ou mesmo
+  nome sem e-mail), em vez de pôr a pessoa duas vezes no seletor — a mesma
+  regra do cadastro de cliente. Quem já tinha linha não tem o nível tocado.
+- **Responsável sem login** continua existindo (entra no seletor do CRM e
+  não entra no sistema); incluir, renomear e desativar é do sócio. Nível só
+  existe para quem tem login.
+- `staff_roles` ficou **congelada** como rastro: a service role não grava
+  mais nela. A lista de logins passou a ler **todas** as páginas — a de
+  antes devolvia os 50 primeiros, e gente da equipe sumia da tela.
+
+Migração: `sql/equipe-unica-v1.sql`, que **precisa rodar antes de o código
+subir**. Ela fecha `team_members` ao navegador (o nível passa a morar lá),
+liga cada login da firma à sua linha sem mudar o nível de ninguém, cria a
+trilha e congela `staff_roles`; decide pelo estado de destino (rodar de novo
+não traz de volta nível velho). Testada no PG 16.
 
 ---
 
@@ -468,6 +509,16 @@ Ciclo completo: **orçamento → fatura → cobrança → recebimento**.
 
 **Documentos.** Orçamentos e faturas na mesma estrutura, distinguidos por tipo, com numeração sequencial por ano (`INV-2026-0001`) gerada no banco — à prova de duas pessoas emitindo ao mesmo tempo. Nascem como rascunho; enviar é ato consciente do gerente ou sócio. Itens vêm do **catálogo de preços** (`pricing_items`), e cada item guarda o **preço praticado** — reajuste futuro não altera fatura antiga.
 
+**Orçamentos num lugar só: o Financeiro (decisão do sócio).** Havia um segundo módulo, a aba *Quotes* da ficha do cliente, com tabela própria (`quotes`) e link de pagamento saindo da própria cotação — o dinheiro entrava **fora do livro**: sem `invoice_payments`, sem a conta de passagem do caixa e sem conciliar com o repasse do Stripe. Saiu. O que ele fazia mora agora no Financeiro:
+
+- **Cálculo da declaração pelos documentos** (pessoa física): no formulário do orçamento, *Calcular pelos documentos* preenche os itens pela tabela de Preços; a equipe revisa e salva (`lib/orcamento-automatico.ts`). Empresa não tem cálculo — a declaração dela depende de avaliação. Três correções em relação ao cálculo antigo: **todo 1099 contava como Schedule C** (o 1099-INT e o 1099-DIV vão no Schedule B, o 1099-B no Schedule D — cobrava-se do cliente um anexo que ele não tem); o 1098-T e o 1098-E não são hipoteca, nem o 1095-B/C pede o Form 8962; e serviço com `active` nulo era pulado. O 1099 sem tipo no nome conta como Schedule C e é dito à equipe.
+- **Orçamento vira fatura** (*Virar fatura*, chave `criar`): uma fatura só por orçamento, com os mesmos itens e o desconto, no vencimento do orçamento (ou hoje, se ele já passou), ligada por `converted_from`. A fatura é que se envia, parcela e recebe. Parcelado não se copia: o cronograma nasce na fatura.
+- **Orçamento não se cobra nem recebe.** A tela oferecia Lembrete, QR do balcão e Receber num orçamento enviado, e o recebimento manual e o QR aceitavam — o pagamento ficava pendurado num documento que ninguém cobra. As rotas recusam e a tela não oferece.
+- **O cliente recebe o orçamento como orçamento.** O aviso dizia "Fatura EST-… — Ver e pagar a fatura" e levava a Pagamentos, que só listava faturas. Agora o texto é de orçamento e Pagamentos tem a seção *Orçamentos* (só leitura), com os itens; para aprovar, o cliente responde ou fala com a equipe.
+- Os orçamentos **abertos** do módulo antigo se trazem pelo painel "módulo antigo" do Financeiro (sócio e gerente): cada um vira rascunho aqui e o antigo é encerrado com o motivo na trilha dele. Os **pagos pelo link antigo** só são listados — estão fora do livro e lançar é decisão do sócio; os parcelados pelo plano antigo também ficam, porque o plano já cobra.
+
+De passagem, o mesmo funil de escopo nas rotas do Financeiro: o PATCH e o DELETE de `/api/billing/invoices` e as três entradas de `/api/billing/payments` conferiam QUEM chama e não QUAL cliente (por autorização individual, quem envia sem `verEmpresas` agia pelo id na fatura de uma empresa), e a lista mostrava documentos de cliente que o seletor escondia. E a página Pagamentos do portal mostrava "Nada a pagar" ✅ quando a consulta falhava.
+
 **Formas de pagamento e o que cada uma permite:**
 
 | Forma | Parcela? | Cobrança automática? |
@@ -494,11 +545,18 @@ Pagamento **dividido** é permitido (ex.: $50 em dinheiro + $50 no cartão); o q
 
 **Relatórios do sócio.** Botão Relatórios no Financeiro, visível e servido **só ao sócio** (`verRelatorios`; gerente e assistente recebem recusa na rota). Seis relatórios impressos, no mesmo padrão dos contábeis, com período escolhido: **Faturamento por mês** (emitido, recebido e em aberto), **Recebimentos** (por forma e por cliente, com Klarna como financiado), **Contas a receber** (por cliente, com atraso em faixas), **Contratos e parcelamentos** (receita recorrente mensal dos contratos ativos e parcelas a receber), **Faturamento por serviço** (por item do catálogo) e **Estornos e cancelamentos**. Orçamentos, rascunhos e faturas canceladas ficam fora do faturamento. As contas ficam em `lib/relatorios-financeiro.ts`, sem banco, testadas com casos fixos.
 
-**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — mensalidade no dia acordado, parcela pelo cronograma — e avisa o cliente: por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
+**Aviso antes do débito.** Todo dia, uma rotina agendada na Vercel (`vercel.json` → `/api/cron/billing-reminders`, protegida por `CRON_SECRET`) encontra os planos ativos cujo débito cai em **três dias** — contrato no débito pela régua dele (o trimestral, de três em três meses), parcela pelo cronograma — e avisa o cliente (contrato por fatura não tem débito e não recebe este aviso): por SMS quando há consentimento, senão por e-mail, e sempre com aviso no portal. Cada aviso fica em `plan_audit` (`reminder_sent`, com canal, data e valor) e tem chave única por plano e data, então rodar duas vezes no dia não duplica. As regras de data são as mesmas do checkout e do cronograma (`lib/plans.ts`).
 
 ### 4.4 Planos e contratos
 
-Contratos recorrentes: **bookkeeping mensal** (com transações incluídas e valor por excedente) e **outros serviços mensais** (payroll, sales tax), mais **parcelamento** de serviços avulsos com entrada.
+**O contrato recorrente tem um cadastro só (decisão do sócio: juntar os planos com os contratos recorrentes e eliminar os planos).** Mora no Financeiro → Contratos; a ficha do cliente só mostra os contratos dele e aponta para lá. Um contrato é **bookkeeping** (mensal, com transações incluídas por mês e valor por excedente) ou **serviço recorrente** (payroll, sales tax…), e é o **molde de uma fatura**: linhas (serviço do catálogo ou texto livre, quantidade, preço), **desconto em dólar** e o total derivado delas. Repete **mensal, trimestral ou anual**, num **dia do mês (1 a 28)**, numa régua ancorada no início (trimestral de 10/jan cobra jan · abr · jul · out). E se cobra de **uma de duas formas**, escolhida na criação e que não muda depois:
+
+- **Débito automático** — o cliente assina o contrato e cadastra cartão ou conta pelo link; a assinatura do Stripe debita no intervalo do contrato, a partir da primeira data da régua. A fatura de cada cobrança nasce quando o Stripe a finaliza, com os itens do contrato quando a conta deles bate com o que foi debitado.
+- **Fatura do sistema** — uma rotina diária emite a fatura do período no dia, com vencimento em **N dias** (Net 15, Net 30), põe no portal, manda por e-mail e anda a régua; o cliente paga pelo portal (cartão, débito em conta, Klarna) ou diretamente à firma. Não há débito automático, nem aviso de "vamos debitar", e o contrato assinado diz isso.
+
+O contrato nasce **rascunho**: nada é cobrado até a equipe **ativar** (fatura) ou o cliente **cadastrar o débito**. **Editar** — itens, desconto e prazo — vale a partir da **próxima cobrança** e pede senha e motivo (no débito, o preço da assinatura no Stripe muda sem cobrança proporcional). **Mudar o intervalo ou a forma de cobrar é encerrar e criar outro.** **Pausar** é reversível e não cobra o período parado; **encerrar** pede senha e motivo, cancela a assinatura no Stripe (se o Stripe recusar, nada é encerrado) e **não volta**. Tudo fica na trilha do contrato, gravada antes da mudança. O valor de cada cobrança é o do período (num trimestral, o do trimestre); a receita recorrente **mensal** divide pelo intervalo.
+
+**Parcelamento** é outra coisa: é sempre de uma fatura de serviço realizado, com entrada, e nasce no Financeiro (fatura → Parcelar).
 
 **Excedente de transações (bookkeeping).** A franquia do contrato é **por mês** (o formulário pede "transações incluídas/mês" e o contrato assinado promete "até N por mês"). A apuração é **anual**: a franquia do período é o número mensal × os **meses de vigência** no ano, contados da **primeira cobrança** (contrato criado em 20/08 com débito no dia 5 vale de setembro a dezembro). Mês de pouco movimento compensa mês de muito. Só contam os lançamentos dentro da vigência — histórico importado de antes do contrato não vira excedente. No **ano em curso** a franquia vai até o mês corrente, e a tela avisa que o número é parcial. O bookkeeping **só conta**: cobrar excedente se faz pelo Financeiro, com uma fatura, sob a mesma alçada de qualquer cobrança. A conta mora em `lib/excedente-transacoes.ts` e é a mesma no quadro do cliente e na central de bookkeeping.
 
@@ -599,6 +657,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **O 1099 passou a sair das contas marcadas no Plano de contas (decisão do sócio).** Cada conta de despesa ganhou o botão do 1099, com o formulário (NEC para serviço, MISC para aluguel); toda despesa paga numa conta marcada entra na lista do 1099 de cada cliente. Antes a lista era fixa no código e só olhava Contract Labor e Subcontractors. A apuração passou a seguir a lei em três pontos: o limite é o do ano (US$ 600 até 2025, US$ 2.000 para pagamentos a partir de 2026), pagamento no cartão de crédito ou por PayPal, Venmo e Cash App fica fora porque vai no 1099-K, e o mesmo prestador escrito de jeitos diferentes soma junto. Os quatro relatórios contábeis passaram a escapar o nome do cliente, o payee e o nome da conta bancária. Migração: `sql/plano-de-contas-1099-v1.sql`, que marca as duas contas da lista antiga para nada mudar no dia seguinte.
 - **Cobrar pelo Stripe cobra o valor digitado, não o saldo inteiro.** No Receber, o botão "Cobrar no cartão" mostrava o valor digitado, mas a chamada não o mandava e a rota criava a sessão do Stripe sempre pelo saldo — quem ia receber uma parte no cartão ou no ACH via o total da fatura na página do Stripe. Agora o valor viaja e a tela e a rota decidem pela mesma regra (`decidirValorDaCobranca`): vazio é o saldo; o resto tem de ser centavos, acima do piso do Stripe (US$ 0,50) e dentro do saldo, e a recusa diz o saldo. Parcial só em cartão e ACH: Klarna financia a fatura inteira, então é sempre o saldo; fatura parcelada cobrada em parte deixaria o débito automático correndo em dobro, então nela só a quitação (com a confirmação que já existia) ou a parcela por fora. O recebimento parcial já entrava certo pelo webhook (ele grava o valor da sessão) e a fatura fica parcial. QR do balcão e portal seguem pelo saldo inteiro, por desenho. Sem migração.
 - **O idioma do cliente não bloqueia mais o Plaid.** `/api/plaid/link-token` mandava o idioma do cadastro sem conferir se o Plaid o atende; recusado o idioma, a chamada morria e o cliente não conseguia conectar o banco. Agora o idioma é filtrado pela lista que o Plaid aceita (`zh` cai para inglês, `fr` passou a ser respeitado em vez de virar inglês) e, se ainda assim for recusado, a tela abre **em inglês** em vez de não abrir. O motivo real fica no log.
+- **A equipe num lugar só (decisão do sócio).** `team_members`, os logins e `staff_roles` viraram uma linha por pessoa, na tela Equipe — a seção 3.4 conta as regras. De passagem, quatro defeitos: editar o telefone reescrevia o nível; o PIN de quem saiu continuava aprovando; a lista lia só os 50 primeiros logins; e o convite antigo continuava valendo depois de reenviado com outro nível. O Atendimento deixou de ter a sua própria definição de nível. Migração: `sql/equipe-unica-v1.sql`, antes do deploy.
+- **Orçamentos num lugar só: o Financeiro (decisão do sócio).** A aba Quotes saiu; o cálculo da declaração, a conversão em fatura e o aviso de orçamento estão no Financeiro (seção 4.3). Sem migração.
 - **A lista "Formas de pagamento" do portal era confundida com botões.** Ficava no fim da página, em inglês para todos, e era o que o cliente tentava clicar quando a fatura não oferecia ação. Agora diz que é informativa e acompanha o idioma. O contrato mandado pelo fluxo antigo (e-mail do DocuSign), que só exibia "assine pelo e-mail" e travava a fatura, passou a dizer onde procurar e o que fazer se não achar.
 
 - **Menu da firma num componente só, e que recolhe ao escolher.** A sanfona do celular era um `<details>` nativo dentro de um Server Component: como a navegação do App Router não recarrega a página, ela continuava **aberta** depois da escolha e só fechava clicando no ☰ de novo. Agora é `components/FirmNav.tsx`, client component, que fecha na escolha e na troca de rota, marca o item ativo e fecha o "Listas" ao clicar fora. De quebra, os outros três layouts da firma (`/clients`, `/invitations`, `/settings`) traziam um menu pela metade, com três itens — quem entrava lá perdia o caminho para Bookkeeping, Financeiro e Atendimento. Os quatro passaram a usar o mesmo menu, encerrando a duplicação que estava na lista de dívidas.
@@ -612,6 +672,8 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 - **Cobrança anulada no painel do Stripe agora repercute aqui.** Anular a invoice lá não mexia em nada: a fatura continuava em aberto no financeiro, entrava no contas a receber e o cliente recebia lembrete de uma cobrança que não existe mais. O webhook passou a assinar `invoice.voided` — cancela a fatura, devolve a parcela ao cronograma (soltando a amarra para poder recobrar) e avisa. Se houver dinheiro recebido na fatura, **não mexe em nada** e manda a equipe conferir à mão: anular cobrança de fatura paga ninguém decide sozinho.
 - **Um plano, uma assinatura.** O cliente que abria o cadastro do débito duas vezes e concluía as duas criava **duas assinaturas** no Stripe. O plano guardava só a última, e a primeira seguia cobrando todo mês, para sempre, sem nenhum registro aqui. Agora a segunda é cancelada na hora, a primeira permanece, e a equipe recebe alerta para conferir se houve cobrança em dobro — e, se o cancelamento falhar, o alerta diz para cancelar à mão.
 - **Cobrar novamente virou idempotente.** `invoices.pay` não é idempotente por conta própria: dois cliques (ou duas pessoas) cobravam **duas vezes** do cliente. A chamada passou a levar chave de idempotência formada pela invoice do Stripe mais quantas recobranças já foram registradas — cliques simultâneos leem o mesmo número e o Stripe trata o segundo como repetição, enquanto uma nova tentativa deliberada, depois, passa normalmente. A rota também deixou de dizer "recusada" quando o motivo é a invoice já estar paga (webhook atrasado), e passou a achar a parcela cobrável mesmo quando a mais antiga ficou sem invoice.
+- **As parcelas não estavam sendo cobradas — nunca foram.** O cliente pagava a entrada do parcelamento e nada mais acontecia: o agendamento das parcelas no Stripe era recusado, porque usava um parâmetro (`iterations`) que a versão da API em uso já não aceita — e o erro morria num log. Consequências, todas silenciosas: o plano ficava "aguardando a entrada", a entrada paga **não entrava na fatura** (que seguia com o valor inteiro em aberto), o portal continuava oferecendo "pagar a entrada" (o cliente podia pagar duas vezes) e o alerta de plano parado dizia à equipe que nada tinha sido cobrado. O conserto: o agendamento passou a usar o parâmetro atual (`duration`, em `lib/agendamento-parcelas.ts`, com teste que confere o agendamento contra o cronograma da fatura parcela por parcela); **a entrada vai para a fatura antes do agendamento**, com a data em que entrou; se o agendamento falhar, a equipe é alertada; entrada já paga não se oferece de novo ao cliente; e uma segunda entrada paga vira alerta de estorno em vez de crédito na fatura. **Para os que travaram**, Financeiro → Parcelamentos ganhou **"Conferir pagamento e agendar"** (permissão de receber, senha e motivo): o sistema pergunta ao Stripe o que o cliente fez — não ao banco —, lança a entrada que ficou de fora, confere que as parcelas em aberto somam o saldo da fatura (senão recusa: houve recebimento por fora), pede a nova data da 1ª parcela quando a combinada já passou, move o cronograma para ela e agenda. Cancelar um parcelamento cuja entrada foi paga também confere no Stripe antes, para não dizer ao cliente que nada foi cobrado. Sem migração.
+- **Parcelamento encerrado não volta a cobrar, e entrada devolvida não é entrada.** Com o agendamento funcionando, duas guardas que antes não faziam diferença passaram a decidir dinheiro. **(1)** O pagamento ou o cadastro do débito só põe a cobrar o parcelamento que ainda **espera o cliente** (rascunho, aguardando a entrada, aguardando o cadastro): antes a única guarda era "já está ativo", e um evento antigo do Stripe reenviado — ele reenvia sozinho por dias, e o painel deixa reenviar à mão — reativava um parcelamento **cancelado** e agendava as parcelas de um acordo desfeito. Dinheiro de entrada que chega para um parcelamento encerrado vira alerta para a equipe (estornar ou lançar à mão), nunca lançamento. **(2)** Entrada **devolvida** (reembolso no painel, total ou parcial) ou **contestada** não conta como paga: depois do reembolso o Stripe continua dizendo que a sessão foi paga, e só a cobrança mostra a devolução. Sem isto, "Conferir pagamento e agendar" e o webhook reenviado lançariam na fatura uma entrada que voltou ao cliente e agendariam as parcelas; agora recusam e dizem o porquê. No cancelamento, a entrada que voltou não é lançada e o aviso ao cliente não diz que "nada foi cobrado". A decisão do webhook é uma função pura com a tabela inteira em teste.
 - **Plano parado avisa a equipe.** Plano em `awaiting_entry`/`awaiting_setup` depende do cliente pagar a entrada ou cadastrar o débito. Quem nunca fazia deixava o plano ali para sempre: nada era cobrado, o contrato não andava e ninguém percebia — não existe tela que liste "parados". A rotina diária passou a alertar depois de sete dias, um alerta por plano por dia, dizendo o que falta. **Nada é cancelado sozinho** — desistir é decisão da firma, tomada no botão "Cancelar parcelamento" (com senha e motivo), nunca por uma rotina. `lib/planos-parados.ts`, com 20 casos de teste.
 
 - **Débito em conta a caminho virou um estado, não um silêncio.** O ACH leva dias: o Stripe avisa que o cliente concluiu (`checkout.session.completed`) muito antes de o dinheiro chegar. Nesse intervalo a fatura ficava **idêntica a uma fatura não paga** — entrava no contas a receber, aceitava lembrete de cobrança e aceitava baixa manual. Quem registrasse o Zelle no meio do caminho criava **recebimento em dobro** quando o ACH caísse. Agora a fatura guarda quando o débito começou, de qual sessão e de quanto (`ach_desde`, `ach_sessao`, `ach_valor`): o Financeiro mostra "🏦 $X a caminho" na linha, o botão de **Cobrar/Lembrete é recusado** (Reenviar o documento continua liberado) e o **recebimento manual pede confirmação explícita**, dizendo o valor e há quantos dias. Confirmar assume que aquele débito não vai entrar e encerra o trânsito, com trilha. Nada de dinheiro entra por esse caminho — o recebimento continua nascendo só quando o banco confirma. Quem tira a fatura do limbo quando o dinheiro nunca chega é a **rotina diária**, que alerta acima de sete dias sem confirmação (o ACH normal leva até quatro dias úteis). O endpoint também assina `checkout.session.expired`, mas como rede de segurança, não como proteção principal: o Stripe expira sessão que ficou **aberta**, e a sessão de ACH costuma ser concluída pelo cliente — o que demora é o dinheiro. Migração: `sql/ach-em-transito-v1.sql`. O endpoint assina dezesseis eventos.
@@ -648,14 +710,12 @@ Rodar antes de cada sessão de trabalho mostra em segundos o que está realmente
 
 - **A tela de Faturamento nasce fechada (decisão do sócio).** A lista mostrava o histórico inteiro para gerente e sócio, porque `verTodasFaturas` vinha por nível. Agora ela abre no **próprio dia, das próprias faturas**, com busca por **período** e por **situação** (todas · em aberto · pagas · canceladas · rascunhos). Consultar outro período ou faturas de outra pessoa **pede senha e motivo de um gerente ou sócio**; a liberação vale 30 minutos e fica registrada em `invoice_query_audit` (quem liberou, para quem, por quê, até quando). **Só o sócio tem acesso ilimitado** e não passa por essa porta. A recusa é explícita (403) e a tela abre o pedido de autorização — lista curta sem explicação é uma afirmação falsa. O `?id=` obedece ao mesmo escopo. Migração: `sql/consulta-de-faturas-v1.sql`.
 
+- **O contrato recorrente tem um cadastro só, e cobra (decisão do sócio).** Os **Planos** da ficha do cliente cobravam (Stripe, webhook, fatura do mês) mas eram um valor só, mensal; os **Contratos recorrentes** do Financeiro tinham a regra (itens, desconto, prazo, intervalo, senha e trilha) e nunca cobraram — nenhuma rotina lia a tabela. Ficou o motor dos planos (`payment_plans`: as assinaturas ativas vivem nele e continuam cobrando) com a regra dos contratos, nas duas formas de cobrar descritas em 4.4. Os contratos antigos que não terminaram foram trazidos **em rascunho**, com as linhas — eles nunca cobraram, e ativar sozinho cobraria em dobro quem a firma já faturava à mão; ativar é um a um e começa na primeira data da régua a partir de hoje. A tabela antiga ficou congelada como rastro. Junto: o débito trimestral era **mensal** no Stripe (cobrava o valor do trimestre todo mês) e passou a seguir o intervalo e a régua do contrato; a receita recorrente mensal passou a dividir pelo intervalo; o contrato do DocuSign deixou de prometer débito no contrato por fatura e passou a escapar o que vem da URL e do banco (o cargo de quem assina vinha da URL direto para o documento). Parcelamento antigo sem fatura (do módulo de orçamentos que saiu) aparece em Parcelamentos, e a proposta que nunca começou se desfaz ali — depois de o sistema perguntar ao Stripe se a entrada foi paga: com o agendamento travado, a entrada paga não deixava rastro no banco, e desistir diria ao cliente que nada foi cobrado. Paga, a desistência é recusada e o caminho é agendar as parcelas. Migrações: `sql/contrato-unico-v1.sql` e `-funcao-v1.sql`, nessa ordem, depois de `sql/equipe-unica-v1.sql`.
+
 **A construir:**
-- **Gerar a fatura do contrato recorrente.** Hoje o contrato é registro, não cobrança. Decidir junto com a duplicação Plans × `recurring_plans` abaixo: ou a rotina agendada emite a fatura do mês a partir de `recurring_plans`, ou os contratos migram para `payment_plans`, que já tem assinatura no Stripe, webhook e baixa.
+- Editar a franquia do bookkeeping (transações incluídas e excedente) num contrato ativo — hoje é encerrar e criar outro.
 
 **Decisões pendentes:**
-- Módulo Plans × tabela `recurring_plans` (duplicação a resolver)
-- Orçamentos: módulo Quotes × estimates do financeiro
-- `staff_roles` × `team_members` (permissão × CRM)
-- Menu repetido em quatro layouts
 - Domínio próprio `portal.peaceontax.com`
 
 ---
@@ -673,7 +733,7 @@ app/
     signatures/       DocuSign
     stripe/webhook    entrada única dos eventos de pagamento
     clients/ firm/    cadastro e equipe
-components/           telas reutilizáveis (BookkeepingTab, PlansTab, ProfileEditor…)
+components/           telas reutilizáveis (BookkeepingTab, ContratoItens, ProfileEditor…)
 lib/                  motor de regras, permissões, SMS, contrato, integrações
 middleware.ts         controle de acesso por rota
 ```

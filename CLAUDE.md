@@ -122,9 +122,41 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   escrita do papel em `user_metadata`, e recusa qualquer menção a
   `user_metadata` em `papeis.ts`, `api-auth.ts`, `staff-perms.ts` e
   `middleware.ts`.
-- **Nível de acesso vem de `staff_roles`** (`lib/staff-perms.ts`): `owner`,
-  `manager`, `junior`. Quem não está na tabela é `junior`. São duas
-  perguntas diferentes: `papeis.ts` é a PORTA, `staff_roles` é o PODER.
+- **Nível de acesso vem de `team_members.level`** (`lib/staff-perms.ts`):
+  `owner`, `manager`, `junior`. São duas perguntas diferentes: `papeis.ts` é
+  a PORTA, `team_members.level` é o PODER. Login da firma sem linha na
+  equipe cai no nível que o papel do login dá; consulta que **falha** e quem
+  **saiu** da equipe valem `junior` — a reserva do papel nunca decide num
+  erro (era assim que um gerente com papel `firm` viraria sócio num tropeço).
+- **A equipe é UMA linha por pessoa em `team_members`** (decisão do sócio:
+  "juntar tudo como team member"; `lib/equipe.ts`, puro, 118 casos em
+  `testes/equipe.mts`; `lib/equipe-servidor.ts`; tela Equipe em
+  `/settings/users`; migração `sql/equipe-unica-v1.sql`, que **roda antes de
+  o código subir**). Eram três cadastros da mesma gente com três telas que
+  discordavam: `team_members` (o CRM, com um rótulo de função que qualquer
+  assistente trocava e a tela mostrava "Sócio"), os logins e `staff_roles`
+  (o nível, trocado em Minha Conta sem senha, motivo nem rastro). Agora:
+  nome, e-mail, login (`user_id`, único), nível e PIN na mesma linha.
+  **Editar não toca no nível** — o defeito mudo que motivou: a rota comparava
+  o papel com `user_metadata.role`, que a migração do papel esvaziou, achava
+  que tinha mudado e reescrevia o nível pelo papel em toda edição de telefone.
+  **O nível muda por um ato próprio** (`acao: 'nivel'` em
+  `/api/firm/users/[id]`): só o sócio, nunca o próprio, com a senha do sócio
+  e o motivo, e a trilha `team_member_audit` gravada **antes** (falhou,
+  recusa). `decidirMudancaDeNivel` é a regra; o papel da porta acompanha
+  (`papelDoNivel`) porque é a reserva do nível. Quem grava `level`: essa ação
+  e o aceite do convite, e só. **Desativar** bloqueia o login, tira do
+  seletor e mata o PIN (`validateManagerPin` exige `active`). **Convite** é
+  para quem ainda não tem login (`decidirConvite`; login de cliente também é
+  recusado), e o novo encerra os pendentes do mesmo e-mail — o "Reenviar"
+  deixava o link velho, com outro nível, valendo sete dias. **O aceite
+  completa a linha do CRM** (mesmo e-mail, depois mesmo nome sem e-mail) em
+  vez de duplicar a pessoa, e não toca no nível de quem já tinha linha.
+  `staff_roles` está **congelada** (sem escrita para a service role) e só é
+  lida quando a coluna nova ainda não existe. `listUsers` só pagina por
+  página (`todosOsLogins`), parando na página VAZIA — sem página vinham 50.
+  O Atendimento (`lib/wa-auth.ts`) deixou de ter a sua definição de nível.
+  `/team` redireciona; Minha Conta ficou com a senha e o próprio PIN.
 - **Em cima do nível há autorização por pessoa** (`lib/permissoes.ts`,
   tabela `staff_grants`). O nível é a base; cada concessão é um sim ou não
   explícito que o vence; o sócio é imune a concessão negativa. Quem monta o
@@ -205,7 +237,8 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   move apenas o FLUXO (`stage`, `assignee`, `notes`) e recusa campo de
   cadastro apontando o caminho certo — aceitava nome, e-mail e telefone sem
   nada disso, e trocar o e-mail troca o acesso do cliente ao portal. Aqui
-  era PIN e virou senha (princípio 3); o PIN segue em uso nos orçamentos.
+  era PIN e virou senha (princípio 3); o PIN segue em uso na troca de acesso
+  do cliente ao portal (`/api/clients/access`).
 - **Recebimento: cartão e Zelle sozinho, o resto com senha de gerente/sócio**
   (`lib/recebimento-aprovacao.ts`). `FORMAS_LIVRES` é uma lista de LIVRES,
   não de bloqueadas — forma nova nasce pedindo aprovação. Espécie é o caso
@@ -420,57 +453,82 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
-- **Contrato recorrente: editar e encerrar pedem senha, motivo e trilha —
-  e a aba parou de prometer o que o sistema não faz**
-  (`lib/contrato-recorrente.ts`, `/api/billing/recurring`, migração
-  `sql/contrato-recorrente-auditoria-v1.sql`). A aba só tinha
-  Pausar/Reativar, e o PATCH que já aceitava valor, dia e cobrança
-  automática **não pedia senha, não pedia motivo, não deixava rastro e não
-  conferia de qual cliente era o contrato** — `isStaff` diz QUEM chama, não
-  QUAL cliente, e bastava mandar o `id` de um contrato de empresa. Editar
-  uma FATURA, documento único, exige as três primeiras; o contrato exigia
-  zero. A fatura erra uma vez, **o contrato erra todo mês**.
-  **Encerrar ≠ pausar.** Pausar é reversível e não mexe no acordo: segue em
-  um clique, mas vai para a trilha. Encerrar grava `end_date`, desliga e
-  **não volta** — `situacaoDoContrato` olha o `end_date` ANTES do `active`,
-  senão um contrato acabado apareceria como "pausado", com botão de
-  Reativar, ressuscitando um acordo que as duas partes desfizeram.
-  **A trilha vem ANTES da alteração** (`recurring_plan_audit`): se o insert
-  falhar, a edição é RECUSADA e a mensagem diz qual migração falta. Mudança
-  sem rastro é pior que mudança não feita (princípio 2). O preço é uma linha
-  de trilha sobrando se o update seguinte falhar — esse lado é o barato.
-  **A próxima cobrança tinha dois defeitos mudos**, agora em módulo puro com
-  59 casos: somava **um mês sempre**, qualquer que fosse o intervalo (o
-  trimestral tinha data de mensal), e usava o dia do **servidor em UTC**, não
-  o do escritório — o mesmo defeito já corrigido na lista de faturas e no
-  relatório. A régua é **ancorada no início**, não em hoje: trimestral que
-  começou em 10/jan cobra jan · abr · jul · out; recalcular a partir de hoje
-  daria outra régua a cada edição e a data andaria sozinha. Mexer em dia,
-  início ou intervalo **recalcula `next_run`** — trocar o dia deixava a
-  próxima data na antiga, em silêncio.
-  Três armadilhas na comparação do que mudou, cada uma marcando "mudou" sem
-  nada ter mudado e enchendo a trilha de ruído: `350` × `'350.00'`,
-  `auto_charge` nulo × `false`, e `date` devolvido com hora. A quarta é o
-  oposto: **campo de data VAZIO é "não mexi nisso", não "data inválida"** —
-  contrato sem `start_date` fazia quem só queria trocar o VALOR levar um erro
-  falando de data.
-  **E a aba mentia.** O texto dizia "Gera fatura sozinho no dia escolhido".
-  **Nada no repositório lê `recurring_plans`** além da própria rota: não há
-  cron para ela (o único é o aviso de cobrança), não há geração de fatura,
-  não há Stripe — e o relatório de receita recorrente lê `payment_plans`,
-  outra tabela. Como há pelo menos um gatilho nessa tabela que **só existe no
-  banco** (o que recusa auto-cobrança sem cartão), não dá para afirmar daqui
-  que não exista um `pg_cron`; então a tela não afirma nada: ela marca
-  **⚠ a data passou e nada foi gerado** quando `next_run` ficou para trás com
-  o contrato ativo. É auto-evidente — quem gerasse a fatura teria movido o
-  `next_run`. Gerar a fatura de verdade é decisão aberta, junto com a
-  duplicação Plans × `recurring_plans`.
-  O GET passou a filtrar os contratos por `clientesOcultos`: filtrava a lista
-  de CLIENTES e não a de contratos, então o nome das empresas (e o caixa da
-  firma) aparecia para quem não pode abri-las.
+- **O contrato recorrente tem UM cadastro: `payment_plans` — e ele COBRA**
+  (`lib/contrato-unico.ts`, `lib/emissao-contratos.ts`, `/api/billing/contratos`,
+  `/api/cron/contratos`, migrações `sql/contrato-unico-v1.sql` e
+  `-funcao-v1.sql`). Decisão do sócio: "juntar os planos com os contratos
+  recorrentes e eliminar os planos". Eram dois cadastros do mesmo acordo: os
+  **Planos** da ficha do cliente (`payment_plans`) cobravam — assinatura no
+  Stripe, webhook, fatura do mês — mas eram um valor só e sempre mensais; os
+  **Contratos recorrentes** do Financeiro (`recurring_plans`) tinham a regra
+  certa — itens, desconto, prazo, intervalo, senha e trilha — e **nunca
+  cobraram nada**: nenhuma rotina lia a tabela, e a aba marcava "⚠ a data
+  passou e nada foi gerado" porque era verdade. Ficou o MOTOR dos planos (as
+  assinaturas ativas vivem nele e continuam cobrando, decisão do sócio) com a
+  REGRA dos contratos. A aba "📆 Planos" da ficha, `/api/plans` (e `checkout`,
+  `pause`) e `/api/billing/recurring` saíram; a ficha mostra os contratos do
+  cliente só para leitura (`components/ContratosDoCliente.tsx`) e aponta
+  para o Financeiro. `recurring_plans` e `recurring_plan_items` ficam
+  **congeladas** (a service role perdeu insert/update/delete): rastro, não
+  cadastro.
+  **Duas formas de cobrar, e a forma não muda** (decisão do sócio: mudar
+  intervalo ou forma é encerrar e criar outro):
+  `debito` — a assinatura do Stripe debita no intervalo do contrato
+  (`recorrenciaDoStripe`: o trimestral era MENSAL no Stripe, cobrando o valor
+  do trimestre todo mês) e ancorada na RÉGUA do contrato (`ancoraDoDebito`,
+  com as 48 h do Stripe); a fatura nasce no webhook e sai com os ITENS do
+  contrato **só quando a conta deles bate ao centavo com o debitado**
+  (`linhasDaMensalidade`), senão numa linha só — a fatura nunca diz um valor
+  que não foi o cobrado. `fatura` — a rotina diária (`/api/cron/contratos`,
+  11:00 UTC, `CRON_SECRET`) emite a fatura do período no dia, com vencimento
+  em N dias, avisa o cliente (portal e e-mail, resultado na trilha) e anda a
+  régua **UM passo** — se ficou dias parada, põe a régua em dia um período por
+  rodada, sem pular nenhum. Contrato por fatura **não** recebe "vamos
+  debitar" do aviso de três dias, não gera link de débito (`criarSessaoDoPlano`
+  recusa) e, ao ser enviado para assinar, **não** vira "aguardando o
+  cadastro" — fica rascunho até alguém ATIVAR. E o texto do contrato do
+  DocuSign diz isso: no contrato por fatura não há "autorização de débito".
+  **Uma fatura por contrato e por período**: a rotina procura o par (plano,
+  competência) ANTES de numerar, o índice único `invoices_plano_competencia_key`
+  segura a corrida de duas rodadas (23505 = outra já emitiu), e a régua anda
+  com a condição do valor lido (`next_charge_date = data`). Fatura cujos itens
+  o banco recusou é desfeita e a régua fica — amanhã tenta de novo. O
+  contrato que chegou ao fim se encerra NO DIA DO FIM, não na cobrança
+  seguinte; período vencido antes do fim ainda se cobra. Defeito do contrato
+  (valor gravado que não bate com as linhas, sem linha, ativo sem data) NÃO
+  emite e vira alerta à equipe, um por contrato por dia. 38 casos em
+  `testes/emissao-contratos.mts`, com banco falso — a rotina recebe o aviso
+  por parâmetro para o teste não carregar e-mail.
+  **O valor é o de CADA COBRANÇA** (`monthly_amount`, o nome ficou): num
+  trimestral, o do trimestre. A receita recorrente MENSAL divide pelo
+  intervalo (`valorMensalEquivalente`) no relatório e no painel.
+  **Contrato trazido nasce RASCUNHO.** A migração copia cada contrato antigo
+  que não terminou para `payment_plans`, com as linhas, em rascunho: eles
+  nunca cobraram, e ativar sozinho cobraria em dobro quem a firma já vinha
+  faturando à mão. Ativar é um a um, e a primeira cobrança é a primeira data
+  da régua **a partir de hoje** (`cobrancaAPartirDe`) — nunca janeiro a
+  setembro de uma vez. A lista final da migração marca o rascunho trazido
+  para um cliente que já tem plano ativo de mesmo valor ("REVISAR: duplo").
+  **Editar vale da PRÓXIMA cobrança, com senha, motivo e trilha** (decisão do
+  sócio: valor, itens e desconto). A trilha (`plan_audit`) vem ANTES; no
+  débito ativo o preço da assinatura muda no Stripe ANTES de gravar as linhas,
+  sem proporcional, e volta se gravar falhar; com o link de cadastro na mão do
+  cliente, o link deixa de valer (ele autorizaria o valor velho). Encerrar
+  pede senha e motivo e, no débito, o Stripe TEM de cancelar — a rota antiga
+  engolia a recusa e o cliente seguia sendo debitado de um contrato
+  "encerrado". **Encerrar ≠ pausar**: pausar é reversível, um clique, na
+  trilha; no débito usa `pause_collection: void`; retomar por fatura refaz a
+  régua a partir de hoje (o período parado não se cobra).
+  Continua valendo do módulo antigo: régua **ancorada no início** (trimestral
+  de 10/jan cobra jan · abr · jul · out), dia do **escritório** e não do
+  servidor, dia só até 28. **Não testado daqui**: as chamadas ao Stripe
+  (preço, pausa, cancelamento) — o container não tem chave; a lógica em volta
+  tem teste.
 - **O contrato recorrente é o MOLDE DE UMA FATURA: itens, desconto, prazo**
-  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`, migrações
-  `sql/contrato-recorrente-itens-v1.sql` e `-funcao-v1.sql`). Era uma
+  (`lib/contrato-recorrente.ts`, `components/ContratoItens.tsx`; as linhas
+  moram em `payment_plan_items` e se trocam por `salvar_itens_do_plano`,
+  `sql/contrato-unico-funcao-v1.sql` — a irmã antiga, `salvar_itens_do_contrato`,
+  ficou com a tabela congelada). Era uma
   descrição e um valor — não dava para escrever o acordo real
   ("Bookkeeping 350 + Payroll 120, menos 50, vence 15 dias depois").
   **`amount` e `description` passaram a ser DERIVADOS** das linhas, e a
@@ -487,7 +545,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   escreve (Net 15, Net 30). `vencimentoDaCobranca` soma ao MEIO-DIA UTC —
   somar dias em cima da meia-noite escorrega um dia nas viradas de horário
   de verão.
-  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_contrato`):
+  **Trocar as linhas é UMA operação, no banco** (`salvar_itens_do_plano`):
   apagar e inserir em duas idas deixaria o contrato SEM NENHUMA LINHA se a
   segunda falhasse — o acordo apagado por uma falha de rede. **E o total é
   recalculado lá dentro**: a tela manda as linhas, número vindo do navegador
@@ -560,7 +618,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `/api/clients/profile` (a porta do cadastro) e `/api/clients/access` (o
   acesso ao portal): bastava passar o id de uma empresa. Também
   `bookkeeping/rules` (que diz o plano de contas e os fornecedores da
-  empresa), `billing/invoices`, `billing/recurring`, `firm/messages`,
+  empresa), `billing/invoices`, `billing/recurring` (hoje `billing/contratos`), `firm/messages`,
   `send-invite` e `fase1/apply-template`. Resumo que AGREGA a carteira não
   pergunta por um cliente: `bookkeeping/overview` e `bookkeeping/alerts` usam
   `empresasVedadas` (`lib/api-auth.ts`), senão o nome e o volume das empresas
@@ -588,6 +646,20 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   A migração termina listando o que ainda responde ao navegador — as tabelas
   de faturamento nasceram no painel e não dá para conferi-las pelo
   repositório.
+  **E o navegador não lê tabela direto — conferido arquivo a arquivo.** A
+  `sql/rls-tabelas-expostas-v3.sql` (as 40 tabelas nascidas no painel) dizia
+  ter conferido "zero `.from()` em client component", e havia dois: a página
+  pública **`/agendar`** lia `meeting_types` com a anon key e a agenda da
+  equipe lia e gravava `staff_availability` com a sessão. Fechar as tabelas
+  tiraria as duas do ar — o cliente não conseguiria agendar. Foram para
+  `/api/agenda/tipos` (pública, em `API_PUBLIC`) e `/api/agenda/disponibilidade`
+  (só a equipe, só as próprias linhas); a leitura que falhava virava "nenhum
+  horário" e salvar dali apagava os horários, e salvar era apagar e inserir em
+  duas idas — agora a inserção que falha devolve as linhas que estavam lá. A
+  auditoria recusa `.from('tabela')` em arquivo `"use client"` ou que crie
+  cliente de navegador (`Array.from`, `storage.from` e `Buffer.from` ficam
+  fora), e **âncora perdida é FALHA**. **A v3 roda DEPOIS do deploy deste
+  código**, nunca antes.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).
@@ -610,6 +682,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   do mês nasce em aberto no `invoice.finalized` do Stripe e guarda
   `stripe_invoice`; o `invoice.paid` só dá baixa.
 - **O payload do webhook do Stripe é pobre — confira antes de ler um campo.**
+  (E vale para o que se MANDA: parâmetro que a versão da API removeu passa
+  no typecheck e só falha em produção — ver o agendamento das parcelas, logo
+  abaixo.)
   O endpoint está em `2026-06-24.dahlia`: a invoice do evento NÃO traz
   `subscription`, `payment_intent`, `charge`, `paid_out_of_band` nem
   `payments` (expansível). O SDK 17.7.0 ainda declara esses campos nos tipos,
@@ -632,6 +707,67 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cliente é outro (o link deixou de valer), senão ele procura uma cobrança
   que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
   abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
+- **As parcelas são agendadas por `duration`, NUNCA por `iterations` — e
+  até 10/2026 nenhuma foi cobrada** (`lib/agendamento-parcelas.ts`, 44 casos
+  em `testes/agendamento-parcelas.mts`). O webhook criava o
+  `SubscriptionSchedule` logo depois da entrada paga, com
+  `phases[].iterations`; a API **removeu** esse parâmetro na versão
+  `2025-09-30.clover`, e o sistema fala na `2026-06-24.dahlia` desde
+  07/07/2026 — o mesmo dia em que o parcelamento nasceu. O Stripe recusava, a
+  rota respondia 500 com um `console.error`, e mais nada: o plano ficava
+  "aguardando a entrada", a **entrada paga não entrava na fatura** (o
+  lançamento vinha DEPOIS do agendamento), o portal seguia oferecendo "pagar
+  a entrada" (o cliente podia pagar de novo) e o alerta de plano parado dizia
+  à equipe que "nada foi cobrado". **O typecheck passava**: o SDK instalado
+  (17.7.0) ainda declara `iterations` e não conhece `duration` — a mesma
+  armadilha do payload pobre, agora no PARÂMETRO de pedido: quem manda é a
+  versão da API, não os tipos. Conferido no changelog do `stripe-node`
+  ("Remove support for `iterations` on SubscriptionScheduleCreateParams.phases[]").
+  Regras daqui: a fase dura `duration` (intervalo × parcelas da fase); antes
+  de criar, procura-se o agendamento VIVO do plano (`metadata.planId`) e ele é
+  reaproveitado — reenvio do evento ou a equipe agendando não podem cobrar
+  cada parcela duas vezes; **a entrada vai para o livro ANTES do agendamento**
+  (o dinheiro já entrou), com a hora da cobrança e não a de hoje
+  (`lancarRecebimentoStripe` de `lib/recebimento-stripe.ts`, a mesma regra de
+  chaves do webhook); se ela não entra, NÃO se agenda (a fatura pode ter sido
+  quitada por fora); falha de agendamento vira trilha e alerta à equipe (um
+  por plano por dia) e o erro volta ao Stripe para o reenvio; e uma
+  **segunda entrada paga** para o mesmo plano não entra na fatura — vira
+  alerta de estorno. Entrada paga fecha a porta do portal (`entry_paid_at`:
+  `criarSessaoDoPlano`, o portal e a rota recusam um link novo) e deixa de
+  contar como "nunca começou" — cancelar um plano assim como "proposta"
+  diria ao cliente que nada foi cobrado; o cancelamento confere no Stripe e
+  lança a entrada antes. **Recuperação dos que travaram**:
+  `PATCH /api/billing/installment-plan` `action: 'agendar'` (botão
+  "Conferir pagamento e agendar" em Financeiro → Parcelamentos; chave
+  `receber` + senha + motivo). Quem diz o que o cliente fez é o STRIPE
+  (todas as sessões do plano — a paga pode não ser a última gerada), não o
+  banco; a entrada entra com a data em que entrou; as parcelas em aberto têm
+  de somar o saldo da fatura, senão recusa (recebimento por fora no
+  meio-tempo faria o Stripe cobrar de novo); a data da 1ª parcela que já
+  passou é escolhida pela equipe e o cronograma (`invoice_installments`)
+  anda junto, para aviso de cobrança, portal e aging lerem as datas que o
+  Stripe vai seguir. Trilha `scheduled_by_staff` antes de tudo.
+  **Duas guardas que só passaram a importar quando o agendamento voltou a
+  funcionar** (`decidirEntradaDoWebhook`, pura, com a tabela inteira e uma
+  varredura em teste): **(1) só o plano que ESPERA o cliente se põe a
+  cobrar** (`ESPERANDO_O_CLIENTE`: rascunho e os dois `awaiting_*`). A guarda
+  era "já está ativo" — e o evento antigo reenviado (o Stripe reenvia por
+  dias; o painel deixa reenviar à mão) REATIVAVA o plano cancelado e agendava
+  as parcelas de um acordo desfeito; o mandato (sem entrada) tinha a mesma
+  guarda. Dinheiro de entrada num plano encerrado vira alerta, nunca
+  lançamento. **(2) Entrada DEVOLVIDA ou contestada não é entrada.** O
+  `payment_status` da sessão continua `paid` depois do reembolso; quem diz é
+  a cobrança (`amount_refunded`, `disputed`, lidos em `pagamentoDaSessao`, e a
+  cobrança não expandida é BUSCADA, não presumida limpa). Devolução parcial
+  também tira: lançar o valor cheio seria receita que não existe. Webhook,
+  "Conferir pagamento e agendar" e o cancelamento usam `entradaIntegra`; no
+  cancelamento, a que voltou não se lança, mas também não deixa o plano com
+  cara de proposta (o cliente pagou e viu voltar — "nada foi cobrado" seria
+  falso). O alerta diz o que fazer em cada caso: "agendar" não serve à
+  entrada devolvida (ele recusa), e a entrada em dobro é estorno.
+  **Não testado daqui**: a chamada real ao Stripe (o container não tem chave);
+  os parâmetros conferem com os tipos do `stripe-node` 23 (API `2026-09-30`).
 - **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
   `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
   no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
@@ -825,8 +961,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   errado, não incompleto) e a edição de fatura (abre sem itens, e salvar dali
   apaga o que estava).
 - **A lista de clientes da fatura e do contrato obedece ao escopo por tipo.**
-  `GET /api/billing/invoices` e `GET /api/billing/recurring` filtram por
-  `empresasVedadas`. O POST já recusava empresa para quem não tem
+  `GET /api/billing/invoices` e `GET /api/billing/contratos` filtram por
+  `clientesOcultos` — e a lista de Parcelamentos (`/api/billing/installment-plan`)
+  também, que mostrava a carteira inteira a qualquer um da equipe. O POST já recusava empresa para quem não tem
   `verEmpresas`; mostrar o nome no seletor e recusar no salvar seria oferecer
   o que não se pode fazer — e a lista de empresas é o que o escopo esconde.
 - **E-mail que não sai diz POR QUE, e o resultado nunca se descarta.**
@@ -943,6 +1080,31 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   de contas lia só os primeiros mil lançamentos. A auditoria exige o módulo,
   recusa a lista fixa e o limite no código da rota, e recusa texto do banco
   cru nos quatro impressos. 45 casos em `testes/relatorio-1099.mts`.
+- **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
+  sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
+  saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem
+  conta de passagem, sem conciliar com o repasse do Stripe —, e o checkout
+  dela nem passava por `sessaoComFormasDisponiveis`. O que ela fazia:
+  **cálculo da declaração** pelos documentos (`lib/orcamento-automatico.ts`,
+  48 casos; `/api/billing/orcamento-automatico`, só pessoa física, erro de
+  consulta nunca vira preço) — e três defeitos do cálculo antigo: todo 1099
+  era Schedule C (INT/DIV são Schedule B, o B é Schedule D), 1098-T/E não
+  são hipoteca, 1095-B/C não pedem 8962, e `active` nulo era pulado.
+  **Virar fatura** (`action: 'converter'`, chave `criar`): uma fatura por
+  orçamento, conferida ANTES de criar, ligada por `converted_from`, com o
+  vencimento do orçamento (ou hoje, se já passou); o status `accepted` é tentado e a recusa do CHECK (23514)
+  é esperada — o vínculo é `converted_from`. **Orçamento não se cobra nem
+  recebe**: `/api/billing/payments` e o QR do balcão recusam, a tela não
+  oferece. O aviso do orçamento tem texto próprio (`TO` em
+  `avisarClienteDaFatura`) e o portal o lista em Pagamentos → Orçamentos.
+  Os abertos do módulo antigo vêm pela ponte `/api/billing/orcamentos-antigos`
+  (sócio e gerente; reserva a linha antes de criar, desfaz se falhar); os
+  pagos pelo link antigo só se listam (fora do livro: decisão do sócio) e o
+  impresso antigo fica para o recibo. O webhook mantém `handleQuotePaid`
+  para um link antigo pago depois. De passagem: PATCH/DELETE do Financeiro
+  e as três entradas de recebimentos passaram a conferir `canAccessClient`
+  do documento, a lista obedece a `clientesOcultos`, e Pagamentos do portal
+  não diz mais "nada a pagar" quando a consulta falha.
 - **Excedente de transações: franquia MENSAL, apuração ANUAL, e o
   bookkeeping só CONTA** (`lib/excedente-transacoes.ts`, 30 casos em
   `testes/excedente-transacoes.mts`). `included_transactions` é POR MÊS
@@ -1096,15 +1258,14 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 app/dashboard/       área da equipe (clientes, bookkeeping, financeiro, agenda, atendimento)
 app/portal/          área do cliente
 app/api/bookkeeping/ importação (Plaid, CSV, PDF, QuickBooks), regras, relatórios, conciliação
-app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento, relatórios (só owner)
-app/api/plans/       contratos recorrentes
+app/api/billing/     faturas, pagamentos, Stripe, impressão, parcelamento, contratos, relatórios (só owner)
 app/api/signatures/  DocuSign (contrato, 8879, diagnóstico)
 app/api/portal/      rotas do cliente: billing (pagar), plan-checkout (débito), contract-sign/return (assinar)
 app/api/stripe/webhook   entrada única dos eventos de pagamento
 app/api/whatsapp/    webhook, fila, conversa, bot
 app/api/sms/webhook  STOP/START e SMS recebidos (Twilio)
-app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes)
-components/          BookkeepingTab, PlansTab, QuotesTab, ReconcileTab, SignaturesTab…
+app/api/cron/        rotinas da Vercel (aviso de cobrança 3 dias antes; fatura dos contratos)
+components/          BookkeepingTab, ContratoItens, ReconcileTab, SignaturesTab…
 lib/                 motor de regras, permissões, SMS, contrato, integrações
 sql/ e *.sql         migrações rodadas à mão no SQL Editor do Supabase (idempotentes)
 middleware.ts        controle de acesso por rota
@@ -1112,9 +1273,20 @@ middleware.ts        controle de acesso por rota
 
 ## Dívida conhecida (decidir antes de "corrigir")
 
-- Módulo Plans × tabela `recurring_plans`; Quotes × estimates do financeiro;
-  `staff_roles` × `team_members`. Duplicações conhecidas, resolução pendente
-  de decisão do sócio.
+- **Contrato recorrente, o que ficou de fora de propósito:** a franquia do
+  bookkeeping (transações incluídas e excedente) não se edita — é termo do
+  contrato, encerrar e criar outro; e parcelamento ANTIGO, sem fatura (do
+  módulo de orçamentos que saiu), que já começou a cobrar não se cancela pelo
+  sistema — não há fatura onde o saldo fique em aberto. A proposta antiga que
+  nunca começou se desfaz em Financeiro → Parcelamentos, **depois de
+  perguntar ao Stripe**: com o agendamento travado (até 10/2026), o plano com
+  a entrada PAGA tinha cara de proposta, e desistir dizia ao cliente que nada
+  foi cobrado. Achou a entrada paga, registra `entry_paid_at` e recusa: o
+  caminho é "Conferir pagamento e agendar", que também aparece para o antigo.
+  Entrada que VOLTOU (devolvida ou contestada, `entradaQueVoltou`) não está
+  com a firma: aí a desistência segue — o agendar recusa entrada devolvida, e
+  recusar aqui também deixaria o plano sem saída —, mas o aviso ao cliente não
+  diz que "nada foi cobrado".
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,
@@ -1267,6 +1439,18 @@ middleware.ts        controle de acesso por rota
   `testes/ordem-das-migracoes.mts`; a auditoria recusa declaração que aponte
   para arquivo inexistente (some em silêncio num rename e a ordem volta à
   alfabética) e recusa o mapa vazio.
+  **"Aplicada", para quem depende, é um `Set` dos caminhos em estado ok**
+  (`aplicadasParaDependencia` de `scripts/livro-de-migracoes.mjs`). O livro é
+  um `Map`, e a ordenação aceitava "Set ou objeto": com o `Map`,
+  `aplicados[x]` dava sempre `undefined` e TODA dependência de migração já
+  aplicada parecia faltar. Ficou latente de 01/10 até a primeira dependência
+  desse tipo (`equipe-unica-v1 → papel-no-app-metadata-v1`): o `--pendentes`
+  do GitHub recusou com exit 3, dizendo que a dependência "não está aplicada
+  nem na lista" três linhas abaixo de listá-la como ok. Os testes passavam
+  porque usavam `Set` — o defeito era a LIGAÇÃO entre os dois módulos, e é
+  ela que o teste exercita agora (pelo `lerLivro` de verdade). A ordenação
+  recusa em voz alta o que não for `Set`; "mudou depois de aplicado" e linha
+  torta não contam como aplicada, de propósito.
   **O livro tem três jeitos de estar torto, e os três faziam migração
   APLICADA parecer NUNCA APLICADA** — o lado que leva a rodar de novo em
   produção (`scripts/livro-de-migracoes.mjs`, puro e com teste). O leitor

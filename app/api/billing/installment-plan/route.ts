@@ -21,10 +21,27 @@
 //   pago: cancelar para a cobrança futura, nunca desfaz recebimento — isso é
 //   estorno e tem rotina própria.
 //
+// PATCH { planId, action: 'agendar', primeira?, motivo, password } — AGENDA
+//   as parcelas de um parcelamento que TRAVOU depois de o cliente pagar a
+//   entrada (ou autorizar o débito). Até 10/2026 o agendamento no Stripe
+//   falhava sempre (lib/agendamento-parcelas.ts conta por quê): a entrada
+//   entrava no Stripe e mais nada acontecia. Aqui a equipe confere no Stripe
+//   o que o cliente fez, lança a entrada na fatura com a data em que ela
+//   entrou, re-data o cronograma a partir da nova 1ª parcela e agenda. Chave
+//   `receber` (é a mesma de criar o parcelamento) + senha + motivo.
+//
 // Só gerente ou sócio.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient, clientesOcultos } from '@/lib/api-auth'
+import { avancarData } from '@/lib/plans'
+import { dataDaFirma } from '@/lib/dia-da-firma'
+import { fmtUS } from '@/lib/format'
+import {
+  agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, sessoesDoPlano, metodoDoTipo,
+  entradaIntegra, entradaQueVoltou, type PagamentoDaSessao,
+} from '@/lib/agendamento-parcelas'
+import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
 import { type Frequency } from '@/lib/plans'
 // O cronograma e o PISO da parcela moram num modulo puro, com teste: e
@@ -66,6 +83,9 @@ function planoNuncaComecou(p: any): boolean {
   return Number(p?.paid_installments || 0) === 0
     && !p?.stripe_subscription_id
     && !p?.stripe_schedule_id
+    // Entrada paga é dinheiro que se moveu: o plano começou, mesmo sem
+    // agendamento (o caso do agendamento que travou depois da entrada).
+    && !p?.entry_paid_at
 }
 
 /** Cronograma: base para todas, última absorve o centavo da divisão. */
@@ -83,7 +103,7 @@ export async function GET() {
   // "nenhuma fatura parcelada ainda". Consulta que falha tem de gritar, não
   // devolver lista vazia — já se perdeu tempo procurando parcelamento que
   // existia e não aparecia.
-  const [{ data: planos, error: errPlanos }, { data: faturas, error: errFaturas }] = await Promise.all([
+  const [{ data: planos, error: errPlanos }, { data: faturas, error: errFaturas }, escopo] = await Promise.all([
     db.from('payment_plans')
       // invoices!invoice_id: DIZER a FK. Há DUAS relações entre payment_plans
       // e invoices — payment_plans.invoice_id → invoices.id (a fatura que foi
@@ -93,20 +113,28 @@ export async function GET() {
       // found", e a aba de Parcelamentos não abria. Aqui a fatura é a de
       // ORIGEM do parcelamento: invoice_id. A chave da resposta continua
       // `invoices` (o hint só desambigua), então o map abaixo não muda.
-      .select('id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, clients(name, business_name), invoices!invoice_id(number, total, paid_total)')
+      .select('id, client_id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, description, clients(name, business_name), invoices!invoice_id(number, total, paid_total)')
       .eq('kind', 'installment')
-      .not('invoice_id', 'is', null)
+      // Os SEM fatura também: são os parcelamentos do módulo antigo de
+      // orçamentos (Quotes). Com a aba de Planos fora da ficha do cliente,
+      // este é o único lugar onde eles aparecem — e o alerta de "plano
+      // parado" manda desistir deles aqui.
       .order('created_at', { ascending: false })
       .limit(200),
     // Faturas que podem ser parceladas: fatura (não orçamento), não cancelada,
     // não rascunho, e com saldo em aberto.
     db.from('invoices')
-      .select('id, number, total, paid_total, issue_date, clients(name, business_name)')
+      .select('id, client_id, number, total, paid_total, issue_date, clients(name, business_name)')
       .eq('doc_type', 'invoice')
       .not('status', 'in', '(void,draft,paid)')
       .order('issue_date', { ascending: false })
       .limit(200),
+    // O escopo por tipo vale aqui também: as duas listas mostravam a carteira
+    // INTEIRA — o nome das empresas e quanto cada uma deve — a quem não pode
+    // abrir empresa nenhuma, e o caixa da firma a quem não é sócio.
+    clientesOcultos(auth),
   ])
+  if (escopo.erro) return NextResponse.json({ error: escopo.erro }, { status: 500 })
 
   if (errPlanos) {
     return NextResponse.json({
@@ -125,12 +153,14 @@ export async function GET() {
   // de a lista inteira desaparecer — foi o que aconteceu quando estas duas
   // colunas entraram no select principal.
   const comCobranca = new Set<string>()
+  const entradaPaga = new Set<string>()
   if ((planos || []).length) {
     const { data: stripeIds } = await db.from('payment_plans')
-      .select('id, stripe_subscription_id, stripe_schedule_id')
+      .select('id, stripe_subscription_id, stripe_schedule_id, entry_paid_at')
       .in('id', (planos || []).map((p: any) => p.id))
     for (const p of (stripeIds || []) as any[]) {
       if (p.stripe_subscription_id || p.stripe_schedule_id) comCobranca.add(p.id)
+      if (p.entry_paid_at) entradaPaga.add(p.id)
     }
   }
 
@@ -142,16 +172,24 @@ export async function GET() {
 
   return NextResponse.json({
     perms,
-    plans: (planos || []).map((p: any) => ({
+    plans: (planos || []).filter((p: any) => !escopo.ocultos.has(p.client_id)).map((p: any) => ({
       ...p,
       cliente: p.clients?.business_name || p.clients?.name || '—',
-      numero: p.invoices?.number || '—',
+      numero: p.invoices?.number || (p.invoice_id ? '—' : 'sem fatura (antigo)'),
+      semFatura: !p.invoice_id,
       // Decidido no servidor: a tela não precisa adivinhar nem receber os
       // ids do Stripe para saber a diferença.
       cobrandoNoStripe: comCobranca.has(p.id),
-      nuncaComecou: Number(p.paid_installments || 0) === 0 && !comCobranca.has(p.id),
+      nuncaComecou: Number(p.paid_installments || 0) === 0 && !comCobranca.has(p.id) && !entradaPaga.has(p.id),
+      // Aguardando o cliente e sem agendamento no Stripe: pode ser que ele
+      // JÁ tenha pago a entrada e o agendamento tenha travado. Só o Stripe
+      // diz — a ação "agendar" confere antes de fazer qualquer coisa.
+      podeAgendar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !comCobranca.has(p.id),
+      entradaPaga: entradaPaga.has(p.id),
     })),
+    hoje: dataDaFirma(),
     invoices: (faturas || [])
+      .filter((i: any) => !escopo.ocultos.has(i.client_id))
       .map((i: any) => ({
         id: i.id, number: i.number,
         cliente: i.clients?.business_name || i.clients?.name || '—',
@@ -191,6 +229,8 @@ export async function POST(req: NextRequest) {
     .select('id, client_id, number, doc_type, total, paid_total, status, clients(name, email, language)')
     .eq('id', b.invoiceId).maybeSingle()
   if (!inv) return NextResponse.json({ error: 'Fatura não encontrada.' }, { status: 404 })
+  // isStaff diz QUEM chama; QUAL cliente é o escopo por tipo.
+  if (!(await canAccessClient(auth, inv.client_id))) return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
   if (inv.doc_type !== 'invoice') {
     return NextResponse.json({ error: 'Só faturas podem ser parceladas. Converta o orçamento primeiro.' }, { status: 409 })
   }
@@ -329,9 +369,15 @@ export async function PATCH(req: NextRequest) {
   const auth = await getAuth()
   if (!auth?.isStaff) return NextResponse.json({ error: 'Acesso restrito' }, { status: 403 })
   const perms = await permissoesFinanceiro(auth.userId)
-  if (!perms.cancelar) return NextResponse.json({ error: RECUSA.cancelar }, { status: 403 })
-
   const b = await req.json().catch(() => ({} as any))
+
+  // ── Agendar as parcelas do parcelamento que travou depois da entrada ──
+  if (b.action === 'agendar') {
+    if (!perms.receber) return NextResponse.json({ error: RECUSA.receber }, { status: 403 })
+    return agendarParcelamentoTravado(auth, b)
+  }
+
+  if (!perms.cancelar) return NextResponse.json({ error: RECUSA.cancelar }, { status: 403 })
   if (b.action !== 'cancel') return NextResponse.json({ error: 'Ação desconhecida.' }, { status: 400 })
   if (!b.planId) return NextResponse.json({ error: 'planId obrigatório' }, { status: 400 })
 
@@ -347,31 +393,15 @@ export async function PATCH(req: NextRequest) {
 
   // Senha da própria pessoa: parar uma régua de cobrança é ação sensível
   // (princípio 3) e não pode sair de uma tela destravada no balcão.
-  {
-    const { data: quem } = await db.auth.admin.getUserById(auth.userId)
-    const email = quem?.user?.email
-    if (!email) return NextResponse.json({ error: 'Não foi possível identificar seu login.' }, { status: 400 })
-    const sbAuth = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    )
-    const { error: pwErr } = await sbAuth.auth.signInWithPassword({ email, password: String(b.password).trim() })
-    if (pwErr) {
-      const m = pwErr.message || ''
-      if (/rate|too many|429/i.test(m)) {
-        return NextResponse.json({ error: 'Muitas tentativas. Aguarde 1 minuto.' }, { status: 429 })
-      }
-      return NextResponse.json({ error: `Senha não confere para ${email}.` }, { status: 401 })
-    }
-  }
+  const recusaSenha = await conferirSenhaPropria(db, auth.userId, b.password)
+  if (recusaSenha) return recusaSenha
 
   const { data: plano } = await db.from('payment_plans')
-    .select('id, invoice_id, client_id, status, kind, installments, paid_installments, stripe_schedule_id, stripe_subscription_id')
+    .select('id, invoice_id, client_id, status, kind, installments, paid_installments, stripe_schedule_id, stripe_subscription_id, stripe_session_id, stripe_customer_id, entry_amount, entry_paid_at')
     .eq('id', b.planId).eq('kind', 'installment').maybeSingle()
   if (!plano) return NextResponse.json({ error: 'Parcelamento não encontrado.' }, { status: 404 })
-  if (!plano.invoice_id) {
-    return NextResponse.json({ error: 'Este plano não está ligado a uma fatura.' }, { status: 409 })
-  }
+  if (!(await canAccessClient(auth, plano.client_id))) return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  if (!plano.invoice_id) return desistirDaPropostaAntiga(db, plano, auth.userId, motivo)
   // Já encerrado: dizer isso é melhor que rodar de novo e tentar cancelar no
   // Stripe uma assinatura que não existe mais.
   if (['cancelled', 'completed'].includes(String(plano.status))) {
@@ -385,21 +415,55 @@ export async function PATCH(req: NextRequest) {
     .eq('id', plano.invoice_id).maybeSingle()
   if (!inv) return NextResponse.json({ error: 'Fatura do parcelamento não encontrada.' }, { status: 404 })
 
+  // Parece proposta (nada no banco diz que começou), mas pode ser o
+  // agendamento que TRAVOU depois de a entrada ser paga: aí o dinheiro está
+  // no Stripe e fora da fatura. Cancelar "como proposta" diria ao cliente que
+  // nada foi cobrado e deixaria o saldo errado. Confere no Stripe e, se a
+  // entrada entrou, lança antes de cancelar. A que VOLTOU (devolvida ou
+  // contestada) não se lança — não está com a firma —, mas também não deixa
+  // o plano com cara de proposta: o cliente pagou e viu o dinheiro voltar.
+  let entradaVoltou: PagamentoDaSessao | null = null
+  if (planoNuncaComecou(plano) && Number(plano.entry_amount || 0) > 0 && plano.stripe_customer_id && process.env.STRIPE_SECRET_KEY) {
+    let entrada: { integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }
+    try { entrada = await entradaNoStripe(plano) } catch (e) {
+      // Consulta que falha não é "não pagou".
+      return NextResponse.json({ error: `Não deu para conferir no Stripe se a entrada foi paga: ${(e as Error).message}. Nada foi cancelado.` }, { status: 502 })
+    }
+    entradaVoltou = entrada.integra ? null : entrada.voltou
+    const pago = entrada.integra
+    if (pago) {
+      const r = await lancarRecebimentoStripe(db, {
+        invoiceId: plano.invoice_id, clientId: plano.client_id, valor: round2(Number(plano.entry_amount)),
+        metodo: metodoDoTipo(pago.tipo), referencia: pago.intent, objetoStripe: pago.sessao, recebidoEm: pago.quando,
+      })
+      if (r.ok === false) {
+        return NextResponse.json({ error: `A entrada deste parcelamento FOI PAGA no Stripe, e não deu para lançá-la na fatura: ${r.motivo}. Nada foi cancelado.` }, { status: 500 })
+      }
+      await db.from('payment_plans').update({ entry_paid_at: (pago.quando || new Date()).toISOString() }).eq('id', plano.id)
+      plano.entry_paid_at = (pago.quando || new Date()).toISOString()
+    }
+  }
+
   // Lido ANTES de encerrar: é o estado em que o plano estava quando a
   // decisão foi tomada, e é isso que a trilha tem de guardar.
-  const nuncaComecou = planoNuncaComecou(plano)
+  const nuncaComecou = planoNuncaComecou(plano) && !entradaVoltou
 
   const r = await encerrarParcelamento(db, stripeClient(), plano, plano.invoice_id, {
     motivo: 'plano_cancelado', performedBy: auth.userId, razao: motivo,
   })
 
-  const saldo = round2(Number(inv.total) - Number(inv.paid_total))
+  // O saldo depois de tudo: se a entrada travada acabou de ser lançada, o
+  // valor lido lá em cima já não vale — e é ele que vai no aviso ao cliente.
+  const { data: depois } = await db.from('invoices').select('total, paid_total').eq('id', inv.id).maybeSingle()
+  const saldo = round2(Number((depois || inv).total) - Number((depois || inv).paid_total))
 
   await db.from('invoice_audit').insert({
     invoice_id: inv.id, action: 'installment_plan_cancelled', performed_by: auth.userId,
     staff_level: perms.nivel, reason: motivo,
     next: { planId: plano.id, saldoEmAberto: saldo, nuncaComecou,
-            stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas },
+            stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas,
+            ...(entradaVoltou ? { entradaQueVoltou: { sessao: entradaVoltou.sessao, valor: entradaVoltou.valor,
+                                                       devolvido: entradaVoltou.devolvido, contestado: entradaVoltou.contestado } } : {}) },
   }).then(() => null, () => null)
 
   // O cliente tinha um acordo e o débito automático dele. Se o acordo acabou,
@@ -440,7 +504,10 @@ export async function PATCH(req: NextRequest) {
     message: nuncaComecou
       ? `Proposta de parcelamento de ${inv.number} encerrada — nada havia sido cobrado. ` +
         `Saldo em aberto: $${saldo.toFixed(2)}. Pode criar o novo acordo.`
-      : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
+      : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`
+        + (entradaVoltou ? ` A entrada paga no Stripe foi ${entradaVoltou.contestado ? 'CONTESTADA' : 'DEVOLVIDA'} e não entrou na fatura.`
+          + (entradaVoltou.contestado || entradaVoltou.devolvido < entradaVoltou.valor - 0.004
+            ? ' Parte dela pode ter ficado com a firma: confira no painel do Stripe e, se for o caso, lance à mão.' : '') : ''),
     // O cliente tinha um acordo e um debito automatico: ele PRECISA saber.
     // Se o e-mail nao saiu, quem cancelou tem de ver o motivo na hora.
     email: emailCancelamento.ok,
@@ -448,5 +515,350 @@ export async function PATCH(req: NextRequest) {
     avisoAoCliente: emailCancelamento.ok
       ? 'Cliente avisado por e-mail e no portal.'
       : `Cliente avisado NO PORTAL. E-mail nao saiu: ${emailCancelamento.motivo}`,
+  })
+}
+
+/**
+ * Parcelamento SEM fatura: veio do módulo antigo de orçamentos (Quotes),
+ * que já saiu. Desistir só da PROPOSTA que nunca começou — nada cobrado,
+ * nenhuma assinatura no Stripe. Era o que a aba de Planos da ficha fazia, e
+ * sem isto o alerta diário de "plano parado" mandava desistir de um plano
+ * que não tinha mais botão em lugar nenhum.
+ *
+ * O que já começou a cobrar não se cancela por aqui: não há fatura onde o
+ * saldo fique em aberto (encerrarParcelamento precisa dela), e cancelar em
+ * silêncio deixaria dinheiro combinado sem registro. Diz isso e para.
+ *
+ * "Nunca começou" pelo banco não basta: até 10/2026 o agendamento travava
+ * DEPOIS de a entrada ser paga (lib/agendamento-parcelas.ts), e o plano
+ * ficava com cara de proposta. Quem diz se o cliente pagou é o Stripe.
+ */
+async function desistirDaPropostaAntiga(db: any, plano: any, userId: string, motivo: string) {
+  if (['cancelled', 'completed'].includes(String(plano.status))) {
+    return NextResponse.json({ error: `Este parcelamento já está ${plano.status === 'completed' ? 'concluído' : 'cancelado'}.` }, { status: 409 })
+  }
+  // A entrada paga no Stripe faz do plano um acordo em andamento: dizer ao
+  // cliente que "nada foi cobrado" seria falso, e sem fatura não há onde
+  // lançá-la. Fica registrado que entrou — o portal para de oferecer pagá-la
+  // de novo — e a desistência é recusada, dizendo o que fazer.
+  // A que VOLTOU (devolvida, contestada — entradaQueVoltou) não está com a
+  // firma: a desistência segue, porque o agendar recusa entrada devolvida e
+  // recusar aqui também deixaria o plano sem saída. Mas o aviso não diz que
+  // "nada foi cobrado": o cliente pagou e viu o dinheiro voltar.
+  let entradaVoltou: PagamentoDaSessao | null = null
+  if (planoNuncaComecou(plano) && Number(plano.entry_amount || 0) > 0 && plano.stripe_customer_id && process.env.STRIPE_SECRET_KEY) {
+    let entrada: { integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }
+    try { entrada = await entradaNoStripe(plano) } catch (e) {
+      // Consulta que falha não é "não pagou".
+      return NextResponse.json({ error: `Não deu para conferir no Stripe se a entrada foi paga: ${(e as Error).message}. Nada foi feito.` }, { status: 502 })
+    }
+    entradaVoltou = entrada.integra ? null : entrada.voltou
+    const pago = entrada.integra
+    if (pago) {
+      const quando = pago.quando || new Date()
+      await db.from('payment_plans').update({ entry_paid_at: quando.toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', plano.id).is('entry_paid_at', null)
+      return NextResponse.json({
+        error: `A entrada deste parcelamento antigo FOI PAGA no Stripe ($${pago.valor.toFixed(2)} em ${fmtUS(dataDaFirma(quando))}): não é proposta, e o cliente não pode ouvir que nada foi cobrado. Para seguir o acordo, use "Conferir pagamento e agendar"; para desfazê-lo, a entrada se devolve no painel do Stripe — fale com o sócio.`,
+      }, { status: 409 })
+    }
+  }
+  if (!planoNuncaComecou(plano) || !['draft', 'awaiting_entry', 'awaiting_setup'].includes(String(plano.status))) {
+    return NextResponse.json({
+      error: 'Parcelamento antigo (sem fatura) que já começou a cobrar não se cancela por aqui: não há fatura para o saldo ficar em aberto. Ele segue até o fim; para interromper, fale com o sócio (painel do Stripe).',
+    }, { status: 409 })
+  }
+  // A trilha ANTES (princípio 2): falhou, não desiste.
+  const { error: errT } = await db.from('plan_audit').insert({
+    plan_id: plano.id, action: 'cancelled', reason: motivo, performed_by: userId,
+    snapshot: { previous_status: plano.status, semFatura: true, proposta: !entradaVoltou,
+      ...(entradaVoltou ? { entradaQueVoltou: { sessao: entradaVoltou.sessao, valor: entradaVoltou.valor,
+                                               devolvido: entradaVoltou.devolvido, contestado: entradaVoltou.contestado } } : {}) },
+  })
+  if (errT) return NextResponse.json({ error: `Nada foi feito: não deu para gravar a trilha (${errT.message}).` }, { status: 500 })
+  // O link que ficou com o cliente deixa de valer.
+  if (plano.stripe_session_id && process.env.STRIPE_SECRET_KEY) {
+    await stripeClient().checkout.sessions.expire(plano.stripe_session_id).catch(() => null)
+  }
+  const { error } = await db.from('payment_plans').update({
+    status: 'cancelled', cancel_reason: motivo, stripe_session_id: null, updated_at: new Date().toISOString(),
+  }).eq('id', plano.id).in('status', ['draft', 'awaiting_entry', 'awaiting_setup'])
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  const aviso = await avisarNoPortal(db, plano.client_id, entradaVoltou
+    ? '📆 A proposta de parcelamento que estava aguardando o seu cadastro foi encerrada — o link não vale mais. Fale com a nossa equipe se quiser combinar de novo.'
+    : '📆 A proposta de parcelamento que estava aguardando o seu cadastro foi encerrada — o link não vale mais, e nada foi cobrado. Fale com a nossa equipe se quiser combinar de novo.')
+  return NextResponse.json({
+    ok: true, nuncaComecou: false,
+    message: (entradaVoltou
+      ? `Proposta antiga encerrada, e o link do cliente deixou de valer. A entrada paga no Stripe foi ${entradaVoltou.contestado ? 'CONTESTADA' : 'DEVOLVIDA'}`
+        + (entradaVoltou.contestado || entradaVoltou.devolvido < entradaVoltou.valor - 0.004
+          ? ' — parte dela pode ter ficado com a firma: confira no painel do Stripe.' : '.')
+      : 'Proposta antiga encerrada: nada tinha sido cobrado, e o link do cliente deixou de valer.')
+      + (aviso.ok ? '' : ` O aviso no portal não saiu: ${aviso.motivo}.`),
+  })
+}
+
+/** Senha da PRÓPRIA pessoa (princípio 3). Devolve a recusa pronta, ou null. */
+async function conferirSenhaPropria(db: any, userId: string, senha: unknown): Promise<NextResponse | null> {
+  const { data: quem } = await db.auth.admin.getUserById(userId)
+  const email = quem?.user?.email
+  if (!email) return NextResponse.json({ error: 'Não foi possível identificar seu login.' }, { status: 400 })
+  const sbAuth = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+  const { error: pwErr } = await sbAuth.auth.signInWithPassword({ email, password: String(senha || '').trim() })
+  if (!pwErr) return null
+  if (/rate|too many|429/i.test(pwErr.message || '')) {
+    return NextResponse.json({ error: 'Muitas tentativas. Aguarde 1 minuto.' }, { status: 429 })
+  }
+  return NextResponse.json({ error: `Senha não confere para ${email}.` }, { status: 401 })
+}
+
+/** O que o cliente fez no Stripe para este plano: a sessão paga pode não ser a última gerada. */
+async function oQueOClienteFez(plano: any): Promise<PagamentoDaSessao[]> {
+  const stripe = stripeClient()
+  const sessoes = await sessoesDoPlano(stripe, plano.stripe_customer_id, plano.id)
+  return Promise.all(sessoes.map(s => pagamentoDaSessao(stripe, s)))
+}
+
+/**
+ * A entrada deste plano no Stripe: a que está com a firma (`integra`) e, à
+ * parte, a que foi paga e VOLTOU — devolvida, no todo ou em parte, ou
+ * contestada. O status da sessão continua 'paid' depois do reembolso: quem
+ * diz é a cobrança (lib/agendamento-parcelas.ts).
+ */
+async function entradaNoStripe(plano: any): Promise<{ integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }> {
+  const feitos = await oQueOClienteFez(plano)
+  return { integra: feitos.find(entradaIntegra) || null, voltou: feitos.find(entradaQueVoltou) || null }
+}
+
+/**
+ * Agendar as parcelas de um parcelamento que TRAVOU: o cliente pagou a
+ * entrada (ou autorizou o débito) e o agendamento no Stripe não nasceu.
+ *
+ * Nada aqui confia no banco sobre o que o cliente fez — quem diz é o Stripe.
+ * E nada se agenda sem bater a conta: as parcelas em aberto do cronograma têm
+ * de somar o saldo da fatura (depois da entrada). Se algo foi recebido por
+ * fora no meio-tempo e a conta não fecha, o Stripe cobraria de novo — então
+ * recusa e diz quanto falta para cada lado.
+ */
+async function agendarParcelamentoTravado(auth: { userId: string; isStaff: boolean }, b: any): Promise<NextResponse> {
+  if (!b.planId) return NextResponse.json({ error: 'planId obrigatório' }, { status: 400 })
+  const motivo = String(b.motivo || '').trim()
+  if (motivo.length < 5) {
+    return NextResponse.json({ error: 'Descreva por que as parcelas estão sendo agendadas agora (mínimo 5 caracteres). Fica na trilha do plano.' }, { status: 400 })
+  }
+  if (!b.password) return NextResponse.json({ error: 'Confirme com a sua senha.' }, { status: 400 })
+  if (!process.env.STRIPE_SECRET_KEY) return NextResponse.json({ error: 'Stripe não configurado neste ambiente.' }, { status: 503 })
+
+  const db = serviceDb()
+  const recusaSenha = await conferirSenhaPropria(db, auth.userId, b.password)
+  if (recusaSenha) return recusaSenha
+
+  const { data: plano, error: errPlano } = await db.from('payment_plans')
+    .select('*, clients(name, email, language)').eq('id', b.planId).eq('kind', 'installment').maybeSingle()
+  if (errPlano) return NextResponse.json({ error: `Não foi possível ler o parcelamento: ${errPlano.message}` }, { status: 500 })
+  if (!plano) return NextResponse.json({ error: 'Parcelamento não encontrado.' }, { status: 404 })
+  if (!(await canAccessClient(auth as any, plano.client_id))) return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  if (!['awaiting_entry', 'awaiting_setup'].includes(String(plano.status))) {
+    return NextResponse.json({ error: `Este parcelamento está ${STATUS_TEXTO[plano.status] || plano.status}: não há o que agendar.` }, { status: 409 })
+  }
+  if (plano.stripe_schedule_id) return NextResponse.json({ error: 'Este parcelamento já tem agendamento no Stripe.' }, { status: 409 })
+  if (!plano.stripe_customer_id) {
+    return NextResponse.json({ error: 'O cliente nunca abriu o link do débito: não há pagamento nem autorização a conferir no Stripe.' }, { status: 409 })
+  }
+
+  // 1. O que o cliente fez — no Stripe, não no banco.
+  const comEntrada = Number(plano.entry_amount || 0) > 0
+  let feitos: PagamentoDaSessao[]
+  try { feitos = await oQueOClienteFez(plano) } catch (e) {
+    return NextResponse.json({ error: `Não deu para consultar o Stripe: ${(e as Error).message}` }, { status: 502 })
+  }
+  // Enquanto travava, o portal seguia oferecendo "pagar a entrada": o cliente
+  // pode ter pago mais de uma vez. Só UMA é a entrada — a que já estiver no
+  // livro, se alguma estiver; as outras são estorno. E só conta a que está
+  // com a firma: a devolvida ou contestada no Stripe não é entrada (lançá-la
+  // seria receita que não existe, e agendar cobraria um acordo desfeito).
+  const entradasPagas = feitos.filter(f => entradaIntegra(f) && f.paymentMethod)
+  let jaNoLivro: PagamentoDaSessao | null = null
+  if (comEntrada && plano.invoice_id) {
+    for (const f of entradasPagas) {
+      const filtro = filtroDeRecebimento(f.sessao, f.intent)
+      if (!filtro) continue
+      const { data: ja, error: eJa } = await db.from('invoice_payments').select('id').or(filtro).limit(1)
+      if (eJa) return NextResponse.json({ error: `Não deu para conferir a entrada: ${eJa.message}` }, { status: 500 })
+      if (ja?.length) { jaNoLivro = f; break }
+    }
+  }
+  const feito = comEntrada
+    ? (jaNoLivro || entradasPagas[0] || null)
+    : (feitos.find(f => f.concluido && f.paymentMethod) || null)
+  const aMais = comEntrada ? entradasPagas.filter(f => f !== feito) : []
+  if (!feito) {
+    const processando = feitos.some(f => f.emProcessamento)
+    const voltou = comEntrada ? feitos.find(entradaQueVoltou) : undefined
+    return NextResponse.json({
+      error: processando
+        ? 'A entrada por débito em conta ainda está sendo confirmada pelo banco (o ACH leva até 4 dias úteis). Quando o banco confirmar, o sistema agenda sozinho.'
+        : voltou
+          ? `A entrada foi paga e depois ${voltou.contestado ? 'CONTESTADA' : `DEVOLVIDA ($${voltou.devolvido.toFixed(2)} de $${voltou.valor.toFixed(2)})`} no Stripe: não há entrada com a firma, e agendar cobraria as parcelas de um acordo desfeito. Cancele este parcelamento e, se for o caso, faça outro acordo.`
+        : comEntrada
+          ? 'O cliente ainda NÃO pagou a entrada: não há pagamento deste parcelamento no Stripe.'
+          : 'O cliente ainda NÃO autorizou o débito: não há cadastro deste parcelamento no Stripe.',
+    }, { status: 409 })
+  }
+
+  // 2. A data da 1ª parcela. A combinada, se ainda não passou; senão quem
+  //    decide é a equipe — hoje cobra a 1ª na hora.
+  const hoje = dataDaFirma()
+  const original = plano.next_charge_date ? String(plano.next_charge_date).slice(0, 10) : null
+  const pedida = String(b.primeira || '').slice(0, 10)
+  if (pedida && !/^\d{4}-\d{2}-\d{2}$/.test(pedida)) return NextResponse.json({ error: 'Data da 1ª parcela inválida.' }, { status: 400 })
+  if (pedida && pedida < hoje) return NextResponse.json({ error: 'A 1ª parcela não pode ser antes de hoje.' }, { status: 400 })
+  const primeira = pedida || (original && original > hoje ? original : '')
+  if (!primeira) {
+    return NextResponse.json({
+      error: `A 1ª parcela estava marcada para ${fmtUS(original) || '—'}, e essa data já passou. Escolha a nova data (hoje = cobra a 1ª parcela na hora).`,
+      precisaData: true,
+    }, { status: 409 })
+  }
+
+  // 3. A conta. Com fatura, são as parcelas EM ABERTO do cronograma, e elas
+  //    têm de somar o saldo da fatura depois da entrada.
+  const freq = plano.frequency as Frequency
+  let abertas: any[] = []
+  let entradaJaLancada = true
+  let inv: any = null
+  if (plano.invoice_id) {
+    const [{ data: f, error: eInv }, { data: parcelas, error: eParc }] = await Promise.all([
+      db.from('invoices').select('id, number, total, paid_total, status').eq('id', plano.invoice_id).maybeSingle(),
+      db.from('invoice_installments').select('seq, due_date, amount, status').eq('invoice_id', plano.invoice_id).order('seq'),
+    ])
+    if (eInv || eParc) return NextResponse.json({ error: `Não foi possível ler a fatura: ${(eInv || eParc)!.message}` }, { status: 500 })
+    if (!f) return NextResponse.json({ error: 'Fatura do parcelamento não encontrada.' }, { status: 404 })
+    if (f.status === 'void') return NextResponse.json({ error: `A fatura ${f.number} foi cancelada.` }, { status: 409 })
+    inv = f
+    abertas = (parcelas || []).filter((p: any) => ['scheduled', 'failed'].includes(p.status))
+    if (!abertas.length) return NextResponse.json({ error: 'O cronograma não tem parcela em aberto.' }, { status: 409 })
+    if (comEntrada) entradaJaLancada = !!jaNoLivro
+    const saldoDepois = round2(Number(f.total) - Number(f.paid_total) - (entradaJaLancada ? 0 : Number(plano.entry_amount || 0)))
+    const somaAbertas = round2(abertas.reduce((s: number, p: any) => s + Number(p.amount || 0), 0))
+    if (Math.abs(saldoDepois - somaAbertas) > 0.009) {
+      return NextResponse.json({
+        error: `A conta não fecha: as parcelas em aberto somam $${somaAbertas.toFixed(2)} e o saldo da fatura ${f.number} (depois da entrada) é $${saldoDepois.toFixed(2)}. Houve recebimento fora do parcelamento — agendar cobraria valor errado. Cancele este parcelamento e crie outro com o saldo de agora.`,
+      }, { status: 409 })
+    }
+  }
+  const conta = plano.invoice_id
+    ? fasesDoParcelamento({ frequencia: freq, parcelas: abertas.length, valorParcela: abertas[0].amount, restante: abertas.reduce((s: number, p: any) => s + Number(p.amount || 0), 0) })
+    : fasesDoParcelamento({ frequencia: freq, parcelas: plano.installments, valorParcela: plano.installment_amount, restante: Number(plano.total) - Number(plano.entry_amount || 0) })
+  if ('erro' in conta) return NextResponse.json({ error: `O cronograma não vira agendamento: ${conta.erro}.` }, { status: 409 })
+
+  // 4. A trilha ANTES de mudar qualquer coisa (princípio 2).
+  const { error: errTrilha } = await db.from('plan_audit').insert({
+    plan_id: plano.id, action: 'scheduled_by_staff', performed_by: auth.userId, reason: motivo,
+    snapshot: {
+      sessao: feito.sessao, modo: feito.modo, pagoEm: feito.quando?.toISOString() || null,
+      primeiraAntes: original, primeira, parcelas: conta.fases.reduce((s, f) => s + f.parcelas, 0),
+      total: conta.totalCentavos / 100, entradaLancadaAgora: !entradaJaLancada,
+      ...(aMais.length ? { entradasAMais: aMais.map(f => ({ sessao: f.sessao, valor: f.valor })) } : {}),
+    },
+  })
+  if (errTrilha) return NextResponse.json({ error: `Nada foi feito: não deu para gravar a trilha (${errTrilha.message}).` }, { status: 500 })
+
+  // 5. O cronograma anda para a nova 1ª parcela — senão o aviso de cobrança,
+  //    o portal e o contas a receber leem datas que o Stripe não vai seguir.
+  if (inv) {
+    const base = new Date(`${primeira}T12:00:00Z`)
+    const datas = abertas.map((p: any, k: number) => ({ seq: p.seq, antes: p.due_date, depois: avancarData(base, freq, k).toISOString().slice(0, 10) }))
+    for (const d of datas) {
+      if (String(d.antes).slice(0, 10) === d.depois) continue
+      const { error } = await db.from('invoice_installments').update({ due_date: d.depois })
+        .eq('invoice_id', inv.id).eq('seq', d.seq)
+      if (error) return NextResponse.json({ error: `Não deu para mudar a data da parcela ${d.seq}: ${error.message}. Nada foi agendado.` }, { status: 500 })
+    }
+    await db.from('invoices').update({ due_date: datas[0].depois, updated_at: new Date().toISOString() }).eq('id', inv.id)
+    await db.from('invoice_audit').insert({
+      invoice_id: inv.id, action: 'installment_rescheduled', performed_by: auth.userId, reason: motivo,
+      previous: { datas: datas.map(d => [d.seq, d.antes]) }, next: { datas: datas.map(d => [d.seq, d.depois]) },
+    }).then(() => null, () => null)
+  }
+
+  // 6. A entrada que entrou e ficou fora da fatura — com a data em que entrou.
+  if (inv && comEntrada && feito.modo === 'payment' && !entradaJaLancada) {
+    const r = await lancarRecebimentoStripe(db, {
+      invoiceId: inv.id, clientId: plano.client_id, valor: round2(Number(plano.entry_amount)),
+      metodo: metodoDoTipo(feito.tipo), referencia: feito.intent, objetoStripe: feito.sessao, recebidoEm: feito.quando,
+    })
+    if (r.ok === false) {
+      return NextResponse.json({ error: `A entrada não entrou na fatura: ${r.motivo}. Nada foi agendado — tente de novo.` }, { status: 500 })
+    }
+  }
+  // A entrada entrou: marcado JÁ, e não só depois do agendamento — se o
+  // Stripe recusar o agendamento, o portal não pode voltar a oferecer a
+  // entrada (é entry_paid_at que fecha essa porta).
+  if (comEntrada && feito.modo === 'payment' && !plano.entry_paid_at) {
+    const { error: errPaga } = await db.from('payment_plans')
+      .update({ entry_paid_at: (feito.quando || new Date()).toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', plano.id)
+    if (errPaga) return NextResponse.json({ error: `A entrada está na fatura, mas o plano não registrou que ela foi paga: ${errPaga.message}. Tente de novo.` }, { status: 500 })
+  }
+  // O status da fatura com o vencimento novo (a definição mora no banco).
+  if (inv) await db.rpc('recalcular_status_da_fatura', { fid: inv.id }).then(() => null, () => null)
+
+  // 7. O agendamento.
+  let ag
+  try {
+    ag = await agendarParcelas(stripeClient(), plano, conta, feito.paymentMethod!, new Date(`${primeira}T12:00:00Z`))
+  } catch (e) {
+    return NextResponse.json({ error: `O Stripe não aceitou o agendamento: ${(e as Error).message}. O cronograma e a entrada já foram acertados — tente de novo.` }, { status: 502 })
+  }
+  const pagoEm = (feito.modo === 'payment' ? feito.quando : null) || (plano.entry_paid_at ? new Date(plano.entry_paid_at) : null)
+  const { error: errAtivar } = await db.from('payment_plans').update({
+    status: 'active',
+    ...(comEntrada && pagoEm ? { entry_paid_at: pagoEm.toISOString() } : {}),
+    stripe_schedule_id: ag.schedule.id,
+    stripe_subscription_id: (ag.schedule.subscription as string) || null,
+    next_charge_date: ag.inicio.toISOString().slice(0, 10),
+    updated_at: new Date().toISOString(),
+  }).eq('id', plano.id)
+  if (errAtivar) {
+    return NextResponse.json({ error: `O agendamento foi criado no Stripe (${ag.schedule.id}), mas o plano não foi atualizado aqui: ${errAtivar.message}. Tente de novo — o agendamento existente é reaproveitado, não duplica.` }, { status: 500 })
+  }
+
+  // 8. O cliente fica sabendo: o débito começa numa data que ele não esperava.
+  const client = plano.clients || {}
+  const lang = String(client.language || 'en').toLowerCase()
+  const nParcelas = conta.fases.reduce((s, f) => s + f.parcelas, 0)
+  const valor = `$${(conta.fases[0].centavos / 100).toFixed(2)}`
+  const quando = fmtUS(ag.inicio.toISOString().slice(0, 10))
+  const texto = lang === 'pt'
+    ? `📆 Seu parcelamento${inv ? ` da fatura ${inv.number}` : ''} está ativo: ${nParcelas} parcela(s) de ${valor} no débito automático, a primeira em ${quando}.`
+    : lang === 'es'
+    ? `📆 Su plan de cuotas${inv ? ` de la factura ${inv.number}` : ''} está activo: ${nParcelas} cuota(s) de ${valor} con débito automático, la primera el ${quando}.`
+    : `📆 Your installment plan${inv ? ` for invoice ${inv.number}` : ''} is active: ${nParcelas} installment(s) of ${valor} by automatic debit, the first on ${quando}.`
+  const aviso = await avisarNoPortal(db, plano.client_id, texto)
+  let email: ResultadoEmail = { ok: false, motivo: 'cliente sem e-mail no cadastro' }
+  if (client.email) {
+    email = await enviarEmail(client.email,
+      lang === 'pt' ? 'Seu parcelamento está ativo' : lang === 'es' ? 'Su plan de cuotas está activo' : 'Your installment plan is active',
+      emailComMarca({ lang, nome: client.name, corpoHtml: `<p>${texto.replace(/^📆 /, '')}</p>`,
+        botao: { texto: lang === 'pt' ? 'Ver em Pagamentos' : lang === 'es' ? 'Ver en Pagos' : 'View in Payments', url: `${APP_URL}/portal/payments` } }))
+  }
+
+  if (aMais.length) {
+    await db.from('plan_alerts').insert({
+      plan_id: plano.id, client_id: plano.client_id, type: 'entrada_em_dobro',
+      message: `🛑 ${plano.description || 'Parcelamento'}: o cliente pagou a entrada ${entradasPagas.length} vezes. Só uma entrou na fatura; estorne no painel do Stripe: ${aMais.map(f => `${f.sessao} ($${f.valor.toFixed(2)})`).join(', ')}.`,
+    }).then(() => null, () => null)
+  }
+
+  return NextResponse.json({
+    ok: true,
+    message: `Parcelas agendadas no Stripe${ag.reaproveitado ? ' (o agendamento que já existia foi reaproveitado)' : ''}: ${nParcelas}× a partir de ${quando}.`
+      + (aMais.length ? ` ATENÇÃO: o cliente pagou a entrada ${entradasPagas.length} vezes — estorne no Stripe ${aMais.map(f => `$${f.valor.toFixed(2)} (${f.sessao})`).join(', ')}.` : '')
+      + (inv && comEntrada && !entradaJaLancada ? ` A entrada de $${round2(Number(plano.entry_amount)).toFixed(2)} foi lançada na fatura ${inv.number} com a data em que entrou.` : '')
+      + (email.ok ? ' Cliente avisado por e-mail e no portal.' : ` Cliente avisado ${aviso.ok ? 'no portal' : '— o aviso no portal também falhou'}; e-mail não saiu: ${email.motivo}.`),
   })
 }
