@@ -93,7 +93,7 @@ checar('Conciliacao', 'components/ReconcileTab.tsx', 'fmtDate', 'idem')
 titulo('FINANCEIRO: PERMISSOES EM TODAS AS ROTAS')
 checar('Faturas', 'app/api/billing/invoices/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Pagamentos', 'app/api/billing/payments/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
-checar('Contratos', 'app/api/billing/recurring/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
+checar('Contratos', 'app/api/billing/contratos/route.ts', 'podeMexerEmContrato', 'rota sem controle de acesso')
 checar('Parcelamento', 'app/api/billing/installment-plan/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Impressao', 'app/api/billing/print/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Link Stripe', 'app/api/billing/stripe-checkout/route.ts', 'permissoesFinanceiro', 'qualquer um geraria cobranca')
@@ -200,7 +200,7 @@ checar('ACH parado no caminho avisa a equipe', 'lib/ach-transito.ts', 'export as
 checar('Webhook: ACH confirmado dias depois', 'app/api/stripe/webhook/route.ts', 'checkout.session.async_payment_succeeded', 'debito em conta nunca seria registrado')
 checar('Webhook: entrada por ACH so ativa com dinheiro confirmado', 'app/api/stripe/webhook/route.ts', "'entry_processing'", 'parcelamento comecaria com entrada que o banco pode devolver')
 checar('Webhook: forma real tambem na entrada', 'app/api/stripe/webhook/route.ts', 'metodo: metodoDoTipo(pag.tipo)', 'entrada por ACH entraria no livro como cartao')
-checar('Ancora respeita as 48h do Stripe', 'lib/plan-checkout.ts', 'ancoraDeCobranca', 'cadastro do debito falha quando o dia acordado esta perto')
+checar('Ancora respeita as 48h do Stripe (e a regua do contrato)', 'lib/plan-checkout.ts', 'ancoraDoDebito(', 'cadastro do debito falha quando o dia acordado esta perto')
 checar('Portal: fatura sabe se o plano aceita acao', 'app/api/portal/billing/route.ts', 'podeCadastrar', 'fatura parcelada ativa mostraria botao Pagar que a rota recusa')
 checar('Fatura enviada avisa o cliente', 'app/api/billing/invoices/route.ts', 'avisarClienteDaFatura', 'cliente nao saberia que tem fatura')
 
@@ -423,18 +423,20 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
   // liga as duas pontas. Sem esse elo, botao e trava voltam a poder divergir,
   // que e a falha de metodo que mais custou neste projeto.
   {
-    const rota = readFileSync(join(raiz, 'app/api/billing/recurring/route.ts'), 'utf8')
+    const rota = readFileSync(join(raiz, 'app/api/billing/contratos/route.ts'), 'utf8')
     const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
     const problemas = []
 
     if (!/const podeMexerEmContrato\s*=\s*\(nivel[\s\S]{0,160}?'owner'[\s\S]{0,60}?'manager'/.test(rota)) {
       problemas.push('a rota nao define podeMexerEmContrato por nivel (owner/manager)')
     }
-    // As DUAS portas de escrita: criar e alterar.
-    const guardas = (rota.match(/if \(!podeMexerEmContrato\(perms\.nivel\)\)/g) || []).length
+    // As DUAS portas de escrita: criar e alterar. O nivel vem de
+    // getStaffLevel (team_members), nao de `perms`: a concessao individual
+    // de `receber` nao pode abrir o contrato.
+    const guardas = (rota.match(/if \(!podeMexerEmContrato\(await getStaffLevel\(auth\.userId\)\)\)/g) || []).length
     if (guardas < 2) problemas.push(`so ${guardas} rota(s) de escrita travam por nivel -- esperado POST e PATCH`)
     // O elo: o GET manda a resposta pronta, calculada pela MESMA funcao.
-    if (!/podeContrato:\s*podeMexerEmContrato\(perms\.nivel\)/.test(rota)) {
+    if (!/podeContrato:\s*podeMexerEmContrato\(nivel\)/.test(rota)) {
       problemas.push('o GET nao manda podeContrato calculado por podeMexerEmContrato')
     }
     // E a tela OBEDECE, em vez de recalcular a regra por conta propria.
@@ -873,8 +875,18 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
         'dizer que o debito "nao sera mais cobrado" a quem nunca foi cobrado assusta sem motivo')
   checar('A recusa do POST leva o plano existente', arq, /planoExistente: \{ id: ja\.id/,
          'mandar procurar o botao em outra aba e onde a equipe travava')
-  checar('A tela abre o cancelamento na propria recusa', 'app/dashboard/billing/page.tsx',
-         /d\?\.planoExistente/, 'a recusa tem de oferecer o caminho, nao so o texto')
+  // Dentro de criarParcelamento, nao em qualquer lugar do arquivo: o trecho
+  // ja morou no criarContrato, que nunca recebe esta recusa, e a conferencia
+  // por arquivo passava com o caminho morto.
+  {
+    const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
+    const i = tela.indexOf('const criarParcelamento = async')
+    const j = i >= 0 ? tela.indexOf('\n  const ', i + 10) : -1
+    const corpo = i >= 0 ? tela.slice(i, j < 0 ? undefined : j) : ''
+    if (!corpo) falta('A tela abre o cancelamento na propria recusa', 'criarParcelamento nao encontrado -- ancora perdida e FALHA')
+    else if (/d\?\.planoExistente/.test(corpo) && /setPcCancelar\(pl\)/.test(corpo)) ok('A tela abre o cancelamento na propria recusa')
+    else falta('A tela abre o cancelamento na propria recusa', 'a recusa tem de oferecer o caminho, nao so o texto -- e no criarParcelamento, que e quem a recebe')
+  }
   // Quem decide e o SERVIDOR: a rota devolve `nuncaComecou` e a tela obedece.
   // Este invariante pedia o contrario (a tela lendo os ids do Stripe) e foi
   // justamente esse select que fez a lista de parcelamentos desaparecer.
@@ -2192,7 +2204,7 @@ titulo('ORCAMENTOS NUM LUGAR SO: O FINANCEIRO')
   }
 
   // 4. O orcamento chega como orcamento, e o cliente o ve.
-  checar('O aviso do orcamento nao e o da fatura', 'app/api/billing/invoices/route.ts',
+  checar('O aviso do orcamento nao e o da fatura', 'lib/aviso-da-fatura.ts',
          /const t = inv\.doc_type === 'estimate' \? \(TO\[lang\] \|\| TO\.en\)/,
          'o cliente recebia "Fatura EST-... Ver e pagar" e nao achava nada no portal')
   checar('O portal lista os orcamentos enviados', 'app/api/portal/billing/route.ts',
@@ -2229,9 +2241,165 @@ titulo('ORCAMENTOS NUM LUGAR SO: O FINANCEIRO')
 }
 
 
+titulo('CONTRATO RECORRENTE NUM LUGAR SO (payment_plans)')
+// Decisao do socio: os PLANOS (ficha do cliente) e os CONTRATOS RECORRENTES
+// (Financeiro) eram dois cadastros do mesmo acordo. Os planos cobravam
+// (Stripe, webhook) e eram um valor so, mensal; os contratos tinham a regra
+// (itens, desconto, prazo, intervalo) e NUNCA cobraram -- nada lia a tabela.
+// Ficou o motor dos planos (as assinaturas ativas vivem nele) com a regra
+// dos contratos; a rotina diaria emite a fatura do contrato por fatura.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. Um cadastro so: a aba e as rotas antigas sairam, e ninguem grava na
+  //    tabela antiga (a migracao a congela; codigo que voltasse a gravar
+  //    levaria erro de permissao em producao, calado no meio de uma tela).
+  const sairam = ['components/PlansTab.tsx', 'app/api/plans/route.ts', 'app/api/plans/checkout/route.ts',
+                  'app/api/plans/pause/route.ts', 'app/api/billing/recurring/route.ts']
+  const voltaram = sairam.filter(a => existsSync(join(raiz, a)))
+  if (voltaram.length) falta('Os Planos sairam: o contrato tem um cadastro so', `voltaram: ${voltaram.join(', ')}`)
+  else ok('Os Planos sairam: o contrato tem um cadastro so')
+  const naAntiga = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]) {
+    if (/from\(\s*['"]recurring_plan(s|_items|_audit)['"]\s*\)|\/api\/plans\b|\/api\/billing\/recurring\b/.test(semComent(readFileSync(arq, 'utf8')))) naAntiga.push(rel(arq))
+  }
+  if (naAntiga.length) falta('Ninguem usa o cadastro antigo', `recurring_plans esta congelada e /api/plans saiu: ${naAntiga.join(', ')}`)
+  else ok('Ninguem usa o cadastro antigo')
+
+  // 2. A rotina diaria existe, roda todo dia e so abre com o CRON_SECRET.
+  checar('Rotina dos contratos agendada na Vercel', 'vercel.json', '/api/cron/contratos',
+         'a rota existiria e nenhuma fatura de contrato sairia -- de novo o "nunca cobrou"')
+  const cron = ler('app/api/cron/contratos/route.ts')
+  if (/if \(!process\.env\.CRON_SECRET\)/.test(cron) && /timingSafeEqual\(/.test(cron) && /emitirFaturasDosContratos\(serviceDb\(\), \{\s*hoje: dataDaFirma\(\)/.test(cron))
+    ok('Rotina dos contratos: CRON_SECRET e o dia do escritorio')
+  else falta('Rotina dos contratos: CRON_SECRET e o dia do escritorio', 'sem a variavel a rota fica aberta; em UTC, as 20h de Malden ja e amanha')
+
+  // 3. QUANDO e QUANTO e a regra pura (com teste); a rotina so executa --
+  //    e nao emite duas vezes o mesmo periodo, nem pula um.
+  const emi = ler('lib/emissao-contratos.ts')
+  {
+    const iDecide = emi.indexOf('decidirEmissao(p, ')
+    const iConfere = emi.search(/\.eq\('plan_id', p\.id\)\.eq\('competencia', d\.competencia\)/)
+    const iNumera = emi.indexOf("rpc('next_invoice_number'")
+    const problemas = []
+    if (iDecide < 0) problemas.push('nao usa decidirEmissao')
+    if (!(iConfere >= 0 && iNumera > iConfere)) problemas.push('nao confere o periodo ANTES de numerar')
+    if (!/errInv\.code === '23505'/.test(emi)) problemas.push('nao trata a corrida (23505) como ja emitida')
+    if (!/\.eq\('id', p\.id\)\.eq\('next_charge_date', de\)/.test(emi)) problemas.push('a regua anda sem a condicao do valor lido')
+    if (!/email: aviso\.email, motivo: aviso\.motivo/.test(emi)) problemas.push('o resultado do e-mail nao vai para a trilha')
+    if (/stripe/i.test(emi)) problemas.push('a rotina da FATURA fala com o Stripe -- quem cobra no debito e a assinatura')
+    problemas.length
+      ? falta('Rotina dos contratos: uma fatura por periodo, a regua anda um passo', problemas.join(' · '))
+      : ok('Rotina dos contratos: uma fatura por periodo, a regua anda um passo')
+  }
+
+  // 4. Debito e fatura sao acordos diferentes: quem tem fatura nao recebe
+  //    "vamos debitar", nao ganha assinatura, e o debito segue a regua.
+  checar('Aviso de debito pula o contrato por fatura', 'lib/billing-reminders.ts',
+         /if \(p\.collection_method === 'fatura'\) continue/,
+         'o cliente por fatura ouviria "vamos debitar" de um debito que nao existe')
+  const ck = ler('lib/plan-checkout.ts')
+  if (/plan\.kind !== 'installment' && plan\.collection_method === 'fatura'\) \{\s*throw new Error/.test(ck)
+      && /recurring: recorrenciaDoStripe\(plan\.billing_interval\)/.test(ck)
+      && /ancoraDoDebito\(normalizarDiaCobranca\(plan\.due_day\), plan\.start_date, plan\.billing_interval/.test(ck)
+      && !/recurring: \{ interval: 'month', interval_count: 1 \}/.test(ck))
+    ok('Debito: assinatura no intervalo e na regua do contrato; fatura nao vira assinatura')
+  else falta('Debito: assinatura no intervalo e na regua do contrato; fatura nao vira assinatura',
+             'o trimestral era mensal no Stripe -- cobrava o valor do trimestre TODO MES')
+  checar('Assinar o contrato por fatura nao leva ao cadastro do debito', 'app/api/portal/contract-return/route.ts',
+         /plan\.collection_method !== 'fatura' && \['draft', 'awaiting_entry', 'awaiting_setup'\]\.includes\(plan\.status\)/,
+         'o cliente que assinou um contrato por fatura cairia numa assinatura do Stripe')
+  checar('Enviar o contrato por fatura nao o poe "aguardando o debito"', 'app/api/signatures/contract/route.ts',
+         /if \(\['draft'\]\.includes\(plan\.status\) && !porFatura\)/,
+         'o portal ofereceria um debito que o contrato nao tem, e a ativacao (so de rascunho) ficaria impossivel')
+
+  // 5. O valor e o de CADA COBRANCA; a receita mensal divide pelo intervalo.
+  checar('Receita recorrente mensal divide pelo intervalo', 'lib/relatorios-financeiro.ts',
+         /mensal: valorMensalEquivalente\(p\.monthly_amount, p\.billing_interval\)/,
+         'o trimestral somado como mes triplicava o numero em que o socio decide')
+  const rel1 = ler('app/api/billing/reports/route.ts'), dash = ler('app/dashboard/page.tsx')
+  if (/select\('id, kind, status, description, monthly_amount, billing_interval/.test(rel1)
+      && /select\('id, kind, status, monthly_amount, billing_interval/.test(dash))
+    ok('Relatorio e painel leem o intervalo do contrato')
+  else falta('Relatorio e painel leem o intervalo do contrato', 'sem a coluna, valorMensalEquivalente trata tudo como mensal')
+
+  // 6. A fatura do debito diz os itens so quando a conta bate com o cobrado.
+  checar('Fatura do debito: itens so quando batem com o cobrado', 'app/api/stripe/webhook/route.ts',
+         /const detalhe = linhasDaMensalidade\(linhasDoPlano \|\| \[\], plan\.discount, valor\)/,
+         'a fatura diria um valor que nao foi o debitado')
+
+  // 7. Editar: a trilha ANTES, o Stripe ANTES de gravar, e o valor e derivado
+  //    no banco (salvar_itens_do_plano) -- nunca escrito a parte.
+  const rota = ler('app/api/billing/contratos/route.ts')
+  {
+    const i = rota.indexOf('const pode = decidirEdicao(plano)')
+    const ed = i >= 0 ? rota.slice(i) : ''
+    const problemas = []
+    if (!ed) problemas.push('trecho de edicao nao encontrado -- ancora perdida e FALHA')
+    else {
+      const iT = ed.indexOf("trilha(db, plano, 'edited'"), iS = ed.indexOf('stripe.subscriptions.update(sub.id'), iG = ed.indexOf('gravarItens(db, plano.id')
+      if (!(iT >= 0 && iS > iT && iG > iS)) problemas.push('a ordem nao e trilha -> Stripe -> gravar')
+      if (/monthly_amount:/.test(ed)) problemas.push('a edicao escreve monthly_amount a parte das linhas')
+      // Na chamada que MUDA o preco, nao em qualquer lugar do trecho: a
+      // reversao (se gravar falhar) tem o mesmo texto, e a primeira versao
+      // desta conferencia passava com o proporcional de volta na mudanca.
+      if (!(iS >= 0 && ed.slice(iS, iS + 400).includes("proration_behavior: 'none'")))
+        problemas.push('o preco novo cobraria proporcional')
+    }
+    if (!/rpc\('salvar_itens_do_plano'/.test(rota)) problemas.push('as linhas nao passam pela funcao do banco')
+    if (!/Intervalo, dia e forma de cobrar não mudam/.test(rota)) problemas.push('intervalo e forma viraram editaveis')
+    if (!/O Stripe não cancelou a assinatura — o contrato continua ativo/.test(rota)) problemas.push('encerrar engole a recusa do Stripe')
+    problemas.length
+      ? falta('Contrato: editar e encerrar com trilha antes e Stripe primeiro', problemas.join(' · '))
+      : ok('Contrato: editar e encerrar com trilha antes e Stripe primeiro')
+  }
+
+  // 8. Quem chama nao e QUAL cliente: o escopo por tipo em todo verbo.
+  {
+    const inst = ler('app/api/billing/installment-plan/route.ts'), sig = ler('app/api/signatures/contract/route.ts')
+    const problemas = []
+    if (!/const visiveis = \(planos \|\| \[\]\)\.filter\(\(p: any\) => !escopo\.ocultos\.has\(p\.client_id\)\)/.test(rota)) problemas.push('contratos: a lista nao filtra')
+    if (!/canAccessClient\(auth, b\.clientId\)/.test(rota) || !/canAccessClient\(auth, plano\.client_id\)/.test(rota)) problemas.push('contratos: POST ou PATCH sem o dono')
+    if (!/clientesOcultos\(auth\)/.test(inst) || !/canAccessClient\(auth, inv\.client_id\)/.test(inst) || !/canAccessClient\(auth, plano\.client_id\)/.test(inst)) problemas.push('parcelamentos: lista, criar ou cancelar sem o escopo')
+    if ((sig.match(/canAccessClient\(auth, plan\.client_id\)/g) || []).length < 2) problemas.push('contrato do DocuSign: previa ou envio sem o dono')
+    problemas.length
+      ? falta('Contrato e parcelamento obedecem ao escopo por tipo', problemas.join(' · '))
+      : ok('Contrato e parcelamento obedecem ao escopo por tipo (lista, criar, mexer, DocuSign)')
+  }
+
+  // 9. O contrato que vai ao DocuSign escapa o que vem da URL e do banco: o
+  //    `title` da previa vinha da querystring direto para o HTML.
+  const ch = ler('lib/contract-html.ts')
+  if (/const signerTitle = params\.signerTitle \? esc\(params\.signerTitle\) : null/.test(ch)
+      && /esc\(client\.email\)/.test(ch) && !/\$\{client\.(name|email|business_name)\}/.test(ch))
+    ok('Contrato em HTML escapa a URL e o banco')
+  else falta('Contrato em HTML escapa a URL e o banco', 'um link com <script> no cargo rodaria na sessao do socio')
+
+  // 10. O parcelamento antigo (sem fatura) so se desiste como PROPOSTA depois
+  //     de perguntar ao Stripe. Ate 10/2026 o agendamento travava depois da
+  //     entrada paga, e o plano ficava com cara de proposta: desistir dizia
+  //     ao cliente que nada foi cobrado.
+  {
+    const ip = ler('app/api/billing/installment-plan/route.ts')
+    const i = ip.indexOf('async function desistirDaPropostaAntiga(')
+    const corpo = i >= 0 ? ip.slice(i, ip.indexOf('\n}\n', i)) : ''
+    const iConf = corpo.indexOf('entrada = await entradaNoStripe(plano)'), iCanc = corpo.indexOf("status: 'cancelled'")
+    if (!corpo) falta('Proposta antiga so se desiste depois de perguntar ao Stripe', 'desistirDaPropostaAntiga nao encontrada -- ancora perdida e FALHA')
+    else if (!(iConf >= 0 && iCanc > iConf) || !/entry_paid_at: quando\.toISOString\(\)/.test(corpo)
+             || !/const pago = entrada\.integra\s*\n/.test(corpo) || !/avisarNoPortal\(db, plano\.client_id, entradaVoltou\s*\?/.test(corpo))
+      falta('Proposta antiga so se desiste depois de perguntar ao Stripe',
+            'a entrada paga no Stripe nao e conferida (ou nao fica registrada) antes de desistir: o cliente ouviria que nada foi cobrado')
+    else ok('Proposta antiga so se desiste depois de perguntar ao Stripe')
+  }
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
+// Resolvidas: Plans x recurring_plans (sql/contrato-unico-v1.sql), Quotes x
+// estimates (orcamentos no Financeiro), staff_roles x team_members
+// (sql/equipe-unica-v1.sql). Duplicacao nova entra aqui com o arquivo que a denuncia.
 for (const d of [
-  ['Contratos: modulo Plans x recurring_plans', 'components/PlansTab.tsx'],
 ]) if (existsSync(join(raiz, d[1]))) ver(d[0])
 
 titulo('MENU DUPLICADO EM QUANTOS LAYOUTS')

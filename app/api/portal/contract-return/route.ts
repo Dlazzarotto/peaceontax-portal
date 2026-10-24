@@ -60,7 +60,8 @@ export async function GET(req: NextRequest) {
     if (sr.plan_id && process.env.STRIPE_SECRET_KEY) {
       const { data: plan } = await db.from('payment_plans')
         .select('*, clients(name, email, language)').eq('id', sr.plan_id).maybeSingle()
-      if (plan && ['draft', 'awaiting_entry', 'awaiting_setup'].includes(plan.status)) {
+      // Contrato por fatura não tem débito a cadastrar: volta para Pagamentos.
+      if (plan && plan.collection_method !== 'fatura' && ['draft', 'awaiting_entry', 'awaiting_setup'].includes(plan.status)) {
         const { url } = await criarSessaoDoPlano(db, stripeClient(), plan, { origem: 'cliente', performedBy: auth.userId })
         return NextResponse.redirect(url, 302)
       }

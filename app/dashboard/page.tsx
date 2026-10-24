@@ -76,7 +76,7 @@ export default async function DashboardPage() {
       .gte('starts_at', inicioDoDiaET(hoje)).lt('starts_at', inicioDoDiaET(amanha(hoje)))
       .order('starts_at'),
     ehSocio
-      ? sb.from('payment_plans').select('id, kind, status, monthly_amount, installments, installment_amount, paid_installments, clients(name, business_name)')
+      ? sb.from('payment_plans').select('id, kind, status, monthly_amount, billing_interval, installments, installment_amount, paid_installments, clients(name, business_name)')
           .in('status', ['active', 'paused', 'payment_failed', 'awaiting_entry', 'awaiting_setup', 'awaiting_signature'])
       : sb.from('payment_plans').select('id, status')
           .in('status', ['awaiting_entry', 'awaiting_setup', 'awaiting_signature']),
