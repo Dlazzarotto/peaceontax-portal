@@ -28,23 +28,32 @@
 // dinheiro automaticamente. Nada a ver com valor parcial.
 //
 // Fatura com cobrança automática no Stripe (mensalidade ou parcelamento):
-// o recebimento manual (Zelle, dinheiro…) tem de TIRAR a fatura da linha de
-// cobrança, senão o Stripe cobra de novo. Por isso ele só é aceito em três
-// formas, todas fechadas:
+// o recebimento manual (Zelle, dinheiro…) tem de TIRAR a cobrança da linha,
+// senão o Stripe cobra de novo. Por isso ele só é aceito em três formas,
+// todas fechadas (a decisão é `decidirRecebimentoManual`, em
+// lib/parcelamento.ts, com teste):
 //   1. mensalidade: o saldo inteiro → a invoice do Stripe é marcada como
 //      paga fora dele e o débito para;
-//   2. parcelamento: o valor exato de uma parcela cujo débito FALHOU (NSF)
-//      → a parcela é liquidada e a invoice dela sai da linha;
+//   2. parcelamento: o valor EXATO da PRÓXIMA parcela em aberto — tenha o
+//      débito dela falhado (NSF) ou ainda nem acontecido → a parcela é
+//      liquidada e o Stripe passa a cobrar UMA A MENOS: a invoice dela, se
+//      já existe, sai da linha; se ainda não existe, a cobrança que sobrar
+//      no fim do cronograma é anulada pelo webhook (`invoice.finalized` sem
+//      parcela em aberto → void). Antes só a parcela que FALHOU entrava, e
+//      o cliente que pagava a parcela em cash antes do débito ficava sem
+//      baixa — o caso que o sócio trouxe;
 //   3. parcelamento: o saldo inteiro → quitação antecipada: cancela o débito,
 //      liquida as parcelas restantes e conclui o plano.
-// Parcela avulsa que o Stripe ainda vai cobrar não se recebe à mão.
+// Valor PARCIAL de uma parcela não entra: o Stripe debitaria a parcela
+// inteira e o cliente pagaria duas vezes.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import Stripe from 'stripe'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
-import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
+import { parcelamentoVivo, encerrarParcelamento, proximaParcelaAberta, decidirRecebimentoManual } from '@/lib/parcelamento'
+import { recontarParcelas } from '@/lib/parcela-stripe'
 import { achEmTransito, diasEmTransito, avisoDeBaixaComAchEmTransito, limparAchEmTransito } from '@/lib/ach-transito'
 import { exigeAprovacao, podeAprovar, notaDaAprovacao, AVISO } from '@/lib/recebimento-aprovacao'
 import { getStaffLevel } from '@/lib/staff-perms'
@@ -64,13 +73,17 @@ export async function GET(req: NextRequest) {
   if (!invoiceId) return NextResponse.json({ error: 'invoiceId obrigatório' }, { status: 400 })
 
   const db = serviceDb()
-  const [{ data, error }, { data: inv, error: errInv }, { data: falhas, error: errFalhas }] = await Promise.all([
+  const [{ data, error }, { data: inv, error: errInv }, { data: falhas, error: errFalhas }, plano] = await Promise.all([
     db.from('invoice_payments')
       .select('id, amount, method, reference, received_at, stripe_object')
       .eq('invoice_id', invoiceId).order('received_at', { ascending: false }),
     db.from('invoices').select('stripe_invoice, status, total, paid_total').eq('id', invoiceId).maybeSingle(),
     db.from('invoice_installments').select('seq, amount, last_error, attempts')
       .eq('invoice_id', invoiceId).eq('status', 'failed').order('seq'),
+    // Parcelamento vivo: é ELE (e não a stripe_invoice da fatura) que diz
+    // "cobrança automática" num parcelamento — as invoices do Stripe ficam
+    // nas PARCELAS. Tela e trava decidem pela mesma pergunta.
+    parcelamentoVivo(db, invoiceId),
   ])
   if (error)     return NextResponse.json({ error: error.message }, { status: 500 })
   // Sem a fatura, `aberta` sairia false e a tela esconderia "cobrar de novo"
@@ -78,11 +91,31 @@ export async function GET(req: NextRequest) {
   if (errInv)    return NextResponse.json({ error: `Fatura: ${errInv.message}` }, { status: 500 })
   if (errFalhas) return NextResponse.json({ error: `Parcelas: ${errFalhas.message}` }, { status: 500 })
 
+  // A próxima parcela em aberto: é ela que o recebimento manual liquida.
+  // Antes a tela só sabia da parcela FALHADA e dizia "só o saldo inteiro"
+  // para um parcelamento normal — e a rota recusava a parcela. Tela e trava
+  // discordavam, e a pessoa ficava sem opção de dar baixa.
+  let proxima: any = null
+  let parcelas: { total: number; pagas: number } | null = null
+  if (plano) {
+    try { proxima = await proximaParcelaAberta(db, invoiceId) }
+    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 500 }) }
+    const { count, error: errPagas } = await db.from('invoice_installments')
+      .select('seq', { count: 'exact', head: true }).eq('invoice_id', invoiceId).eq('status', 'paid')
+    if (errPagas) return NextResponse.json({ error: `Parcelas pagas: ${errPagas.message}` }, { status: 500 })
+    parcelas = { total: Number(plano.installments || 0), pagas: count ?? 0 }
+  }
+
   // Situação da cobrança automática, para a tela mostrar o que pode ser feito
   const aberta = !!inv && !['paid', 'void', 'draft'].includes(inv.status)
   const cobranca = {
-    automatica: !!inv?.stripe_invoice || (falhas || []).length > 0,
+    automatica: !!inv?.stripe_invoice || (falhas || []).length > 0 || !!plano,
+    parcelado: !!plano,
     falhas: (falhas || []).map((f: any) => ({ seq: f.seq, valor: Number(f.amount), motivo: f.last_error, tentativas: f.attempts })),
+    proxima: proxima
+      ? { seq: proxima.seq, valor: Number(proxima.amount), status: proxima.status, noStripe: !!proxima.stripe_invoice }
+      : null,
+    parcelas,
     podeCobrarDeNovo: aberta && (!!inv?.stripe_invoice || (falhas || []).length > 0),
   }
   return NextResponse.json({ payments: data || [], perms, cobranca })
@@ -227,24 +260,20 @@ export async function POST(req: NextRequest) {
   // mesma fatura davam erro e a fatura passava como se não tivesse nenhum)
   const plano = await parcelamentoVivo(db, inv.id)
 
-  // Parcela cujo débito falhou (a mais antiga): pode ser recebida por fora
-  let parcelaFalha: any = null
+  // O que o recebimento manual pode fazer neste parcelamento — a decisão é
+  // pura (lib/parcelamento.ts, com teste); aqui só se busca a próxima parcela
+  // em aberto, que é a que ele liquida. É a MESMA parcela que o GET mandou
+  // para a tela: botão e trava não podem discordar.
+  let proxima: any = null
+  let decisao: ReturnType<typeof decidirRecebimentoManual> | null = null
   if (plano) {
-    const { data: f } = await db.from('invoice_installments')
-      .select('id, seq, amount, stripe_invoice').eq('invoice_id', inv.id).eq('status', 'failed')
-      .order('seq').limit(1).maybeSingle()
-    parcelaFalha = f || null
+    try { proxima = await proximaParcelaAberta(db, inv.id) }
+    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 500 }) }
+    decisao = decidirRecebimentoManual({ saldo, valor, proxima, totalParcelas: Number(plano.installments || 0) })
+    if (decisao.tipo === 'recusa') return NextResponse.json({ error: decisao.motivo }, { status: 409 })
   }
-
-  const quitacao = !!plano && iguais(valor, saldo)
-  const parcelaPorFora = !!plano && !quitacao && !!parcelaFalha && iguais(valor, Number(parcelaFalha.amount))
-  if (plano && !quitacao && !parcelaPorFora) {
-    return NextResponse.json({
-      error: parcelaFalha
-        ? `Fatura parcelada com débito automático. Recebimento manual só da parcela ${parcelaFalha.seq} que falhou ($${Number(parcelaFalha.amount).toFixed(2)}) ou do saldo inteiro ($${saldo.toFixed(2)}, quitação antecipada).`
-        : `Fatura parcelada com débito automático. Recebimento manual só para quitar o saldo inteiro ($${saldo.toFixed(2)}) — a quitação antecipada encerra o débito. Parcela que o Stripe ainda vai cobrar não se recebe à mão.`,
-    }, { status: 409 })
-  }
+  const quitacao = decisao?.tipo === 'quitacao'
+  const parcelaPorFora = decisao?.tipo === 'parcela'
   if (!plano && stripeMensal && !iguais(valor, saldo)) {
     return NextResponse.json({
       error: `Esta fatura de mensalidade está na cobrança automática do Stripe. Recebimento manual só do saldo inteiro ($${saldo.toFixed(2)}): assim ela sai da linha de cobrança e o débito não acontece.`,
@@ -393,7 +422,7 @@ export async function POST(req: NextRequest) {
       { motivo: 'quitacao', performedBy: auth.userId })
     notaQuitacao = r.nota
   }
-  else if (plano && parcelaPorFora) notaQuitacao = await liquidarParcelaPorFora(db, plano, parcelaFalha, auth.userId)
+  else if (plano && parcelaPorFora) notaQuitacao = await liquidarParcelaPorFora(db, plano, proxima, inv.id, auth.userId)
   else if (!plano && stripeMensal) notaQuitacao = await tirarDaLinha(stripeMensal)
     ? ' · saiu da linha de cobrança do Stripe'
     : ' · ATENÇÃO: não consegui avisar o Stripe — marque a invoice como paga fora dele no painel, senão o débito acontece'
@@ -416,23 +445,40 @@ async function tirarDaLinha(stripeInvoice: string): Promise<boolean> {
 }
 
 /**
- * Parcela que falhou (NSF) recebida por fora: liquida a parcela, tira a
- * invoice dela da linha do Stripe e conta a parcela no plano. Se era a
- * última, o plano conclui.
+ * Parcela recebida por fora (Zelle, dinheiro, cheque): liquida a parcela e
+ * faz o Stripe cobrar UMA A MENOS.
+ *
+ * Dois estados possíveis da parcela:
+ *   · já tem invoice no Stripe (falhou, ou foi finalizada e o débito ainda
+ *     não aconteceu) → a invoice é marcada como paga fora dele e sai da linha;
+ *   · ainda NÃO tem invoice (o ciclo dela não chegou) → nada a fazer no Stripe
+ *     agora. A régua segue, cada invoice nova amarra na próxima parcela em
+ *     aberto, e a que sobrar no fim não encontra parcela nenhuma — o webhook
+ *     anula essa (`invoice.finalized` → void). É isso que faz "uma a menos".
+ *
+ * `paid_installments` é RECONTADO do cronograma, nunca incrementado (a regra
+ * de lib/parcela-stripe.ts: o contador errava assim que a ordem mudava). Se
+ * era a última, a régua no Stripe é cancelada. O plano só muda de situação
+ * quando a liquidação diz algo: `payment_failed` volta a `active`; `awaiting_*`
+ * (cliente que nunca cadastrou o débito) fica como está — pagar em cash não
+ * é cadastrar cartão.
  */
-async function liquidarParcelaPorFora(db: any, plano: any, parcela: any, userId: string): Promise<string> {
+async function liquidarParcelaPorFora(db: any, plano: any, parcela: any, invoiceId: string, userId: string): Promise<string> {
   const agora = new Date().toISOString()
+  const antecipada = !parcela.stripe_invoice
   await db.from('invoice_installments').update({ status: 'paid', paid_at: agora }).eq('id', parcela.id)
-  const pagas = Number(plano.paid_installments || 0) + 1
+  // parcelamentoVivo não traz invoice_id; sem ele a recontagem cai no
+  // contador velho — por isso a fatura vem explícita.
+  const pagas = await recontarParcelas(db, { ...plano, invoice_id: invoiceId })
   const concluiu = pagas >= Number(plano.installments)
   await db.from('payment_plans').update({
     paid_installments: pagas,
-    status: concluiu ? 'completed' : 'active',
+    status: concluiu ? 'completed' : (plano.status === 'payment_failed' ? 'active' : plano.status),
     updated_at: agora,
   }).eq('id', plano.id)
   await db.from('plan_audit').insert({
     plan_id: plano.id, action: 'installment_paid_out_of_band', performed_by: userId,
-    snapshot: { parcela: parcela.seq, stripe_invoice: parcela.stripe_invoice || null },
+    snapshot: { parcela: parcela.seq, stripe_invoice: parcela.stripe_invoice || null, antecipada, pagas },
   }).then(() => null, () => null)
 
   let stripeOk = true
@@ -444,7 +490,7 @@ async function liquidarParcelaPorFora(db: any, plano: any, parcela: any, userId:
     } catch (e) { stripeOk = false; console.error('encerrar plano:', (e as Error).message) }
   }
   return (stripeOk
-    ? ` · parcela ${parcela.seq}/${plano.installments} liquidada por fora; saiu da linha de cobrança`
+    ? ` · parcela ${parcela.seq}/${plano.installments} liquidada por fora${antecipada ? '; o Stripe vai cobrar uma a menos' : '; saiu da linha de cobrança'}`
     : ` · parcela ${parcela.seq}/${plano.installments} liquidada, MAS o Stripe não foi avisado — marque a invoice como paga fora dele no painel`)
     + (concluiu ? ' · parcelamento concluído' : '')
 }

@@ -177,7 +177,14 @@ export default function BillingPage() {
 
   // recebimento
   const [receber, setReceber] = useState<Inv | null>(null)
-  const [cobranca, setCobranca] = useState<{ automatica: boolean; falhas: { seq: number; valor: number; motivo: string | null; tentativas: number }[]; podeCobrarDeNovo: boolean } | null>(null)
+  const [cobranca, setCobranca] = useState<{
+    automatica: boolean; parcelado?: boolean
+    falhas: { seq: number; valor: number; motivo: string | null; tentativas: number }[]
+    // A próxima parcela em aberto — a MESMA que a rota aceita (lib/parcelamento.ts).
+    proxima?: { seq: number; valor: number; status: string; noStripe: boolean } | null
+    parcelas?: { total: number; pagas: number } | null
+    podeCobrarDeNovo: boolean
+  } | null>(null)
   const [rValor, setRValor] = useState('')
   const [rForma, setRForma] = useState('zelle')
   const [rRef, setRRef] = useState('')
@@ -1819,7 +1826,19 @@ export default function BillingPage() {
             {cobranca?.automatica ? (
               <div style={{ background: '#FFF7E6', border: '1px solid #E0A860', borderRadius: 10, padding: '10px 13px', marginBottom: 10, fontSize: 12.5, color: '#5A3A00', lineHeight: 1.5 }}>
                 <b>Cobrança automática pelo Stripe.</b>{' '}
-                {cobranca.falhas.length > 0
+                {cobranca.proxima ? (
+                  // Parcelamento: a parcela que a rota aceita é esta — o botão
+                  // preenche o valor exato, e o Stripe passa a cobrar uma a menos.
+                  <>
+                    Recebimento manual: a <b>parcela {cobranca.proxima.seq}{cobranca.parcelas ? `/${cobranca.parcelas.total}` : ''}</b>{' '}
+                    ({money(cobranca.proxima.valor)}{cobranca.proxima.status === 'failed' ? ', cujo débito falhou' : ''}) ou o{' '}
+                    <b>saldo inteiro</b> ({money(receber.saldo)}, quitação antecipada). Pagando a parcela, o Stripe cobra uma a menos.
+                    <button type="button" onClick={() => setRValor(String(cobranca.proxima!.valor))}
+                      style={{ display: 'block', marginTop: 8, background: '#fff', color: '#1a6b4a', border: '1.5px solid #1a6b4a', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                      Receber a parcela {cobranca.proxima.seq} — {money(cobranca.proxima.valor)}
+                    </button>
+                  </>
+                ) : cobranca.falhas.length > 0
                   ? <>Débito da parcela {cobranca.falhas[0].seq} falhou ({cobranca.falhas[0].motivo || 'recusado'}, {cobranca.falhas[0].tentativas} tentativa(s)). Receba por fora o valor exato da parcela ({money(cobranca.falhas[0].valor)}) ou o saldo inteiro — a fatura sai da linha de cobrança.</>
                   : <>Recebimento manual só do saldo inteiro: assim a fatura sai da linha de cobrança e o débito não acontece.</>}
                 {cobranca.podeCobrarDeNovo && perms?.receber && (
