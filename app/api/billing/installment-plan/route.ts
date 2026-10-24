@@ -39,7 +39,7 @@ import { dataDaFirma } from '@/lib/dia-da-firma'
 import { fmtUS } from '@/lib/format'
 import {
   agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, sessoesDoPlano, metodoDoTipo,
-  type PagamentoDaSessao,
+  entradaIntegra, entradaQueVoltou, type PagamentoDaSessao,
 } from '@/lib/agendamento-parcelas'
 import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
@@ -419,9 +419,18 @@ export async function PATCH(req: NextRequest) {
   // agendamento que TRAVOU depois de a entrada ser paga: aí o dinheiro está
   // no Stripe e fora da fatura. Cancelar "como proposta" diria ao cliente que
   // nada foi cobrado e deixaria o saldo errado. Confere no Stripe e, se a
-  // entrada entrou, lança antes de cancelar.
+  // entrada entrou, lança antes de cancelar. A que VOLTOU (devolvida ou
+  // contestada) não se lança — não está com a firma —, mas também não deixa
+  // o plano com cara de proposta: o cliente pagou e viu o dinheiro voltar.
+  let entradaVoltou: PagamentoDaSessao | null = null
   if (planoNuncaComecou(plano) && Number(plano.entry_amount || 0) > 0 && plano.stripe_customer_id && process.env.STRIPE_SECRET_KEY) {
-    const pago = await entradaPagaNoStripe(plano)
+    let entrada: { integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }
+    try { entrada = await entradaNoStripe(plano) } catch (e) {
+      // Consulta que falha não é "não pagou".
+      return NextResponse.json({ error: `Não deu para conferir no Stripe se a entrada foi paga: ${(e as Error).message}. Nada foi cancelado.` }, { status: 502 })
+    }
+    entradaVoltou = entrada.integra ? null : entrada.voltou
+    const pago = entrada.integra
     if (pago) {
       const r = await lancarRecebimentoStripe(db, {
         invoiceId: plano.invoice_id, clientId: plano.client_id, valor: round2(Number(plano.entry_amount)),
@@ -437,7 +446,7 @@ export async function PATCH(req: NextRequest) {
 
   // Lido ANTES de encerrar: é o estado em que o plano estava quando a
   // decisão foi tomada, e é isso que a trilha tem de guardar.
-  const nuncaComecou = planoNuncaComecou(plano)
+  const nuncaComecou = planoNuncaComecou(plano) && !entradaVoltou
 
   const r = await encerrarParcelamento(db, stripeClient(), plano, plano.invoice_id, {
     motivo: 'plano_cancelado', performedBy: auth.userId, razao: motivo,
@@ -452,7 +461,9 @@ export async function PATCH(req: NextRequest) {
     invoice_id: inv.id, action: 'installment_plan_cancelled', performed_by: auth.userId,
     staff_level: perms.nivel, reason: motivo,
     next: { planId: plano.id, saldoEmAberto: saldo, nuncaComecou,
-            stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas },
+            stripeOk: r.stripeOk, parcelasFechadas: r.parcelasFechadas,
+            ...(entradaVoltou ? { entradaQueVoltou: { sessao: entradaVoltou.sessao, valor: entradaVoltou.valor,
+                                                       devolvido: entradaVoltou.devolvido, contestado: entradaVoltou.contestado } } : {}) },
   }).then(() => null, () => null)
 
   // O cliente tinha um acordo e o débito automático dele. Se o acordo acabou,
@@ -493,7 +504,10 @@ export async function PATCH(req: NextRequest) {
     message: nuncaComecou
       ? `Proposta de parcelamento de ${inv.number} encerrada — nada havia sido cobrado. ` +
         `Saldo em aberto: $${saldo.toFixed(2)}. Pode criar o novo acordo.`
-      : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`,
+      : `Parcelamento de ${inv.number} cancelado. Saldo em aberto: $${saldo.toFixed(2)}.${r.nota}`
+        + (entradaVoltou ? ` A entrada paga no Stripe foi ${entradaVoltou.contestado ? 'CONTESTADA' : 'DEVOLVIDA'} e não entrou na fatura.`
+          + (entradaVoltou.contestado || entradaVoltou.devolvido < entradaVoltou.valor - 0.004
+            ? ' Parte dela pode ter ficado com a firma: confira no painel do Stripe e, se for o caso, lance à mão.' : '') : ''),
     // O cliente tinha um acordo e um debito automatico: ele PRECISA saber.
     // Se o e-mail nao saiu, quem cancelou tem de ver o motivo na hora.
     email: emailCancelamento.ok,
@@ -594,10 +608,15 @@ async function oQueOClienteFez(plano: any): Promise<PagamentoDaSessao[]> {
   return Promise.all(sessoes.map(s => pagamentoDaSessao(stripe, s)))
 }
 
-/** A entrada deste plano que entrou de fato no Stripe, se houver. */
-async function entradaPagaNoStripe(plano: any): Promise<PagamentoDaSessao | null> {
+/**
+ * A entrada deste plano no Stripe: a que está com a firma (`integra`) e, à
+ * parte, a que foi paga e VOLTOU — devolvida, no todo ou em parte, ou
+ * contestada. O status da sessão continua 'paid' depois do reembolso: quem
+ * diz é a cobrança (lib/agendamento-parcelas.ts).
+ */
+async function entradaNoStripe(plano: any): Promise<{ integra: PagamentoDaSessao | null; voltou: PagamentoDaSessao | null }> {
   const feitos = await oQueOClienteFez(plano)
-  return feitos.find(f => f.modo === 'payment' && f.concluido) || null
+  return { integra: feitos.find(entradaIntegra) || null, voltou: feitos.find(entradaQueVoltou) || null }
 }
 
 /**
@@ -644,8 +663,10 @@ async function agendarParcelamentoTravado(auth: { userId: string; isStaff: boole
   }
   // Enquanto travava, o portal seguia oferecendo "pagar a entrada": o cliente
   // pode ter pago mais de uma vez. Só UMA é a entrada — a que já estiver no
-  // livro, se alguma estiver; as outras são estorno.
-  const entradasPagas = feitos.filter(f => f.modo === 'payment' && f.concluido && f.paymentMethod)
+  // livro, se alguma estiver; as outras são estorno. E só conta a que está
+  // com a firma: a devolvida ou contestada no Stripe não é entrada (lançá-la
+  // seria receita que não existe, e agendar cobraria um acordo desfeito).
+  const entradasPagas = feitos.filter(f => entradaIntegra(f) && f.paymentMethod)
   let jaNoLivro: PagamentoDaSessao | null = null
   if (comEntrada && plano.invoice_id) {
     for (const f of entradasPagas) {
@@ -662,9 +683,12 @@ async function agendarParcelamentoTravado(auth: { userId: string; isStaff: boole
   const aMais = comEntrada ? entradasPagas.filter(f => f !== feito) : []
   if (!feito) {
     const processando = feitos.some(f => f.emProcessamento)
+    const voltou = comEntrada ? feitos.find(entradaQueVoltou) : undefined
     return NextResponse.json({
       error: processando
         ? 'A entrada por débito em conta ainda está sendo confirmada pelo banco (o ACH leva até 4 dias úteis). Quando o banco confirmar, o sistema agenda sozinho.'
+        : voltou
+          ? `A entrada foi paga e depois ${voltou.contestado ? 'CONTESTADA' : `DEVOLVIDA ($${voltou.devolvido.toFixed(2)} de $${voltou.valor.toFixed(2)})`} no Stripe: não há entrada com a firma, e agendar cobraria as parcelas de um acordo desfeito. Cancele este parcelamento e, se for o caso, faça outro acordo.`
         : comEntrada
           ? 'O cliente ainda NÃO pagou a entrada: não há pagamento deste parcelamento no Stripe.'
           : 'O cliente ainda NÃO autorizou o débito: não há cadastro deste parcelamento no Stripe.',
