@@ -588,6 +588,20 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   A migração termina listando o que ainda responde ao navegador — as tabelas
   de faturamento nasceram no painel e não dá para conferi-las pelo
   repositório.
+  **E o navegador não lê tabela direto — conferido arquivo a arquivo.** A
+  `sql/rls-tabelas-expostas-v3.sql` (as 40 tabelas nascidas no painel) dizia
+  ter conferido "zero `.from()` em client component", e havia dois: a página
+  pública **`/agendar`** lia `meeting_types` com a anon key e a agenda da
+  equipe lia e gravava `staff_availability` com a sessão. Fechar as tabelas
+  tiraria as duas do ar — o cliente não conseguiria agendar. Foram para
+  `/api/agenda/tipos` (pública, em `API_PUBLIC`) e `/api/agenda/disponibilidade`
+  (só a equipe, só as próprias linhas); a leitura que falhava virava "nenhum
+  horário" e salvar dali apagava os horários, e salvar era apagar e inserir em
+  duas idas — agora a inserção que falha devolve as linhas que estavam lá. A
+  auditoria recusa `.from('tabela')` em arquivo `"use client"` ou que crie
+  cliente de navegador (`Array.from`, `storage.from` e `Buffer.from` ficam
+  fora), e **âncora perdida é FALHA**. **A v3 roda DEPOIS do deploy deste
+  código**, nunca antes.
 - **Webhooks validam assinatura**: Stripe com `constructEvent`, Twilio com
   `X-Twilio-Signature` (WhatsApp em `app/api/whatsapp/webhook`, SMS em
   `app/api/sms/webhook`). Webhook nunca devolve erro à Twilio (reenvio duplica).

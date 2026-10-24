@@ -1,10 +1,11 @@
 "use client";
 // Página pública de agendamento — peaceontax-portal.vercel.app/agendar
 // Liberada no middleware (lista PUBLIC). Prospects agendam sem conta;
-// os tipos de reunião vêm direto do Supabase (política de leitura pública).
+// os tipos de reunião vêm de /api/agenda/tipos (servidor). Liam-se direto da
+// tabela com a anon key, e fechar as tabelas do painel ao navegador tiraria
+// a lista desta página.
 
 import { useEffect, useState } from "react";
-import { createBrowserClient } from "@supabase/ssr";
 import BookingWidget from "@/components/agenda/BookingWidget";
 
 interface MeetingType {
@@ -20,18 +21,13 @@ export default function AgendarPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const sb = createBrowserClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
-    sb.from("meeting_types")
-      .select("id,name,description,duration_min,mode")
-      .eq("active", true)
-      .order("name")
-      .then(({ data, error }) => {
-        if (error) setError(error.message);
-        else setTypes(data ?? []);
-      });
+    fetch("/api/agenda/tipos")
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) setError(json.error || `Erro ${res.status}`);
+        else setTypes(json.types ?? []);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Sem conexão"));
   }, []);
 
   return (

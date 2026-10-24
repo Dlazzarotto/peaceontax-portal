@@ -579,6 +579,7 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
   const ABERTAS = [
     'app/api/agenda/slots/route.ts',
     'app/api/agenda/bookings/route.ts',
+    'app/api/agenda/tipos/route.ts',
     'app/api/invite/[token]/route.ts',
     'app/api/firm/setup/[token]/route.ts',
     'app/api/auth/logout/route.ts',
@@ -638,6 +639,38 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
     falta('Cada verbo de cada rota confere quem chama', `sem conferencia no proprio verbo: ${verbosSoltos.join(', ')}`)
   else
     ok(`Cada verbo de cada rota confere quem chama (${verbosVistos} verbos)`)
+}
+
+titulo('O NAVEGADOR NAO LE TABELA DIRETO')
+// Quem trabalha as tabelas e o servidor, com a service role; o navegador vai
+// por rota de /api. sql/rls-tabelas-expostas-v3.sql dizia ter conferido
+// "zero .from() em client component" -- e havia dois: a pagina publica
+// /agendar lia meeting_types com a anon key, e a agenda da equipe lia e
+// gravava staff_availability com a sessao. Fechar as tabelas tiraria as duas
+// telas do ar. Esta conferencia e a que faltava: todo arquivo do navegador
+// ("use client", ou que cria cliente de navegador) sem consulta a tabela.
+// Array.from, storage.from (arquivo, nao tabela) e Buffer.from ficam fora.
+{
+  const semComent = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const doNavegador = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.tsx', '.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.tsx', '.ts']),
+                     ...arquivos(join(raiz, 'lib'), ['.tsx', '.ts'])]) {
+    const bruto = readFileSync(arq, 'utf8'), cod = semComent(bruto)
+    if (/^\s*['"]use client['"]/.test(bruto) || /createBrowserClient\(|supabaseBrowser\(/.test(cod)) doNavegador.push([arq, cod])
+  }
+  const diretos = []
+  for (const [arq, cod] of doNavegador) {
+    const achados = [...cod.matchAll(/(\w+|\))\s*\.from\(\s*['"`](\w+)/g)]
+      .filter(m => !['Array', 'storage', 'Buffer'].includes(m[1]))
+    if (achados.length) diretos.push(`${rel(arq)} (${[...new Set(achados.map(m => m[2]))].join(', ')})`)
+  }
+  if (!doNavegador.length)
+    falta('O navegador nao le tabela direto', 'nenhum arquivo do navegador encontrado -- ancora perdida e FALHA')
+  else if (diretos.length)
+    falta('O navegador nao le tabela direto',
+      `${diretos.join(' · ')} -- va por rota de /api; fechar as tabelas (rls-tabelas-expostas-v3) tiraria a tela do ar`)
+  else ok(`O navegador nao le tabela direto (${doNavegador.length} arquivos do navegador)`)
 }
 
 titulo('EXCEDENTE DE TRANSACOES: SO CONTA, E COM A FRANQUIA MENSAL')
