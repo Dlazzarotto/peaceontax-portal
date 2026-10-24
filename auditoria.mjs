@@ -103,6 +103,25 @@ checar('Catalogo unico', 'app/api/billing/invoices/route.ts', 'pricing_items', '
 checar('Relatorios: so o socio (verRelatorios)', 'app/api/billing/reports/route.ts', 'perms.verRelatorios', 'gerente veria os totais do negocio')
 checar('Relatorios: orcamento e rascunho fora do faturamento', 'app/api/billing/reports/route.ts', "not('status', 'in', '(draft,void)')", 'faturamento inflado por rascunho/cancelada')
 
+titulo('COBRANCA PELO STRIPE: O VALOR QUE A TELA MOSTRA E O QUE A ROTA COBRA')
+// O botao "Cobrar no cartao" mostrava o valor digitado e a chamada nao o
+// mandava; a rota cobrava o saldo inteiro, sempre -- o cliente que ia pagar
+// uma parte via o total na pagina do Stripe. Mesma classe do botao x trava:
+// cada arquivo sozinho parecia certo. Agora a tela MANDA o valor, tela e rota
+// decidem pela mesma regra pura (lib/cobranca-balcao.ts) e a sessao do Stripe
+// nasce pelo valor decidido -- nunca mais por `saldo` direto.
+checar('A tela manda o valor digitado ao gerar a cobranca', 'app/dashboard/billing/page.tsx',
+       /stripe-checkout'[\s\S]{0,400}?body:\s*JSON\.stringify\(\{[^}]*\bvalor\b/,
+       'o botao mostra um valor e a rota cobra outro')
+checar('A tela decide o valor pela mesma regra da rota', 'app/dashboard/billing/page.tsx',
+       /decidirValorDaCobranca\(/, 'previa da tela diverge da trava')
+checar('A rota decide o valor pela regra pura, com o valor pedido', 'app/api/billing/stripe-checkout/route.ts',
+       /decidirValorDaCobranca\(\{[\s\S]{0,200}?pedido:\s*body\.valor/, 'rota ignora o valor pedido')
+recusar('A sessao do Stripe nao nasce pelo saldo direto', 'app/api/billing/stripe-checkout/route.ts',
+        /unit_amount\]':\s*String\(Math\.round\(saldo \* 100\)\)/, 'cobrar o saldo inteiro era o defeito')
+checar('A sessao do Stripe nasce pelo valor decidido', 'app/api/billing/stripe-checkout/route.ts',
+       /unit_amount\]':\s*String\(Math\.round\(valor \* 100\)\)/, 'o valor decidido tem de ser o cobrado')
+
 titulo('RELATORIOS: NADA DE FORA ENTRA NO SCRIPT')
 checar('Barra: destino vai em atributo, nao dentro do script', 'lib/relatorio-barra.ts', 'data-destino=', 'parametro com </script> injetaria codigo na sessao da equipe')
 checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export function escaparHtml', 'nome de conta da URL viraria HTML')
@@ -180,7 +199,7 @@ checar('Sessao expirada tira a fatura do limbo', 'app/api/stripe/webhook/route.t
 checar('ACH parado no caminho avisa a equipe', 'lib/ach-transito.ts', 'export async function alertarAchParado', 'debito sem confirmacao ficava invisivel')
 checar('Webhook: ACH confirmado dias depois', 'app/api/stripe/webhook/route.ts', 'checkout.session.async_payment_succeeded', 'debito em conta nunca seria registrado')
 checar('Webhook: entrada por ACH so ativa com dinheiro confirmado', 'app/api/stripe/webhook/route.ts', "'entry_processing'", 'parcelamento comecaria com entrada que o banco pode devolver')
-checar('Webhook: forma real tambem na entrada', 'app/api/stripe/webhook/route.ts', 'metodoEntrada', 'entrada por ACH entraria no livro como cartao')
+checar('Webhook: forma real tambem na entrada', 'app/api/stripe/webhook/route.ts', 'metodo: metodoDoTipo(pag.tipo)', 'entrada por ACH entraria no livro como cartao')
 checar('Ancora respeita as 48h do Stripe', 'lib/plan-checkout.ts', 'ancoraDeCobranca', 'cadastro do debito falha quando o dia acordado esta perto')
 checar('Portal: fatura sabe se o plano aceita acao', 'app/api/portal/billing/route.ts', 'podeCadastrar', 'fatura parcelada ativa mostraria botao Pagar que a rota recusa')
 checar('Fatura enviada avisa o cliente', 'app/api/billing/invoices/route.ts', 'avisarClienteDaFatura', 'cliente nao saberia que tem fatura')
@@ -379,6 +398,7 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
     ['Estornar',               'app/dashboard/billing/page.tsx', 'estornar',      'app/api/billing/payments/route.ts',         'estornar'],
     ['Cobrar de novo',         'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recharge/route.ts',         'receber'],
     ['Cancelar parcelamento',  'app/dashboard/billing/page.tsx', 'cancelar',      'app/api/billing/installment-plan/route.ts', 'cancelar'],
+    ['Agendar parcelas',       'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/installment-plan/route.ts', 'receber'],
     ['Relatorios',             'app/dashboard/billing/page.tsx', 'verRelatorios', 'app/api/billing/reports/route.ts',          'verRelatorios'],
   ]
   let semPar = []
@@ -1795,6 +1815,102 @@ titulo('LISTA FLUTUANTE NAO SE POSICIONA NA MAO')
     : ok(`Lista flutuante nao se posiciona na mao (${olhados} arquivo(s) com getBoundingClientRect)`)
 }
 
+
+titulo('AS PARCELAS SAO AGENDADAS NO STRIPE (iterations saiu da API)')
+// As parcelas NUNCA foram cobradas: o agendamento mandava `iterations`, que a
+// API do Stripe removeu na 2025-09-30.clover, e o sistema fala na
+// 2026-06-24.dahlia. O Stripe recusava, o webhook respondia 500 com um
+// console.error, a entrada paga nao chegava a fatura e o portal oferecia
+// pagar a entrada de novo. O typecheck passava: o SDK instalado ainda declara
+// o campo. Quem confere e isto.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. Nenhum codigo manda `iterations` ao Stripe.
+  const comIterations = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts'])]) {
+    if (/\biterations\s*:/.test(semComent(readFileSync(arq, 'utf8')))) comIterations.push(rel(arq))
+  }
+  comIterations.length
+    ? falta('Nenhuma fase de agendamento usa iterations', `a API recusa (2025-09-30.clover): ${comIterations.join(', ')}`)
+    : ok('Nenhuma fase de agendamento usa iterations')
+
+  // 2. O agendamento mora num lugar so: duration, e o que ja existe e reaproveitado.
+  const ag = ler('lib/agendamento-parcelas.ts')
+  {
+    const iAchar = ag.indexOf('await agendamentoExistente(stripe, plano.stripe_customer_id, plano.id)')
+    const iCriar = ag.indexOf('stripe.subscriptionSchedules.create(')
+    if (/duration: f\.duration/.test(ag) && iAchar >= 0 && iCriar > iAchar)
+      ok('Agendamento por duration, reaproveitando o que ja existe')
+    else falta('Agendamento por duration, reaproveitando o que ja existe',
+      'sem procurar antes, o reenvio do evento ou a equipe agendando criam DOIS agendamentos: cada parcela cobrada duas vezes')
+  }
+
+  // 3. O webhook: a entrada entra na fatura ANTES do agendamento, e a falha avisa.
+  const wh = ler('app/api/stripe/webhook/route.ts')
+  {
+    const problemas = []
+    if (/function criarAgendamento|subscriptionSchedules\.create\(/.test(wh)) problemas.push('o webhook voltou a montar o agendamento por conta propria')
+    const i = wh.indexOf('async function handleInstallmentEntry(')
+    const j = wh.indexOf('\nasync function ', i + 10)
+    const entry = i >= 0 ? wh.slice(i, j < 0 ? undefined : j) : ''
+    if (!entry) problemas.push('handleInstallmentEntry nao encontrado -- ancora perdida e FALHA')
+    else {
+      const iLanca = entry.indexOf('lancarRecebimentoStripe(db, {')
+      const iAgenda = entry.indexOf('agendarOuAvisar(')
+      if (!(iLanca >= 0 && iAgenda > iLanca)) problemas.push('a entrada paga nao e lancada ANTES do agendamento')
+      if (!/'entrada_em_dobro'/.test(entry)) problemas.push('uma segunda entrada paga nao vira alerta de estorno')
+    }
+    if ((wh.match(/await agendarOuAvisar\(/g) || []).length < 2) problemas.push('entrada e mandato nao passam pelos dois o mesmo caminho')
+    if (!/catch \(e\) \{\s*await falhaNoParcelamento\(db, plan, 'agendamento_falhou'[\s\S]{0,200}?throw e/.test(wh)) problemas.push('falha no agendamento nao avisa a equipe (volta a ser so console.error)')
+    problemas.length
+      ? falta('Webhook: entrada lancada antes, falha avisada', problemas.join(' · '))
+      : ok('Webhook: entrada lancada antes, falha avisada, entrada em dobro vira estorno')
+  }
+
+  // 4. Entrada paga nao se oferece de novo (o link novo cobraria outra vez).
+  const ck = ler('lib/plan-checkout.ts'), pb = ler('app/api/portal/billing/route.ts'), pc = ler('app/api/portal/plan-checkout/route.ts')
+  if (/entrada > 0 && plan\.entry_paid_at\) \{\s*throw new Error/.test(ck)
+      && /!\(p\.kind === 'installment' && p\.entry_paid_at/.test(pb)
+      && /plan\.kind === 'installment' && plan\.entry_paid_at/.test(pc))
+    ok('Entrada ja paga nao se cobra de novo (checkout, portal e rota)')
+  else falta('Entrada ja paga nao se cobra de novo (checkout, portal e rota)', 'o cliente do plano travado pagava a entrada outra vez')
+
+  // 5. A equipe agenda o que travou: Stripe primeiro, conta fechada, trilha antes.
+  const ip = ler('app/api/billing/installment-plan/route.ts')
+  {
+    const problemas = []
+    const iBranch = ip.indexOf("if (b.action === 'agendar') {")
+    if (iBranch < 0 || !/if \(b\.action === 'agendar'\) \{\s*if \(!perms\.receber\)/.test(ip)) problemas.push("a acao 'agendar' nao exige receber")
+    const i = ip.indexOf('async function agendarParcelamentoTravado(')
+    const corpo = i >= 0 ? ip.slice(i) : ''
+    if (!corpo) problemas.push('agendarParcelamentoTravado nao encontrado -- ancora perdida e FALHA')
+    else {
+      if (!/conferirSenhaPropria\(db, auth\.userId, b\.password\)/.test(corpo)) problemas.push('sem senha')
+      if (!/motivo\.length < 5/.test(corpo)) problemas.push('sem motivo')
+      if (!/oQueOClienteFez\(plano\)/.test(corpo)) problemas.push('decide pelo banco, nao pelo Stripe')
+      if (!/A conta não fecha/.test(corpo)) problemas.push('agenda sem conferir que as parcelas somam o saldo da fatura')
+      const iTrilha = corpo.indexOf("action: 'scheduled_by_staff'")
+      const iAgenda = corpo.indexOf('agendarParcelas(')
+      if (!(iTrilha >= 0 && iAgenda > iTrilha)) problemas.push('a trilha nao vem antes do agendamento')
+      if (!/installment_rescheduled/.test(corpo)) problemas.push('o cronograma nao anda para a nova 1a parcela')
+    }
+    // Cancelar "como proposta" um plano cuja entrada foi paga dizia ao cliente que nada foi cobrado.
+    const iCancel = ip.indexOf('export async function PATCH')
+    const cancel = iCancel >= 0 ? ip.slice(iCancel) : ''
+    const iConf = cancel.indexOf('await entradaPagaNoStripe(plano)'), iEnc = cancel.indexOf('encerrarParcelamento(')
+    if (!(iConf >= 0 && iEnc > iConf)) problemas.push('cancelar nao confere no Stripe se a entrada foi paga')
+    if (!/&& !p\?\.entry_paid_at/.test(ip)) problemas.push('entrada paga ainda conta como "nunca comecou"')
+    problemas.length
+      ? falta('Agendar o parcelamento travado: Stripe, conta, senha e trilha', problemas.join(' · '))
+      : ok('Agendar o parcelamento travado: Stripe, conta fechada, senha, motivo e trilha antes')
+  }
+  checar('A tela oferece agendar a quem tem receber', 'app/dashboard/billing/page.tsx',
+         /pl\.podeAgendar && pcDados\.perms\?\.receber/, 'o botao some ou aparece para quem a rota recusa')
+  checar('O alerta de plano parado nao diz "nada foi cobrado" a quem pagou', 'lib/planos-parados.ts',
+         /plano\.kind === 'installment' && plano\.entry_paid_at/, 'a equipe ligava cobrando quem ja tinha pago')
+}
 
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 for (const d of [
