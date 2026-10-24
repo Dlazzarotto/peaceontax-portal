@@ -41,12 +41,16 @@ async function faturaDoPedido(invoiceId: string) {
 
   const db = serviceDb()
   const { data: inv, error } = await db.from('invoices')
-    .select('id, number, client_id, status, total, paid_total')
+    .select('id, number, client_id, doc_type, status, total, paid_total')
     .eq('id', invoiceId).maybeSingle()
   // Consulta que falha não pode virar "fatura não existe": são conversas
   // diferentes com quem está no balcão.
   if (error) return { erro: `Não foi possível ler a fatura: ${error.message}`, status: 500 as const }
   if (!inv) return { erro: 'Fatura não encontrada', status: 404 as const }
+  // O QR põe uma sessão do Stripe com o id do documento: num orçamento, o
+  // webhook lançaria o pagamento no orçamento. Quem se cobra é a fatura.
+  if (inv.doc_type === 'estimate')
+    return { erro: `${inv.number} é orçamento: use Virar fatura e cobre na fatura.`, status: 409 as const }
   // isStaff diz QUEM chama; o escopo por TIPO é canAccessClient.
   if (!(await canAccessClient(auth, inv.client_id)))
     return { erro: 'Sem acesso a este cliente', status: 403 as const }

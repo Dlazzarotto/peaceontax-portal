@@ -33,6 +33,12 @@ export const DEPENDE_DE = {
   'sql/permissoes-por-pessoa-v4.sql':        ['sql/permissoes-por-pessoa-v1.sql'],
   // Escrito no cabeçalho do próprio arquivo: roda depois de status-da-fatura-v2.
   'sql/recebimento-seguro-v1.sql':           ['sql/status-da-fatura-v2.sql'],
+  // Liga cada login da FIRMA à equipe, e "da firma" é o papel em app_metadata
+  // -- antes da migração do papel, ninguém seria da firma e ninguém entraria.
+  'sql/equipe-unica-v1.sql':                 ['sql/papel-no-app-metadata-v1.sql'],
+  // O contrato trazido sem autor recebe um socio, e o socio sai de team_members.
+  'sql/contrato-unico-v1.sql':               ['sql/equipe-unica-v1.sql'],
+  'sql/contrato-unico-funcao-v1.sql':        ['sql/contrato-unico-v1.sql'],
 }
 
 /**
@@ -47,9 +53,20 @@ export const DEPENDE_DE = {
  * APLICADO", que de propósito fica fora do automático.
  */
 export function ordenarPorDependencia(pendentes, aplicados = new Set(), mapa = DEPENDE_DE) {
+  // `aplicados` e um Set de caminhos com estado ok (aplicadasParaDependencia,
+  // de livro-de-migracoes.mjs). O livro cru e um Map, e esta funcao aceitava
+  // "Set ou objeto": com o Map, `aplicados[x]` dava sempre undefined e TODA
+  // dependencia de migracao ja aplicada parecia faltar. Ficou assim de 01/10
+  // ate a primeira dependencia desse tipo (equipe-unica-v1 ->
+  // papel-no-app-metadata-v1) travar o --pendentes. Entrada errada recusa em
+  // voz alta; nunca vira "falta" calada.
+  if (!(aplicados instanceof Set)) {
+    throw new TypeError('ordenarPorDependencia: `aplicados` tem de ser um Set de caminhos com estado ok '
+      + '(aplicadasParaDependencia do livro), nao o livro cru')
+  }
   const lista = Array.from(pendentes || [])
   const naLista = new Set(lista)
-  const temAplicado = (x) => (aplicados instanceof Set ? aplicados.has(x) : !!aplicados?.[x])
+  const temAplicado = (x) => aplicados.has(x)
 
   const faltando = []
   for (const a of lista) {

@@ -15,7 +15,9 @@
 // Orçamentos nunca entram: só doc_type 'invoice', e rascunho/cancelada ficam
 // de fora do faturamento.
 
-import { janelaDaFirma } from '@/lib/dia-da-firma'
+import { janelaDaFirma, dataDaFirma } from '@/lib/dia-da-firma'
+import { ROTULO_DO_INTERVALO as INTERVALO } from '@/lib/contrato-recorrente'
+import { colunaAusente } from '@/lib/caixa-firma'
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
@@ -37,7 +39,8 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
   const report = sp.get('report') as RelatorioId
   if (!RELATORIOS.some(r => r.id === report)) return NextResponse.json({ error: 'report inválido' }, { status: 400 })
-  const hoje = new Date().toISOString().slice(0, 10)
+  // O dia do ESCRITÓRIO: em UTC, às 20h de Malden a posição já saía com amanhã.
+  const hoje = dataDaFirma()
   const ano = hoje.slice(0, 4)
   const from = /^\d{4}-\d{2}-\d{2}$/.test(sp.get('from') || '') ? sp.get('from')! : `${ano}-01-01`
   const to = /^\d{4}-\d{2}-\d{2}$/.test(sp.get('to') || '') ? sp.get('to')! : `${ano}-12-31`
@@ -117,9 +120,15 @@ export async function GET(req: NextRequest) {
 
     if (report === 'recorrente') {
       tituloPeriodo = `Posição em ${fmtUS(hoje)}`
-      const { data: planos } = await db.from('payment_plans')
-        .select('id, kind, status, description, monthly_amount, due_day, total, entry_amount, installments, installment_amount, paid_installments, next_charge_date, clients(name, business_name)')
+      const { data: planos, error: errPlanos } = await db.from('payment_plans')
+        .select('id, kind, status, description, monthly_amount, billing_interval, collection_method, due_day, total, entry_amount, installments, installment_amount, paid_installments, next_charge_date, clients(name, business_name)')
         .in('status', ['active', 'paused', 'payment_failed', 'awaiting_entry', 'awaiting_setup']).order('created_at', { ascending: false })
+      // Consulta que falha não é "receita recorrente zero".
+      if (errPlanos) {
+        return NextResponse.json({ error: colunaAusente(errPlanos)
+          ? 'Falta rodar sql/contrato-unico-v1.sql no Supabase: o relatório divide cada contrato pelo intervalo dele.'
+          : `Contratos: ${errPlanos.message}` }, { status: 500 })
+      }
       dados = agregarRecorrente(planos || [])
       const ST: Record<string, string> = { active: 'Ativo', paused: 'Pausado', payment_failed: 'Débito falhou', awaiting_entry: 'Aguardando entrada', awaiting_setup: 'Aguardando cadastro' }
       resumo = [
@@ -128,9 +137,12 @@ export async function GET(req: NextRequest) {
         { rotulo: 'Parcelas a receber', valor: money(dados.aReceber) },
       ]
       secoes = [
-        { titulo: 'Contratos mensais', colunas: [{ titulo: 'Cliente' }, { titulo: 'Serviço' }, { titulo: 'Situação' }, { titulo: 'Dia', direita: true }, { titulo: 'Mensal', direita: true }],
-          linhas: dados.mensais.map((p: any) => [p.cliente, p.description || (p.kind === 'bookkeeping' ? 'Bookkeeping' : 'Serviço mensal'), ST[p.status] || p.status, String(p.due_day ?? 5), Number(p.monthly_amount || 0)]),
-          total: ['Total ativos', '', '', '', dados.mrr] },
+        { titulo: 'Contratos recorrentes', colunas: [{ titulo: 'Cliente' }, { titulo: 'Serviço' }, { titulo: 'Situação' }, { titulo: 'Cobrança' }, { titulo: 'Dia', direita: true }, { titulo: 'Por cobrança', direita: true }, { titulo: 'Mensal', direita: true }],
+          linhas: dados.mensais.map((p: any) => [p.cliente, p.description || (p.kind === 'bookkeeping' ? 'Bookkeeping' : 'Serviço mensal'), ST[p.status] || p.status,
+            `${INTERVALO[p.billing_interval] || 'mensal'} · ${p.collection_method === 'fatura' ? 'fatura' : 'débito'}`,
+            String(p.due_day ?? 5), Number(p.monthly_amount || 0), p.mensal]),
+          total: ['Total ativos', '', '', '', '', '', dados.mrr],
+          nota: '"Mensal" é o valor de cada cobrança dividido pelo intervalo: num trimestral, o do trimestre dividido por 3. É ele que soma a receita recorrente.' },
         { titulo: 'Parcelamentos', colunas: [{ titulo: 'Cliente' }, { titulo: 'Descrição' }, { titulo: 'Situação' }, { titulo: 'Parcelas', direita: true }, { titulo: 'Próxima', direita: true }, { titulo: 'A receber', direita: true }],
           linhas: dados.parcelados.map((p: any) => [p.cliente, p.description || '—', ST[p.status] || p.status, `${p.paid_installments || 0}/${p.installments}`, fmtUS(p.next_charge_date) || '—', p.restante]),
           total: ['Total', '', '', '', '', dados.aReceber] },

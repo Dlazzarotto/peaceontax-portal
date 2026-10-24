@@ -1,7 +1,10 @@
 "use client";
 // /dashboard/agenda — versão corrigida
 // Reuniões: busca via /api/agenda/my-bookings (service role, sem problema de RLS)
-// Disponibilidade: mantém busca direta (apenas leitura dos próprios dados, funciona)
+// Disponibilidade: /api/agenda/disponibilidade (servidor, só as próprias
+// linhas). Lia e gravava direto na tabela com a sessão — fechar as tabelas
+// do painel ao navegador tiraria esta tela do ar. E a leitura que falhava
+// virava "nenhum horário": salvar dali apagava os horários de verdade.
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@supabase/ssr";
@@ -26,6 +29,11 @@ const MODE_LABEL: Record<string, string> = {
   in_person: "🏢 Presencial",
 };
 
+/** As linhas como o editor espera: hora em HH:MM (o banco devolve HH:MM:SS). */
+function paraEditor(rows: any[]): AvailabilityRow[] {
+  return rows.map(a => ({ ...a, start_time: String(a.start_time).slice(0, 5), end_time: String(a.end_time).slice(0, 5) }));
+}
+
 export default function AgendaStaffPage() {
   const sb = useMemo(
     () =>
@@ -38,6 +46,7 @@ export default function AgendaStaffPage() {
 
   const [userId, setUserId] = useState<string | null>(null);
   const [availability, setAvailability] = useState<AvailabilityRow[] | null>(null);
+  const [erroDisponibilidade, setErroDisponibilidade] = useState("");
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [loadingBookings, setLoadingBookings] = useState(true);
 
@@ -50,19 +59,15 @@ export default function AgendaStaffPage() {
       if (!user) return;
       setUserId(user.id);
 
-      // Disponibilidade: leitura direta (próprios dados)
-      const { data: avail } = await sb
-        .from("staff_availability")
-        .select("id,weekday,start_time,end_time,timezone")
-        .eq("staff_id", user.id)
-        .order("weekday");
-      setAvailability(
-        (avail ?? []).map(a => ({
-          ...a,
-          start_time: a.start_time.slice(0, 5),
-          end_time: a.end_time.slice(0, 5),
-        }))
-      );
+      // Disponibilidade: pelo servidor. Consulta que falha NÃO vira lista vazia:
+      // o editor nem abre, porque salvar a partir do vazio apagaria os horários.
+      const resAv = await fetch("/api/agenda/disponibilidade");
+      const jsonAv = await resAv.json().catch(() => ({}));
+      if (!resAv.ok) {
+        setErroDisponibilidade(jsonAv.error || `Erro ${resAv.status}`);
+      } else {
+        setAvailability(paraEditor(jsonAv.rows ?? []));
+      }
 
       // Reuniões: via API com service role (evita problema de RLS com is_staff)
       const res = await fetch("/api/agenda/my-bookings");
@@ -74,24 +79,18 @@ export default function AgendaStaffPage() {
 
   async function saveAvailability(rows: AvailabilityRow[]) {
     if (!userId) throw new Error("Sessão expirada — recarregue a página");
-    const { error: delError } = await sb
-      .from("staff_availability")
-      .delete()
-      .eq("staff_id", userId);
-    if (delError) throw new Error(delError.message);
-
-    if (rows.length) {
-      const { error: insError } = await sb.from("staff_availability").insert(
-        rows.map(r => ({
-          staff_id: userId,
-          weekday: r.weekday,
-          start_time: r.start_time,
-          end_time: r.end_time,
-          timezone: r.timezone,
-        }))
-      );
-      if (insError) throw new Error(insError.message);
-    }
+    // Troca o conjunto inteiro no servidor; se a gravação falhar no meio, ele
+    // devolve os horários que estavam lá (a tela apagava tudo e depois inseria).
+    const res = await fetch("/api/agenda/disponibilidade", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rows: rows.map(r => ({ weekday: r.weekday, start_time: r.start_time, end_time: r.end_time, timezone: r.timezone })),
+      }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || `Erro ${res.status}`);
+    setAvailability(paraEditor(json.rows ?? []));
   }
 
   const fmtBooking = (iso: string) =>
@@ -157,7 +156,12 @@ export default function AgendaStaffPage() {
 
       {/* ---- Disponibilidade ---- */}
       <section>
-        {availability === null && <p role="status">Carregando disponibilidade…</p>}
+        {erroDisponibilidade && (
+          <p role="alert" className="text-[#B02020]">
+            Não deu para carregar seus horários: {erroDisponibilidade}. Recarregue a página — nada foi alterado.
+          </p>
+        )}
+        {availability === null && !erroDisponibilidade && <p role="status">Carregando disponibilidade…</p>}
         {availability !== null && userId && (
           <AvailabilityEditor
             staffId={userId}
