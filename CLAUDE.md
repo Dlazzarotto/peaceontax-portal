@@ -1090,7 +1090,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   receita da conta antiga para as despesas de **todos** os clientes, com a
   tela dizendo "conta atualizada". Apagar tinha o mesmo desenho, e a sub-conta
   era achada por `LIKE`, que lê `_` e `%` do nome como curinga. Agora cada
-  conta tem **Editar** (nome, conta-mãe, grupo, 1099), e cada ato é UMA função
+  conta tem **Editar** (nome, conta-mãe, grupo e a caixa **Emitir 1099**, com NEC ou MISC), e cada ato é UMA função
   do banco — `editar_conta_do_plano`, `situacao_da_conta_do_plano`,
   `apagar_conta_do_plano` —: trava a linha, recusa se a conta mudou desde a
   leitura (`mudou_no_meio`), leva lançamentos, regras, contas a pagar e

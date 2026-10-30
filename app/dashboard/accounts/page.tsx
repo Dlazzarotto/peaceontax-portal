@@ -212,18 +212,35 @@ export default function ChartOfAccountsPage() {
               </select>
             )}
           </label>
-          {!migracao1099 && ehContaDeDespesa(kindFinal) && (
-            <label style={{ flex: '1 1 170px' }}>
-              <span style={rotuloCampo}>1099</span>
-              <select value={editForm} onChange={e => setEditForm(e.target.value)}
-                style={{ ...inp, width: '100%', cursor: 'pointer' }}>
-                <option value="">Fora do 1099</option>
-                <option value="NEC">1099-NEC — serviço</option>
-                <option value="MISC">1099-MISC — aluguel</option>
-              </select>
-            </label>
-          )}
         </div>
+
+        {/* 1099: uma caixa de marcar (decisão do sócio). Marcada, toda despesa
+            paga nesta conta entra na lista do 1099 de cada cliente; o
+            formulário escolhe NEC (serviço) ou MISC (aluguel). */}
+        {!migracao1099 && (ehContaDeDespesa(kindFinal) ? (
+          <div style={{ marginTop: 12, padding: '10px 12px', background: '#FFF8EC', border: '1px solid #F1D7A8', borderRadius: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 700, color: '#5A3A0A', cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!editForm}
+                onChange={e => setEditForm(e.target.checked ? (c.form_1099 || 'NEC') : '')}
+                style={{ width: 18, height: 18, cursor: 'pointer' }} />
+              Emitir 1099 para os prestadores pagos nesta conta
+            </label>
+            {editForm && (
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', margin: '8px 0 0 26px', fontSize: 13.5, color: '#4A5A70' }}>
+                {([['NEC', '1099-NEC — serviço'], ['MISC', '1099-MISC — aluguel']] as const).map(([v, r]) => (
+                  <label key={v} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                    <input type="radio" name={`form1099-${c.id}`} checked={editForm === v} onChange={() => setEditForm(v)} />
+                    {r}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#6A7A9A' }}>
+            1099: só conta de despesa (Despesas, Custo dos serviços, Outras despesas) emite 1099.
+          </p>
+        ))}
 
         {!nadaMudou && (
           previa.ok === true ? (
