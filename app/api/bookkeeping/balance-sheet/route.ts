@@ -1,23 +1,31 @@
-// GET /api/bookkeeping/balance-sheet?clientId=...&year=YYYY
+// GET /api/bookkeeping/balance-sheet?clientId=...&asOf=YYYY-MM-DD
+//   (ou year=YYYY, como sempre aceitou: vale 31 de dezembro daquele ano)
 // Balance Sheet SIMPLIFICADO (cash basis, a partir dos dados disponíveis):
 // - Cash: saldo do último extrato de cada conta (checking/savings)
 // - Credit cards: saldo devedor do último extrato
-// - Assets/Liabilities do ano: transações aprovadas categorizadas nesses grupos
+// - Assets/Liabilities: transações aprovadas nesses grupos no ano da data de corte, até ela
 // Uso interno — não substitui um balanço formal.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
+import { dataDeCorteDosParametros, dataPorExtensoEN, rotuloDoPeriodo, anoDe } from '@/lib/periodo-relatorio'
+import { todasAsLinhas } from '@/lib/paginar'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
 
-  const clientId = req.nextUrl.searchParams.get('clientId')
-  const year = parseInt(req.nextUrl.searchParams.get('year') || '')
-  if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
+  const sp = req.nextUrl.searchParams
+  const clientId = sp.get('clientId')
+  // Balanço é "em tal data": asOf (ou to), ou year → 31/12 — lib/periodo-relatorio.ts
+  const cutoff = dataDeCorteDosParametros(k => sp.get(k))
+  if (!clientId || !cutoff) return NextResponse.json({ error: 'clientId e asOf (ou year) obrigatórios' }, { status: 400 })
+  // Os movimentos de ativo/passivo são os do ano da data de corte, até ela
+  const inicioDoAno = `${anoDe(cutoff)}-01-01`
+  const rotuloDoAno = rotuloDoPeriodo(inicioDoAno, cutoff)
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
   if (auth?.isStaff) {
@@ -41,9 +49,11 @@ export async function GET(req: NextRequest) {
   ] = await Promise.all([
     db.from('clients').select('name, business_name').eq('id', clientId).single(),
     db.from('bank_accounts').select('id, name, type').eq('client_id', clientId).eq('active', true),
-    db.from('bank_transactions')
-      .select('account_id, tx_date, balance, amount, category, status, fiscal_year')
-      .eq('client_id', clientId).limit(20000),
+    // Só até a data de corte, e em páginas: `.limit(20000)` parava em mil
+    // (teto do PostgREST) e o saldo "mais recente" podia nem estar na resposta.
+    todasAsLinhas<any>(() => db.from('bank_transactions')
+      .select('account_id, tx_date, balance, amount, category, status')
+      .eq('client_id', clientId).lte('tx_date', cutoff)),
     db.from('bookkeeping_categories').select('name, kind').eq('active', true),
   ])
   for (const [oque, err] of [['o cliente', errCliente], ['as contas bancarias', errContas], ['os lancamentos', errTxs],
@@ -54,8 +64,7 @@ export async function GET(req: NextRequest) {
   const kindOf: Record<string, string> = {}
   for (const c of cats || []) kindOf[c.name] = c.kind
 
-  // Saldo mais recente por conta (até 31/12 do ano do relatório)
-  const cutoff = `${year}-12-31`
+  // Saldo mais recente por conta, até a data de corte
   const balances = (accounts || []).map(a => {
     const list = (txs || [])
       .filter(t => t.account_id === a.id && t.balance != null && t.tx_date <= cutoff)
@@ -68,9 +77,10 @@ export async function GET(req: NextRequest) {
   const totalCash = cashAccounts.reduce((s, b) => s + (b.balance || 0), 0)
   const totalCards = cardAccounts.reduce((s, b) => s + (b.balance || 0), 0)
 
-  // Movimentos do ano categorizados como asset/liability (aprovados)
-  const registered = (txs || []).filter(t =>
-    t.fiscal_year === year && ['approved', 'reviewed'].includes(t.status) && t.category)
+  // Movimentos do ano da data de corte, até ela (a consulta já para no corte),
+  // categorizados como asset/liability (aprovados)
+  const registered = (txs || []).filter((t: any) =>
+    t.tx_date >= inicioDoAno && ['approved', 'reviewed'].includes(t.status) && t.category)
   const assetMoves: Record<string, number> = {}
   const liabilityMoves: Record<string, number> = {}
   for (const t of registered) {
@@ -89,7 +99,7 @@ export async function GET(req: NextRequest) {
     voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
     painelPara: isClient ? '/portal' : '/dashboard',
   })
-  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${year} — ${name}</title>
+  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${dataPorExtensoEN(cutoff)} — ${name}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 700px; margin: 40px auto; color: #000; padding: 0 20px; }
     .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;
@@ -121,13 +131,13 @@ export async function GET(req: NextRequest) {
   </div>
 
   <h1>${name}</h1>
-  <h2>Balance Sheet (simplified) — as of December 31, ${year}</h2>
+  <h2>Balance Sheet (simplified) — as of ${dataPorExtensoEN(cutoff)}</h2>
 
   <h3>Assets</h3>
   <table>
     ${cashAccounts.map(b => `<tr><td>🏦 ${b.name} <span class="muted">(as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
     ${cashAccounts.length === 0 ? '<tr><td class="muted">No bank balances available</td><td></td></tr>' : ''}
-    ${Object.entries(assetMoves).map(([c, v]) => `<tr><td>${c} <span class="muted">(purchases in ${year})</span></td><td class="r">${money(v)}</td></tr>`).join('')}
+    ${Object.entries(assetMoves).map(([c, v]) => `<tr><td>${c} <span class="muted">(purchases, ${rotuloDoAno})</span></td><td class="r">${money(v)}</td></tr>`).join('')}
     <tr class="total"><td>Total Assets</td><td class="r">${money(totalAssets)}</td></tr>
   </table>
 
@@ -135,7 +145,7 @@ export async function GET(req: NextRequest) {
   <table>
     ${cardAccounts.map(b => `<tr><td>💳 ${b.name} <span class="muted">(balance as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
     ${cardAccounts.length === 0 ? '<tr><td class="muted">No credit card balances available</td><td></td></tr>' : ''}
-    ${Object.entries(liabilityMoves).map(([c, v]) => `<tr><td class="muted">${c} — payments made in ${year} (informational)</td><td class="r muted">${money(v)}</td></tr>`).join('')}
+    ${Object.entries(liabilityMoves).map(([c, v]) => `<tr><td class="muted">${c} — payments made, ${rotuloDoAno} (informational)</td><td class="r muted">${money(v)}</td></tr>`).join('')}
     <tr class="total"><td>Total Liabilities</td><td class="r">${money(totalLiab)}</td></tr>
   </table>
 

@@ -1,9 +1,14 @@
-// GET /api/bookkeeping/vendors?clientId=...&year=2020
+// GET /api/bookkeeping/vendors?clientId=...&from=YYYY-MM-DD&to=YYYY-MM-DD[&report=vendors|1099]
+//   (ou year=YYYY, como sempre aceitou — lib/periodo-relatorio.ts converte)
 // Relatório por fornecedor (payee): total pago, nº de transações, categorias —
-// com seção de candidatos a 1099 (Contract Labor / Rent / Legal ≥ $600 no ano).
+// com seção de candidatos a 1099 (≥ $600 no ano nas categorias de CATS_1099).
+// O 1099 é por ANO-CALENDÁRIO: período livre vira o ano do fim dele, e o
+// relatório diz qual.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
+import { periodoDosParametros, periodoDeAno, anoDe, rotuloDoPeriodo } from '@/lib/periodo-relatorio'
+import { todasAsLinhas } from '@/lib/paginar'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 
@@ -23,9 +28,12 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
-  const year = parseInt(sp.get('year') || '')
   const report = sp.get('report') === '1099' ? '1099' : 'vendors'
-  if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
+  const pedido = periodoDosParametros(k => sp.get(k))
+  if (!clientId || !pedido) return NextResponse.json({ error: 'clientId e período (from/to ou year) obrigatórios' }, { status: 400 })
+  // 1099 é por ano-calendário (lei): o período livre vira o ano do FIM dele
+  const { de, ate } = report === '1099' ? periodoDeAno(anoDe(pedido.ate)) : pedido
+  const rotulo = rotuloDoPeriodo(de, ate)
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
   if (auth?.isStaff) {
@@ -43,12 +51,16 @@ export async function GET(req: NextRequest) {
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
-  const { data: txs } = await db.from('bank_transactions')
-    .select('payee, category, amount')
-    .eq('client_id', clientId)
-    .eq('fiscal_year', year)
-    .in('status', ['approved', 'reviewed'])
-    .limit(10000)
+  // Por DATA (fiscal_year nasce dela) e em páginas de 1000: `.limit(10000)`
+  // parava em mil sem avisar — e o 1099 saía com fornecedor FALTANDO.
+  const { data: txs, error: errTxs } = await todasAsLinhas<any>(() =>
+    db.from('bank_transactions')
+      .select('payee, category, amount')
+      .eq('client_id', clientId)
+      .gte('tx_date', de).lte('tx_date', ate)
+      .in('status', ['approved', 'reviewed']))
+  // Consulta que falha não vira "No categorized payments" — isso é uma afirmação.
+  if (errTxs) return NextResponse.json({ error: `Relatório não gerado — falhou ao ler os lançamentos: ${errTxs.message}` }, { status: 500 })
 
   // Agrega por payee — saídas (vendors) e entradas (customers) separadas
   const byPayee: Record<string, { total: number; count: number; cats: Set<string> }> = {}
@@ -90,7 +102,7 @@ export async function GET(req: NextRequest) {
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
-<title>Vendors ${year} — ${displayName}</title>
+<title>${report === '1099' ? '1099' : 'Vendors'} ${rotulo} — ${displayName}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
@@ -126,11 +138,11 @@ export async function GET(req: NextRequest) {
 ${barra.html}
 <div class="sheet">
   <h1>${displayName}</h1>
-  <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${year} (cash basis, payments only)</h2>
+  <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${rotulo} (cash basis, payments only)</h2>
 
   ${report === '1099' ? `
   ${candidates1099.length ? `
-  <h3>⚠️ 1099 Candidates (≥ $600 in reportable categories)</h3>
+  <h3>⚠️ 1099 Candidates (≥ $600 in reportable categories, calendar year ${anoDe(ate)})</h3>
   <table>
     <tr><th>Payee</th><th>Categories</th><th style="text-align:right">Total Paid</th><th style="text-align:right">Payments</th></tr>
     ${candidates1099.map(v => `<tr class="k1099">

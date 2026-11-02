@@ -125,8 +125,50 @@ checar('A sessao do Stripe nasce pelo valor decidido', 'app/api/billing/stripe-c
 titulo('RELATORIOS: NADA DE FORA ENTRA NO SCRIPT')
 checar('Barra: destino vai em atributo, nao dentro do script', 'lib/relatorio-barra.ts', 'data-destino=', 'parametro com </script> injetaria codigo na sessao da equipe')
 checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export function escaparHtml', 'nome de conta da URL viraria HTML')
-checar('Detalhe da conta: mes validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', 'const month = mesBruto &&', 'mes cru voltaria para o link do Voltar')
+// O periodo (from/to ou year/month) e remontado na URL do "Voltar ao P&L":
+// so entra o que periodoDosParametros validou (data que existe), nunca o
+// parametro cru.
+checar('Detalhe da conta: periodo validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', /const periodo = periodoDosParametros\(/, 'from/to crus voltariam para o link do Voltar')
+recusar('Detalhe da conta: o link do Voltar nao leva parametro cru', 'app/api/bookkeeping/category-detail/route.ts', /pnlUrl[\s\S]{0,200}?sp\.get\(/, 'so data validada entra na URL do P&L')
 checar('Detalhe da conta: categoria escapada', 'app/api/bookkeeping/category-detail/route.ts', 'escaparHtml(category)', 'XSS refletido pelo nome da conta')
+
+titulo('RELATORIO CONTABIL: UM PERIODO, FILTRO POR DATA, TODAS AS LINHAS')
+// P&L, Balanco, Fornecedores/1099 e o detalhe por conta liam com
+// .limit(10000)/.limit(20000) -- o PostgREST corta em 1000 e NAO avisa, e o
+// numero de imposto saia truncado em silencio para cliente com mais de mil
+// lancamentos aprovados no ano. E cada rota lia o periodo do seu jeito (year,
+// year+month, 31/12 fixo), enquanto a tela oferecia so ano e mes. Agora a
+// conversao do periodo e UMA (lib/periodo-relatorio.ts: from/to ou year, e
+// asOf no Balanco, que e "em tal data"), o filtro e por tx_date (fiscal_year
+// nasce dela e so sabe o ano) e a leitura e paginada (lib/paginar.ts). As
+// tres telas que abrem relatorio usam o mesmo seletor, senao a tela oferece
+// um periodo que a rota nao entende.
+{
+  const ROTAS = {
+    'app/api/bookkeeping/pnl/route.ts':             /periodoDosParametros\(/,
+    'app/api/bookkeeping/category-detail/route.ts': /periodoDosParametros\(/,
+    'app/api/bookkeeping/vendors/route.ts':         /periodoDosParametros\(/,
+    'app/api/bookkeeping/balance-sheet/route.ts':   /dataDeCorteDosParametros\(/,
+  }
+  for (const [arq, periodo] of Object.entries(ROTAS)) {
+    const nome = arq.split('/').slice(-2)[0]
+    if (!existsSync(join(raiz, arq))) { falta(`${nome}: periodo unico e leitura paginada`, `arquivo inexistente: ${arq}`); continue }
+    // Sem comentarios: o comentario que explica o defeito cita `.limit(10000)`
+    const codigo = readFileSync(join(raiz, arq), 'utf8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (!periodo.test(codigo)) falta(`${nome} le o periodo por lib/periodo-relatorio`, 'rota com conta propria de periodo diverge da tela e das irmas')
+    else if (/\.limit\(\s*\d{4,}\s*\)/.test(codigo)) falta(`${nome} le todas as linhas`, '.limit(N) a partir de 1000 e truncamento silencioso: o PostgREST para em 1000')
+    else if (/\.eq\(\s*'fiscal_year'/.test(codigo)) falta(`${nome} filtra por tx_date`, 'fiscal_year so sabe o ano; trimestre e mes precisam da data')
+    // O generico (`todasAsLinhas<T>(`) fica entre o nome e o parentese
+    else if (!/todasAsLinhas(<[\s\S]{0,200}?>)?\s*\(/.test(codigo)) falta(`${nome} le todas as linhas`, 'sem todasAsLinhas a leitura para em 1000')
+    else ok(`${nome}: periodo unico, filtro por data e leitura paginada`)
+  }
+  for (const tela of ['components/BookkeepingTab.tsx', 'components/portal/ClientReports.tsx', 'app/dashboard/billing/page.tsx']) {
+    checar(`${tela.split('/').pop()} usa o seletor de periodo da casa`, tela, /<SeletorPeriodo\b/, 'periodo calculado na tela diverge do que a rota entende')
+  }
+  // "Hoje" dos atalhos e o dia do ESCRITORIO, nao o relogio do navegador em UTC
+  recusar('O seletor nao usa toISOString para "hoje"', 'components/SeletorPeriodo.tsx', /toISOString\(/, 'as 21h de Malden "este mes" ja era o mes seguinte')
+  checar('O seletor usa o dia da firma', 'components/SeletorPeriodo.tsx', /dataDaFirma\(/, 'o atalho tem de nascer no dia do escritorio')
+}
 
 titulo('IMPRESSOS: VOLTAR E CELULAR')
 checar('Barra tem destino fixo alem do Voltar', 'lib/relatorio-barra.ts', 'data-painel=', 'Voltar depende do historico; sem destino fixo nao ha volta garantida')
