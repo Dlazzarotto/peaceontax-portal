@@ -13,7 +13,7 @@
 // Saldo desconhecido não vira zero: a tela diz que não sabe.
 
 import { useState, useEffect, useCallback } from 'react'
-import { money } from '@/lib/format'
+import { useDinheiro } from '@/components/OcultarValores'
 
 const MES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
 const rotuloMes = (ym: string) => `${MES[Number(ym.slice(5, 7)) - 1]}/${ym.slice(2, 4)}`
@@ -34,6 +34,8 @@ export default function CaixaFluxo() {
   const [d, setD] = useState<any>(null)
   const [erro, setErro] = useState('')
   const [meses, setMeses] = useState(12)
+  // Formata dinheiro respeitando o botão "Ocultar valores" (components/OcultarValores.tsx).
+  const dinheiro = useDinheiro()
 
   const carregar = useCallback(async () => {
     try {
@@ -80,6 +82,44 @@ export default function CaixaFluxo() {
         dos dois lados — fatura já vencida fica fora dela, de propósito.
       </p>
 
+      {/* ── Os três números do topo: em aberto · a receber · pagas no mês ──
+          Definições em lib/fluxo-de-caixa.ts; a rota manda prontos. O
+          dinheiro passa por `dinheiro()` (vira •••••• com o botão); as
+          contagens ficam visíveis — dizem quantas, não quanto. */}
+      {d.faturas && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+          <div style={{ ...CAIXA, padding: '12px 16px', minWidth: 170, flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: '#6a7a9a', fontWeight: 800 }}>FATURAS EM ABERTO</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: '#0f2340' }}>
+              {dinheiro(d.faturas.emAberto.emitido)}
+            </div>
+            <div style={{ fontSize: 11.5, color: '#6a7a9a' }}>
+              {d.faturas.emAberto.qtd} {d.faturas.emAberto.qtd === 1 ? 'fatura emitida' : 'faturas emitidas'} com saldo
+            </div>
+          </div>
+          <div style={{ ...CAIXA, padding: '12px 16px', minWidth: 170, flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: '#6a7a9a', fontWeight: 800 }}>A RECEBER</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: '#1a6b4a' }}>
+              {dinheiro(d.faturas.aReceber.saldo)}
+            </div>
+            <div style={{ fontSize: 11.5, color: d.faturas.aReceber.vencido > 0 ? '#b02020' : '#6a7a9a' }}>
+              {d.faturas.aReceber.vencido > 0
+                ? <>{dinheiro(d.faturas.aReceber.vencido)} já vencidos</>
+                : 'nada vencido'}
+            </div>
+          </div>
+          <div style={{ ...CAIXA, padding: '12px 16px', minWidth: 170, flex: 1 }}>
+            <div style={{ fontSize: 11.5, color: '#6a7a9a', fontWeight: 800 }}>PAGAS NO MÊS</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: '#2a5fa8' }}>
+              {dinheiro(d.faturas.recebidoNoMes.total)}
+            </div>
+            <div style={{ fontSize: 11.5, color: '#6a7a9a' }}>
+              {d.faturas.recebidoNoMes.qtd} {d.faturas.recebidoNoMes.qtd === 1 ? 'pagamento' : 'pagamentos'} desde {fmtData(d.faturas.recebidoNoMes.desde)}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Saldo hoje ───────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
         <div style={{ ...CAIXA, padding: '12px 16px', minWidth: 180, background: '#f6f9ff' }}>
@@ -90,12 +130,12 @@ export default function CaixaFluxo() {
             </div>
           ) : (
             <div style={{ fontSize: 24, fontWeight: 800, color: sinal(saldo.total) }}>
-              {money(saldo.total)}
+              {dinheiro(saldo.total)}
             </div>
           )}
           {saldo.contas.map((c: any) => (
             <div key={c.id} style={{ fontSize: 11.5, color: '#6a7a9a', marginTop: 2 }}>
-              {c.nome}: {c.saldo == null ? 'saldo desconhecido' : money(c.saldo)}
+              {c.nome}: {c.saldo == null ? 'saldo desconhecido' : dinheiro(c.saldo)}
               {/* De ONDE veio o número muda o quanto se confia nele: o banco
                   responde por hoje; o extrato importado, só até a última
                   linha que entrou. */}
@@ -111,7 +151,7 @@ export default function CaixaFluxo() {
         <div style={{ ...CAIXA, padding: '12px 16px', minWidth: 150 }}>
           <div style={{ fontSize: 11.5, color: '#6a7a9a', fontWeight: 800 }}>MÉDIA MENSAL</div>
           <div style={{ fontSize: 24, fontWeight: 800, color: sinal(realizado.mediaLiquida) }}>
-            {money(realizado.mediaLiquida)}
+            {dinheiro(realizado.mediaLiquida)}
           </div>
           <div style={{ fontSize: 11.5, color: '#6a7a9a' }}>
             {realizado.meses.length} {realizado.meses.length === 1 ? 'mês' : 'meses'} com movimento
@@ -121,7 +161,7 @@ export default function CaixaFluxo() {
           <div style={{ fontSize: 11.5, color: '#6a7a9a', fontWeight: 800 }}>SALDO PROJETADO</div>
           <div style={{ fontSize: 24, fontWeight: 800,
                         color: projecao.saldoFinal == null ? '#9aa5b8' : sinal(projecao.saldoFinal) }}>
-            {projecao.saldoFinal == null ? '—' : money(projecao.saldoFinal)}
+            {projecao.saldoFinal == null ? '—' : dinheiro(projecao.saldoFinal)}
           </div>
           <div style={{ fontSize: 11.5, color: '#6a7a9a' }}>depois do que está comprometido</div>
         </div>
@@ -164,9 +204,9 @@ export default function CaixaFluxo() {
               {realizado.meses.map((m: any) => (
                 <tr key={m.mes} style={{ borderBottom: '1px solid #eef2f8' }}>
                   <td style={{ ...TD, textAlign: 'left', fontWeight: 700 }}>{rotuloMes(m.mes)}</td>
-                  <td style={{ ...TD, color: '#1a6b4a' }}>{money(m.entradas)}</td>
-                  <td style={{ ...TD, color: '#b02020' }}>{money(m.saidas)}</td>
-                  <td style={{ ...TD, fontWeight: 800, color: sinal(m.liquido) }}>{money(m.liquido)}</td>
+                  <td style={{ ...TD, color: '#1a6b4a' }}>{dinheiro(m.entradas)}</td>
+                  <td style={{ ...TD, color: '#b02020' }}>{dinheiro(m.saidas)}</td>
+                  <td style={{ ...TD, fontWeight: 800, color: sinal(m.liquido) }}>{dinheiro(m.liquido)}</td>
                   <td style={{ padding: '6px 8px' }}>
                     {/* Barra em duas metades: entrada à direita, saída à esquerda */}
                     <div style={{ display: 'flex', alignItems: 'center', height: 12 }}>
@@ -185,9 +225,9 @@ export default function CaixaFluxo() {
               ))}
               <tr>
                 <td style={{ ...TD, textAlign: 'left', fontWeight: 800 }}>Total</td>
-                <td style={{ ...TD, fontWeight: 800, color: '#1a6b4a' }}>{money(realizado.entradas)}</td>
-                <td style={{ ...TD, fontWeight: 800, color: '#b02020' }}>{money(realizado.saidas)}</td>
-                <td style={{ ...TD, fontWeight: 800, color: sinal(realizado.liquido) }}>{money(realizado.liquido)}</td>
+                <td style={{ ...TD, fontWeight: 800, color: '#1a6b4a' }}>{dinheiro(realizado.entradas)}</td>
+                <td style={{ ...TD, fontWeight: 800, color: '#b02020' }}>{dinheiro(realizado.saidas)}</td>
+                <td style={{ ...TD, fontWeight: 800, color: sinal(realizado.liquido) }}>{dinheiro(realizado.liquido)}</td>
                 <td />
               </tr>
             </tbody>
@@ -211,19 +251,19 @@ export default function CaixaFluxo() {
               <tr key={l.faixa} style={{ borderBottom: '1px solid #eef2f8' }}>
                 <td style={{ ...TD, textAlign: 'left', fontWeight: 700,
                              color: l.faixa === 'vencido' ? '#b02020' : '#0f2340' }}>{l.rotulo}</td>
-                <td style={{ ...TD, color: l.receber ? '#1a6b4a' : '#9aa5b8' }}>{money(l.receber)}</td>
-                <td style={{ ...TD, color: l.pagar ? '#b02020' : '#9aa5b8' }}>{money(l.pagar)}</td>
-                <td style={{ ...TD, color: sinal(l.liquido) }}>{money(l.liquido)}</td>
+                <td style={{ ...TD, color: l.receber ? '#1a6b4a' : '#9aa5b8' }}>{dinheiro(l.receber)}</td>
+                <td style={{ ...TD, color: l.pagar ? '#b02020' : '#9aa5b8' }}>{dinheiro(l.pagar)}</td>
+                <td style={{ ...TD, color: sinal(l.liquido) }}>{dinheiro(l.liquido)}</td>
                 <td style={{ ...TD, fontWeight: 800,
                              color: l.saldo == null ? '#9aa5b8' : sinal(l.saldo) }}>
-                  {l.saldo == null ? '—' : money(l.saldo)}
+                  {l.saldo == null ? '—' : dinheiro(l.saldo)}
                 </td>
               </tr>
             ))}
             <tr>
               <td style={{ ...TD, textAlign: 'left', fontWeight: 800 }}>Total</td>
-              <td style={{ ...TD, fontWeight: 800, color: '#1a6b4a' }}>{money(projecao.receber)}</td>
-              <td style={{ ...TD, fontWeight: 800, color: '#b02020' }}>{money(projecao.pagar)}</td>
+              <td style={{ ...TD, fontWeight: 800, color: '#1a6b4a' }}>{dinheiro(projecao.receber)}</td>
+              <td style={{ ...TD, fontWeight: 800, color: '#b02020' }}>{dinheiro(projecao.pagar)}</td>
               <td colSpan={2} />
             </tr>
           </tbody>
@@ -233,7 +273,7 @@ export default function CaixaFluxo() {
       {projecao.receberVencido > 0 && (
         <div style={{ background: '#fff7e6', border: '1.5px solid #c06010', borderRadius: 10,
                       padding: '10px 13px', color: '#7a4a10', fontSize: 12.5, marginTop: 12 }}>
-          <strong>{money(projecao.receberVencido)} vencidos a receber, fora da projeção.</strong>{' '}
+          <strong>{dinheiro(projecao.receberVencido)} vencidos a receber, fora da projeção.</strong>{' '}
           Dinheiro que já era para ter entrado não é previsão, é cobrança — contar com ele
           justamente quando o caixa aperta é como se gasta o que não se tem. Está em
           Financeiro → Relatórios → Contas a receber.
