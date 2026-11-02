@@ -2,7 +2,7 @@
 //
 // O DEFEITO QUE ORIGINOU ESTE MÓDULO
 // `payment_plans.included_transactions` é POR MÊS: o formulário pede
-// "Transações incluídas/mês" (components/PlansTab.tsx) e o contrato assinado
+// "Transações incluídas/mês" (Financeiro → Contratos) e o contrato assinado
 // promete "up to N transactions per month" (lib/contract-html.ts). A rota de
 // excedente e a central de bookkeeping comparavam esse número com a contagem
 // do ANO INTEIRO. Um cliente com franquia de 100/mês e 590 lançamentos no ano

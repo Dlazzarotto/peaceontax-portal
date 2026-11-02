@@ -16,7 +16,10 @@
 import { montarContrato, vencimentoDaCobranca, PRAZO_MAXIMO } from '@/lib/contrato-recorrente'
 import { money } from '@/lib/format'
 
-export interface LinhaDoContrato { description: string; quantity: number; unit_price: number }
+// `serviceId`: de qual serviço do catálogo a linha veio — informativo, como
+// na fatura (o preço praticado fica na linha; reajustar o catálogo não muda
+// contrato nenhum).
+export interface LinhaDoContrato { description: string; quantity: number; unit_price: number; serviceId?: string | null }
 
 const inp: React.CSSProperties = {
   padding: '8px 10px', border: '1.5px solid #E2E8F4', borderRadius: 8,
@@ -26,7 +29,7 @@ const inp: React.CSSProperties = {
 export const LINHA_VAZIA: LinhaDoContrato = { description: '', quantity: 1, unit_price: 0 }
 
 export default function ContratoItens({
-  itens, setItens, desconto, setDesconto, dueDays, setDueDays, servicos, emissao,
+  itens, setItens, desconto, setDesconto, dueDays, setDueDays, servicos, emissao, comPrazo = true, porPeriodo = '',
 }: {
   itens: LinhaDoContrato[]
   setItens: (l: LinhaDoContrato[]) => void
@@ -36,6 +39,10 @@ export default function ContratoItens({
   setDueDays: (v: string) => void
   servicos: any[]
   emissao?: string | null
+  /** No DÉBITO não há prazo: o Stripe cobra na data. O campo só existe no contrato por fatura. */
+  comPrazo?: boolean
+  /** "/mês", "/trimestre", "/ano" — o total é o de CADA cobrança. */
+  porPeriodo?: string
 }) {
   const mexer = (i: number, campo: keyof LinhaDoContrato, valor: any) =>
     setItens(itens.map((l, k) => k === i ? { ...l, [campo]: valor } : l))
@@ -65,7 +72,7 @@ export default function ContratoItens({
                         const sv = (servicos || []).find((x: any) => x.id === e.target.value)
                         if (!sv) return
                         setItens(itens.map((x, k) => k === i
-                          ? { ...x, description: sv.nome, unit_price: Number(sv.preco) || 0 } : x))
+                          ? { ...x, description: sv.nome, unit_price: Number(sv.preco) || 0, serviceId: sv.id } : x))
                       }}
                       style={{ ...inp, fontSize: 12, padding: '4px 8px', cursor: 'pointer' }}>
                       <option value="">— pegar do catálogo —</option>
@@ -120,14 +127,16 @@ export default function ContratoItens({
           <input type="number" min={0} step="0.01" value={desconto}
             onChange={e => setDesconto(e.target.value)} style={{ ...inp, width: 120 }} />
         </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>VENCE EM (DIAS)</span>
-          <input type="number" min={0} max={PRAZO_MAXIMO} value={dueDays}
-            onChange={e => setDueDays(e.target.value)} style={{ ...inp, width: 120 }} />
-          <span style={{ fontSize: 11, color: '#9AAAB0' }}>
-            0 = no dia da emissão
-          </span>
-        </label>
+        {comPrazo && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>VENCE EM (DIAS)</span>
+            <input type="number" min={0} max={PRAZO_MAXIMO} value={dueDays}
+              onChange={e => setDueDays(e.target.value)} style={{ ...inp, width: 120 }} />
+            <span style={{ fontSize: 11, color: '#9AAAB0' }}>
+              0 = no dia da emissão
+            </span>
+          </label>
+        )}
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           {!erro && 'total' in conta && (
             <>
@@ -136,8 +145,11 @@ export default function ContratoItens({
                   {money(conta.bruto)} − {money(conta.desconto)} de desconto
                 </div>
               )}
-              <div style={{ fontSize: 22, fontWeight: 800, color: '#1A6B4A' }}>{money(conta.total)}</div>
-              {emissao && (
+              <div style={{ fontSize: 22, fontWeight: 800, color: '#1A6B4A' }}>
+                {money(conta.total)}
+                {porPeriodo && <span style={{ fontSize: 13, fontWeight: 600, color: '#6A7A9A' }}>{porPeriodo}</span>}
+              </div>
+              {emissao && comPrazo && (
                 <div style={{ fontSize: 12, color: '#6A7A9A' }}>
                   emite {emissao.slice(5, 7)}/{emissao.slice(8, 10)} ·
                   {' '}vence {vencimentoDaCobranca(emissao, Number(dueDays) || 0).slice(5).replace('-', '/')}

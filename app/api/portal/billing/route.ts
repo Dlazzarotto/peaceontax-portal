@@ -5,6 +5,9 @@
 //   planos     aguardando o cliente: entrada a pagar ou débito automático a cadastrar
 //   contratos  enviados para assinatura e ainda não assinados por ele
 //   historico  pagamentos recebidos
+//   orcamentos enviados e ainda não convertidos em fatura, com os itens —
+//              só para ler: aprovado, a equipe o transforma em fatura, e é a
+//              fatura que se paga. O aviso do envio manda o cliente para cá.
 // Rascunhos nunca aparecem: enviar é ato consciente da equipe (especificação 4.3).
 
 import { NextResponse } from 'next/server'
@@ -46,7 +49,7 @@ export async function GET() {
     // que aguardam cadastro: uma fatura parcelada com plano ATIVO não pode
     // oferecer pagamento à vista (a rota recusa), então a tela precisa saber disso.
     db.from('payment_plans')
-      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date, paid_installments')
+      .select('id, kind, status, description, total, entry_amount, entry_pct, installments, installment_amount, frequency, monthly_amount, due_day, invoice_id, next_charge_date, paid_installments, entry_paid_at')
       .eq('client_id', c.id).in('status', ['awaiting_entry', 'awaiting_setup', 'active', 'paused', 'payment_failed'])
       .order('created_at', { ascending: false }),
     db.from('signature_requests')
@@ -69,6 +72,31 @@ export async function GET() {
     }
   }
 
+  // Orçamentos: o aviso do envio aponta Pagamentos → Orçamentos. Antes não
+  // havia nada aqui, e o cliente chamado a "ver e pagar" não achava o
+  // documento. O que já virou fatura sai: quem paga é a fatura, e ela está
+  // em "Faturas em aberto". Consulta que falha recusa, como as outras quatro.
+  const { data: orcs, error: errOrcs } = await db.from('invoices')
+    .select('id, number, status, issue_date, due_date, subtotal, discount, total, notes')
+    .eq('client_id', c.id).eq('doc_type', 'estimate').eq('status', 'sent')
+    .order('issue_date', { ascending: false }).limit(20)
+  const idsOrc = (orcs || []).map((o: any) => o.id)
+  const [{ data: viraram, error: errViraram }, { data: itensOrc, error: errItensOrc }] = idsOrc.length
+    ? await Promise.all([
+        db.from('invoices').select('converted_from').in('converted_from', idsOrc).eq('doc_type', 'invoice').neq('status', 'void'),
+        db.from('invoice_items').select('invoice_id, description, qty, unit_price, amount, sort').in('invoice_id', idsOrc).order('sort'),
+      ])
+    : [{ data: [] as any[], error: null }, { data: [] as any[], error: null }]
+  for (const err of [errOrcs, errViraram, errItensOrc]) {
+    if (err) {
+      console.error('[portal/billing] orcamentos', err.message)
+      return NextResponse.json({
+        error: 'Não foi possível carregar os orçamentos agora. Tente de novo em instantes — se continuar, fale com a nossa equipe.',
+      }, { status: 500 })
+    }
+  }
+  const convertidos = new Set((viraram || []).map((v: any) => v.converted_from))
+
   const abertas = (faturas || []).filter((f: any) => f.status !== 'paid' && Number(f.total) - Number(f.paid_total) > 0.009)
   const ids = abertas.map((f: any) => f.id)
   const { data: parcelas } = ids.length
@@ -80,6 +108,17 @@ export async function GET() {
   const { data: planosDosContratos } = planIds.length
     ? await db.from('payment_plans').select('id, kind, description, total, monthly_amount, due_day, installments, installment_amount').in('id', planIds)
     : { data: [] as any[] }
+
+  // O intervalo de cada contrato ("/mês", "/trimestre") numa consulta À PARTE
+  // e tolerante: a coluna nasce em sql/contrato-unico-v1.sql, e o portal do
+  // cliente não pode cair se o código subir antes da migração. Sem ela,
+  // tudo é mensal — que é o que tudo era antes dela.
+  const idsDosPlanos = [...new Set([...(planos || []), ...(planosDosContratos || [])].map((p: any) => p.id))]
+  const { data: intervalos } = idsDosPlanos.length
+    ? await db.from('payment_plans').select('id, billing_interval').in('id', idsDosPlanos)
+    : { data: [] as any[] }
+  const intervaloDe = new Map((intervalos || []).map((x: any) => [x.id, x.billing_interval]))
+  for (const p of [...(planos || []), ...(planosDosContratos || [])] as any[]) p.billing_interval = intervaloDe.get(p.id) || 'monthly'
   const planoPorId = new Map((planosDosContratos || []).map((p: any) => [p.id, p]))
 
   // Contrato que o cliente já assinou (a firma assina depois; o envelope ainda
@@ -96,7 +135,9 @@ export async function GET() {
   // Sem isso a tela oferece um botão que a rota recusa.
   const comSituacao = (planos || []).map((p: any) => ({
     ...p,
-    podeCadastrar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !planosBloqueados.has(p.id),
+    // Entrada já paga não se oferece de novo: o link cobraria outra vez.
+    podeCadastrar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !planosBloqueados.has(p.id)
+      && !(p.kind === 'installment' && p.entry_paid_at && Number(p.entry_amount || 0) > 0),
     aguardandoContrato: planosBloqueados.has(p.id),
   }))
   // Primeiro assina, depois cadastra o débito: só o que o cliente pode agir agora
@@ -118,6 +159,11 @@ export async function GET() {
       plano: planoPorId.get(s.plan_id) || null,
       // Só o contrato enviado para assinatura no portal tem botão; o antigo foi por e-mail do DocuSign
       embedded: !!(Array.isArray(s.signers) && s.signers[0]?.embedded),
+    })),
+    orcamentos: (orcs || []).filter((o: any) => !convertidos.has(o.id)).map((o: any) => ({
+      ...o,
+      itens: (itensOrc || []).filter((i: any) => i.invoice_id === o.id)
+        .map((i: any) => ({ descricao: i.description, qtd: Number(i.qty) || 1, valor: Number(i.amount) || 0 })),
     })),
     historico: (pagamentos || []).map((p: any) => ({
       ...p, number: (faturas || []).find((f: any) => f.id === p.invoice_id)?.number || null,

@@ -93,7 +93,7 @@ checar('Conciliacao', 'components/ReconcileTab.tsx', 'fmtDate', 'idem')
 titulo('FINANCEIRO: PERMISSOES EM TODAS AS ROTAS')
 checar('Faturas', 'app/api/billing/invoices/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Pagamentos', 'app/api/billing/payments/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
-checar('Contratos', 'app/api/billing/recurring/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
+checar('Contratos', 'app/api/billing/contratos/route.ts', 'podeMexerEmContrato', 'rota sem controle de acesso')
 checar('Parcelamento', 'app/api/billing/installment-plan/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Impressao', 'app/api/billing/print/route.ts', 'permissoesFinanceiro', 'rota sem controle de acesso')
 checar('Link Stripe', 'app/api/billing/stripe-checkout/route.ts', 'permissoesFinanceiro', 'qualquer um geraria cobranca')
@@ -103,11 +103,221 @@ checar('Catalogo unico', 'app/api/billing/invoices/route.ts', 'pricing_items', '
 checar('Relatorios: so o socio (verRelatorios)', 'app/api/billing/reports/route.ts', 'perms.verRelatorios', 'gerente veria os totais do negocio')
 checar('Relatorios: orcamento e rascunho fora do faturamento', 'app/api/billing/reports/route.ts', "not('status', 'in', '(draft,void)')", 'faturamento inflado por rascunho/cancelada')
 
+titulo('COBRANCA PELO STRIPE: O VALOR QUE A TELA MOSTRA E O QUE A ROTA COBRA')
+// O botao "Cobrar no cartao" mostrava o valor digitado e a chamada nao o
+// mandava; a rota cobrava o saldo inteiro, sempre -- o cliente que ia pagar
+// uma parte via o total na pagina do Stripe. Mesma classe do botao x trava:
+// cada arquivo sozinho parecia certo. Agora a tela MANDA o valor, tela e rota
+// decidem pela mesma regra pura (lib/cobranca-balcao.ts) e a sessao do Stripe
+// nasce pelo valor decidido -- nunca mais por `saldo` direto.
+checar('A tela manda o valor digitado ao gerar a cobranca', 'app/dashboard/billing/page.tsx',
+       /stripe-checkout'[\s\S]{0,400}?body:\s*JSON\.stringify\(\{[^}]*\bvalor\b/,
+       'o botao mostra um valor e a rota cobra outro')
+checar('A tela decide o valor pela mesma regra da rota', 'app/dashboard/billing/page.tsx',
+       /decidirValorDaCobranca\(/, 'previa da tela diverge da trava')
+checar('A rota decide o valor pela regra pura, com o valor pedido', 'app/api/billing/stripe-checkout/route.ts',
+       /decidirValorDaCobranca\(\{[\s\S]{0,200}?pedido:\s*body\.valor/, 'rota ignora o valor pedido')
+recusar('A sessao do Stripe nao nasce pelo saldo direto', 'app/api/billing/stripe-checkout/route.ts',
+        /unit_amount\]':\s*String\(Math\.round\(saldo \* 100\)\)/, 'cobrar o saldo inteiro era o defeito')
+checar('A sessao do Stripe nasce pelo valor decidido', 'app/api/billing/stripe-checkout/route.ts',
+       /unit_amount\]':\s*String\(Math\.round\(valor \* 100\)\)/, 'o valor decidido tem de ser o cobrado')
+
 titulo('RELATORIOS: NADA DE FORA ENTRA NO SCRIPT')
 checar('Barra: destino vai em atributo, nao dentro do script', 'lib/relatorio-barra.ts', 'data-destino=', 'parametro com </script> injetaria codigo na sessao da equipe')
 checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export function escaparHtml', 'nome de conta da URL viraria HTML')
-checar('Detalhe da conta: mes validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', 'const month = mesBruto &&', 'mes cru voltaria para o link do Voltar')
+// O periodo (from/to ou year/month) e remontado na URL do "Voltar ao P&L":
+// so entra o que periodoDosParametros validou (data que existe), nunca o
+// parametro cru.
+checar('Detalhe da conta: periodo validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', /const periodo = periodoDosParametros\(/, 'from/to crus voltariam para o link do Voltar')
+recusar('Detalhe da conta: o link do Voltar nao leva parametro cru', 'app/api/bookkeeping/category-detail/route.ts', /pnlUrl[\s\S]{0,200}?sp\.get\(/, 'so data validada entra na URL do P&L')
 checar('Detalhe da conta: categoria escapada', 'app/api/bookkeeping/category-detail/route.ts', 'escaparHtml(category)', 'XSS refletido pelo nome da conta')
+
+titulo('RELATORIO CONTABIL: UM PERIODO, FILTRO POR DATA, TODAS AS LINHAS')
+// P&L, Balanco, Fornecedores/1099 e o detalhe por conta liam com
+// .limit(10000)/.limit(20000) -- o PostgREST corta em 1000 e NAO avisa, e o
+// numero de imposto saia truncado em silencio para cliente com mais de mil
+// lancamentos aprovados no ano. E cada rota lia o periodo do seu jeito (year,
+// year+month, 31/12 fixo), enquanto a tela oferecia so ano e mes. Agora a
+// conversao do periodo e UMA (lib/periodo-relatorio.ts: from/to ou year, e
+// asOf no Balanco, que e "em tal data"), o filtro e por tx_date (fiscal_year
+// nasce dela e so sabe o ano) e a leitura e paginada (lib/paginar.ts). As
+// tres telas que abrem relatorio usam o mesmo seletor, senao a tela oferece
+// um periodo que a rota nao entende.
+{
+  const ROTAS = {
+    'app/api/bookkeeping/pnl/route.ts':             /periodoDosParametros\(/,
+    'app/api/bookkeeping/category-detail/route.ts': /periodoDosParametros\(/,
+    'app/api/bookkeeping/vendors/route.ts':         /periodoDosParametros\(/,
+    'app/api/bookkeeping/balance-sheet/route.ts':   /dataDeCorteDosParametros\(/,
+  }
+  for (const [arq, periodo] of Object.entries(ROTAS)) {
+    const nome = arq.split('/').slice(-2)[0]
+    if (!existsSync(join(raiz, arq))) { falta(`${nome}: periodo unico e leitura paginada`, `arquivo inexistente: ${arq}`); continue }
+    // Sem comentarios: o comentario que explica o defeito cita `.limit(10000)`
+    const codigo = readFileSync(join(raiz, arq), 'utf8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (!periodo.test(codigo)) falta(`${nome} le o periodo por lib/periodo-relatorio`, 'rota com conta propria de periodo diverge da tela e das irmas')
+    else if (/\.limit\(\s*\d{4,}\s*\)/.test(codigo)) falta(`${nome} le todas as linhas`, '.limit(N) a partir de 1000 e truncamento silencioso: o PostgREST para em 1000')
+    else if (/\.eq\(\s*'fiscal_year'/.test(codigo)) falta(`${nome} filtra por tx_date`, 'fiscal_year so sabe o ano; trimestre e mes precisam da data')
+    // O generico (`todasAsLinhas<T>(`) fica entre o nome e o parentese
+    else if (!/todasAsLinhas(<[\s\S]{0,200}?>)?\s*\(/.test(codigo)) falta(`${nome} le todas as linhas`, 'sem todasAsLinhas a leitura para em 1000')
+    else ok(`${nome}: periodo unico, filtro por data e leitura paginada`)
+  }
+  for (const tela of ['components/BookkeepingTab.tsx', 'components/portal/ClientReports.tsx', 'app/dashboard/billing/page.tsx']) {
+    checar(`${tela.split('/').pop()} usa o seletor de periodo da casa`, tela, /<SeletorPeriodo\b/, 'periodo calculado na tela diverge do que a rota entende')
+  }
+  // "Hoje" dos atalhos e o dia do ESCRITORIO, nao o relogio do navegador em UTC
+  recusar('O seletor nao usa toISOString para "hoje"', 'components/SeletorPeriodo.tsx', /toISOString\(/, 'as 21h de Malden "este mes" ja era o mes seguinte')
+  checar('O seletor usa o dia da firma', 'components/SeletorPeriodo.tsx', /dataDaFirma\(/, 'o atalho tem de nascer no dia do escritorio')
+}
+
+titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
+// A lista fixa no codigo (Contract Labor e Subcontractors) deixava de fora
+// advogado, aluguel e toda conta nova, e ninguem fora do codigo mudava isso.
+// Decisao do socio: um botao em cada conta de despesa do plano de contas
+// (bookkeeping_categories.form_1099), e TODA despesa paga na conta marcada
+// entra. Tres regras de lei que a lista nao tinha: o limite muda com o ano
+// (600 ate 2025, 2000 a partir de 2026), o cartao de credito vai no 1099-K e
+// fica fora, e grafias do mesmo prestador somam juntas. A regra mora em
+// lib/relatorio-1099.ts, testada.
+// PayPal, Venmo e Cash App pagos pela conta bancaria ENTRAM (decisao do socio,
+// 11/2026): a transferencia pessoal nao tem 1099-K, e o 1099 e do pagador -- a
+// regra anterior tirava todo Venmo e deixava formulario obrigatorio de fora. A
+// excecao da lei (perfil de negocio, "goods & services", vai no 1099-K) o
+// extrato nao mostra, entao a LINHA diz quanto veio por plataforma e se o
+// prestador so passa do limite com isso. Sem a nota na linha, quem prepara nao
+// acha o pagamento de negocio para tirar.
+{
+  const V = 'app/api/bookkeeping/vendors/route.ts'
+  recusar('O 1099 nao usa lista fixa de contas', V, /CATS_1099/, 'a lista fixa ignora a marca que o socio poe no plano de contas')
+  checar('O 1099 apura pelo modulo puro', V, /apurar1099\(\{/, 'conta de 1099 feita na rota diverge da testada')
+  recusar('A rota do 1099 nao fixa o limite', V, />=\s*(600|2000)\b/, 'o limite muda com o ano: 600 ate 2025, 2000 a partir de 2026')
+  checar('O limite do 1099 muda em 2026', 'lib/relatorio-1099.ts', /desde:\s*2026,\s*valor:\s*2000/, 'pagamento a partir de 2026 tem limite de US$ 2.000')
+  checar('O cartao de credito fica fora do 1099', V, /type === 'credit_card'/, 'pagamento no cartao vai no 1099-K, nao no NEC/MISC')
+  recusar('O 1099 nao tira toda plataforma do total', 'lib/relatorio-1099.ts', /if \(viaPlataforma\)[^\n]*continue/,
+          'transferencia pessoal por Venmo/PayPal e 1099 do pagador; tirar todas deixa formulario obrigatorio de fora')
+  checar('A linha do 1099 leva a nota da plataforma', V, /<b>\$\{esc\(l\.prestador\)\}<\/b>\$\{notaDaLinha\(l\)\}/,
+         'sem a nota quem prepara nao acha o pagamento a perfil de negocio (1099-K) para tirar')
+  checar('A nota diz quanto veio por plataforma e quem so passa do limite com isso', V,
+         /l\.porPlataforma > 0[\s\S]{0,400}?l\.dependeDaPlataforma/,
+         'o prestador que so chega ao limite por Venmo depende do tipo do pagamento no app')
+  // A RECUSA, nao a mencao: a funcao aparece tambem na linha que tira a marca
+  // de quem muda de grupo, e a primeira versao passava com a recusa desligada.
+  // A regra saiu da rota para lib/plano-de-contas.ts (a tela e a rota chamam
+  // a mesma), e o banco recusa de novo na gravacao.
+  checar('A marca do 1099 so vai em conta de despesa', 'lib/plano-de-contas.ts',
+         /if \(f && !ehContaDeDespesa\(kind\)\) return recusa\('Só conta de despesa vai para o 1099\.'\)/,
+         'receita marcada para o 1099 nao faz sentido')
+  checar('O banco tambem recusa 1099 fora de despesa', 'sql/plano-de-contas-edicao-funcao-v1.sql',
+         /p_form_1099 is not null and \(p_form_1099 not in \('NEC', 'MISC'\) or not v_despesa\)/,
+         'a gravacao aceitaria a marca numa conta de receita')
+  checar('A tela marca o 1099 pela rota', 'app/dashboard/accounts/page.tsx', /form1099:/, 'botao do 1099 sem chamada a rota')
+}
+
+titulo('PLANO DE CONTAS: EDITAR E UMA TRANSACAO, E A CONTA DO SISTEMA NAO MUDA')
+// O lancamento guarda o NOME da conta, e o P&L trata nome que o plano nao tem
+// como DESPESA (`kindMap[c] || 'expense'`). A rota renomeava a conta e depois,
+// em idas separadas e sem olhar erro, os lancamentos, as regras e as
+// sub-contas: um renomear pela metade mandava a receita da conta antiga para
+// as despesas de todos os clientes, e a tela dizia "conta atualizada". Apagar
+// tinha o mesmo desenho. E renomear 'Transfer' ou 'Credit Card Payment' fazia
+// o motor seguir gravando o nome antigo: toda transferencia nova virava
+// despesa. Agora a regra e de lib/plano-de-contas.ts (a tela e a rota chamam a
+// mesma) e a gravacao e uma funcao do banco, com trilha, tudo ou nada.
+{
+  const R = 'app/api/bookkeeping/categories/route.ts'
+  const T = 'app/dashboard/accounts/page.tsx'
+  const M = 'lib/plano-de-contas.ts'
+  const F = 'sql/plano-de-contas-edicao-funcao-v1.sql'
+  checar('Editar passa pela regra testada', R, /planoDaEdicao\(\{/, 'regra de edicao feita na rota diverge da que a tela mostra e o teste confere')
+  checar('Editar grava numa transacao do banco', R, /db\.rpc\('editar_conta_do_plano'/, 'renomear em idas separadas deixa o livro pela metade quando uma falha')
+  checar('Apagar passa pela regra e pela transacao', R, /planoDaRemocao\(\{[\s\S]*?db\.rpc\('apagar_conta_do_plano'/, 'apagar com o movimento em idas separadas deixa lancamento com nome de conta que sumiu')
+  checar('Desativar confere lancamento E regra, e grava pela transacao', R,
+         /recusaDaDesativacao\([\s\S]{0,400}?db\.rpc\('situacao_da_conta_do_plano'/,
+         'regra apontando para conta inativa segue lancando nela a cada importacao')
+  // Pela AUSENCIA: a rota nao mexe em lancamento, regra, conta a pagar nem no
+  // proprio plano por fora da funcao (o insert do POST e a unica escrita).
+  recusar('A rota nao reescreve lancamento, regra ou conta a pagar por conta propria', R,
+          /\.from\('(bank_transactions|bookkeeping_rules|firm_bills)'\)\s*\.(update|delete|insert)\(/,
+          'a cascata fora da transacao e o defeito que isto conserta')
+  recusar('A rota nao altera nem apaga conta por fora da transacao', R,
+          /\.from\('bookkeeping_categories'\)\s*\.(update|delete)\(/,
+          'conta alterada sem a cascata e sem a trilha')
+  recusar('Sub-conta nao se acha por LIKE', R, /\.like\(\s*'name'/,
+          'LIKE le "_" e "%" do nome como curinga: renomear Meals_Entertainment levava MealsXEntertainment junto')
+  checar('A funcao acha sub-conta pelo prefixo exato', F, /left\(f\.name, char_length\(v_prefixo\)\) = v_prefixo/,
+         'sem o prefixo exato a cascata pega conta de outro nome')
+  {
+    const sql = existsSync(join(raiz, F)) ? readFileSync(join(raiz, F), 'utf8') : ''
+    const contar = re => (sql.match(re) || []).length
+    contar(/for update;/g) >= 3 && contar(/'mudou_no_meio'/g) >= 3
+      ? ok('As tres funcoes travam a conta e recusam se ela mudou desde a leitura')
+      : falta('As tres funcoes travam a conta e recusam se ela mudou desde a leitura',
+              'duas edicoes ao mesmo tempo deixariam os lancamentos com o nome de uma e a conta com o da outra')
+    contar(/insert into bookkeeping_category_audit/g) >= 3
+      ? ok('As tres funcoes gravam a trilha na mesma transacao')
+      : falta('As tres funcoes gravam a trilha na mesma transacao', 'mudanca no plano de todos os clientes sem rastro (principio 2)')
+    const motivoNasDuas = contar(/'motivo_obrigatorio'/g) >= 2
+    motivoNasDuas
+      ? ok('O banco recusa editar ou apagar conta em uso sem motivo')
+      : falta('O banco recusa editar ou apagar conta em uso sem motivo', 'trilha de mudanca no livro nascendo sem o porque')
+  }
+  checar('Conta em uso mudando pede motivo', R, /if \(plano\.exigeMotivo && motivo\.length < MOTIVO_MINIMO\)/, 'a mudanca alcanca o livro de todos os clientes')
+  checar('Mudar o grupo de conta em uso pede a senha', R, /if \(plano\.exigeSenha\) \{\s*const recusa = await conferirSenha\(/,
+         'o grupo muda o P&L e o Balanco de anos ja declarados (principio 3)')
+  checar('A senha vem do grupo que muda numa conta em uso', M, /const exigeSenha = mudouGrupo && lancamentos > 0/,
+         'pedir senha onde nao precisa ensina a digitar sem ler; nao pedir onde precisa e o principio 3 quebrado')
+  checar('A tela mostra a previa pela mesma regra da rota', T, /planoDaEdicao\(\{/, 'a tela que calcula por conta propria promete o que a rota recusa')
+  checar('Cada conta da lista tem o Editar', T, /lista\.map\(c => \{[\s\S]*?abrirEdicao\(c\)[\s\S]{0,200}?Editar/, 'o botao de editar e por conta, na propria linha')
+  // As contas que o CODIGO grava pelo nome: todo literal que os pontos que
+  // escrevem `category:` usam tem de estar na lista do sistema. Pega o motor
+  // ganhando uma conta nova sem a trava. Nao segue variavel (`cat`, `cat0`):
+  // os literais delas sao os mesmos dois, ja na lista.
+  {
+    const mod = existsSync(join(raiz, M)) ? readFileSync(join(raiz, M), 'utf8') : ''
+    const bloco = (/export const CONTAS_DO_SISTEMA[^{]*\{([\s\S]*?)\n\}/.exec(mod) || [])[1] || ''
+    const literais = new Set([...bloco.matchAll(/^\s*'([^']+)':/gm)].map(m => m[1]))
+    const constantes = new Set([...bloco.matchAll(/^\s*\[(CONTA_[A-Z_]+)\]:/gm)].map(m => m[1]))
+    const usados = [], ids = []
+    for (const arq of ['lib/apply-rules.ts', 'app/api/bookkeeping/categorize/route.ts', 'app/api/bookkeeping/rules/route.ts',
+                       'app/api/bookkeeping/transfer-match/route.ts', 'lib/caixa-recebimentos.ts', 'lib/deposito-match.ts']) {
+      if (!existsSync(join(raiz, arq))) continue
+      const src = readFileSync(join(raiz, arq), 'utf8')
+      for (const m of src.matchAll(/\bcategory:\s*([^,\n}]+)/g)) {
+        for (const l of m[1].matchAll(/'([^']+)'/g)) usados.push({ nome: l[1], arq })
+        for (const k of m[1].matchAll(/\b(CONTA_[A-Z_]+)\b/g)) ids.push({ nome: k[1], arq })
+      }
+    }
+    if (!bloco || usados.length === 0 || ids.length === 0) {
+      falta('Conta que o codigo grava pelo nome e conta do sistema',
+            'ancora perdida: nao achei CONTAS_DO_SISTEMA ou nenhum `category:` com nome fixo -- a conferencia nao estaria conferindo nada')
+    } else {
+      const soltos = [...usados.filter(u => !literais.has(u.nome)), ...ids.filter(u => !constantes.has(u.nome))]
+      soltos.length === 0
+        ? ok(`Conta que o codigo grava pelo nome e conta do sistema (${new Set(usados.map(u => u.nome)).size} literais, ${new Set(ids.map(u => u.nome)).size} constantes)`)
+        : falta('Conta que o codigo grava pelo nome e conta do sistema',
+                `fora de CONTAS_DO_SISTEMA: ${soltos.map(s => `"${s.nome}" (${s.arq})`).join(', ')} -- renomear a conta faria o codigo gravar um nome que o plano nao tem, e o P&L o contaria como despesa`)
+    }
+  }
+  checar('A rota recusa nome repetido sem diferenca de caixa ao criar', R, /chaveDaConta\(c\.name\) === chaveDaConta\(clean\)/,
+         '"office supplies" ao lado de "Office Supplies" divide o P&L de todos os clientes em duas linhas')
+}
+
+titulo('IMPRESSO NAO PUBLICA TEXTO DO BANCO SEM ESCAPAR')
+// O nome do cliente e digitado por ele no aceite do convite, o payee nasce da
+// descricao do extrato e o nome da conta bancaria vem do Plaid. Os quatro
+// impressos interpolavam isso cru no HTML: um nome com <script> rodava na
+// sessao de quem abrisse o relatorio, inclusive a do socio.
+// O padrao olha a POSICAO de texto (depois de `>`, do travessao e dos icones),
+// nao qualquer interpolacao: `${g.cat}` dentro do argumento de catLink, que
+// escapa, nao e saida de HTML.
+{
+  const CRU = /(>|— |🏦 |💳 )\s*\$\{\s*(displayName|name|[a-z]\.payee|[a-z]\.name|g\.cat|c)\s*\}/
+  for (const arq of ['app/api/bookkeeping/pnl/route.ts', 'app/api/bookkeeping/balance-sheet/route.ts',
+                     'app/api/bookkeeping/vendors/route.ts', 'app/api/bookkeeping/category-detail/route.ts']) {
+    recusar(`${arq.split('/').slice(-2)[0]} escapa o que vem do banco`, arq, CRU,
+            'nome de cliente, payee ou conta sem escaparHtml vira HTML na sessao da equipe')
+  }
+}
 
 titulo('IMPRESSOS: VOLTAR E CELULAR')
 checar('Barra tem destino fixo alem do Voltar', 'lib/relatorio-barra.ts', 'data-painel=', 'Voltar depende do historico; sem destino fixo nao ha volta garantida')
@@ -128,6 +338,40 @@ checar('Menu num componente so', 'components/FirmNav.tsx', 'export default funct
 checar('Menu recolhe ao escolher', 'components/FirmNav.tsx', 'const fechar = ()', 'sanfona ficava aberta depois de escolher (era <details> nativo)')
 for (const lay of ['app/dashboard/layout.tsx', 'app/clients/layout.tsx', 'app/invitations/layout.tsx', 'app/settings/layout.tsx'])
   checar(`Layout usa o FirmNav: ${lay.split('/')[1]}`, lay, 'FirmNav', 'layout com menu proprio volta a divergir')
+
+titulo('TEXTO DE <style> NAO LEVA < > &')
+// O React escapa o texto de <style>{...}</style> no HTML do servidor (">" vira
+// "&gt;") e o navegador NAO desescapa dentro de <style>: o texto que chega e o
+// que o cliente monta diferem, a hidratacao falha e o React refaz a pagina
+// INTEIRA no navegador. Era assim em toda pagina da firma -- por dois
+// comentarios do CSS do menu, "(>= 1100px)" e "(< 1100px)" -- e no painel, onde
+// ".pnl-haste > div" ainda era seletor invalido ate o React refazer a pagina.
+// Le o texto do <style> (literal ou const do mesmo arquivo, fora os ${...}).
+{
+  const estilos = []
+  for (const p of arquivos(raiz, ['.tsx'])) {
+    const src = readFileSync(p, 'utf8')
+    for (const m of src.matchAll(/<style[^>]*>\{\s*(`([\s\S]*?)`|(\w+))\s*\}<\/style>/g)) {
+      let css = m[2]
+      if (m[3]) css = (new RegExp(`const ${m[3]}\\s*=\\s*\`([\\s\\S]*?)\``).exec(src) || [])[1]
+      estilos.push({ arq: rel(p), nome: m[3] || 'literal', css })
+    }
+  }
+  if (estilos.length === 0) {
+    falta('Texto de <style> sem < > &', 'ancora perdida: nenhum <style>{...}</style> encontrado -- a conferencia nao estaria conferindo nada')
+  } else {
+    const ruins = []
+    for (const e of estilos) {
+      if (e.css == null) { ruins.push(`${e.arq}: nao consegui ler ${e.nome} (use literal ou const do mesmo arquivo)`); continue }
+      const texto = e.css.replace(/\$\{[^}]*\}/g, '')
+      const linha = texto.split('\n').find(l => /[<>&]/.test(l))
+      if (linha) ruins.push(`${e.arq}: "${linha.trim().slice(0, 60)}"`)
+    }
+    ruins.length === 0
+      ? ok(`Texto de <style> sem < > & (${estilos.length} blocos)`)
+      : falta('Texto de <style> sem < > &', `${ruins.join(' · ')} -- o servidor escapa, a hidratacao falha e a pagina e refeita inteira no navegador`)
+  }
+}
 
 titulo('CADASTRO DE CLIENTE')
 checar('Corpo do pedido nao vai direto para o insert', 'app/api/clients/route.ts', 'camposDoCliente', 'qualquer campo enviado entrava na tabela, inclusive user_id')
@@ -180,8 +424,8 @@ checar('Sessao expirada tira a fatura do limbo', 'app/api/stripe/webhook/route.t
 checar('ACH parado no caminho avisa a equipe', 'lib/ach-transito.ts', 'export async function alertarAchParado', 'debito sem confirmacao ficava invisivel')
 checar('Webhook: ACH confirmado dias depois', 'app/api/stripe/webhook/route.ts', 'checkout.session.async_payment_succeeded', 'debito em conta nunca seria registrado')
 checar('Webhook: entrada por ACH so ativa com dinheiro confirmado', 'app/api/stripe/webhook/route.ts', "'entry_processing'", 'parcelamento comecaria com entrada que o banco pode devolver')
-checar('Webhook: forma real tambem na entrada', 'app/api/stripe/webhook/route.ts', 'metodoEntrada', 'entrada por ACH entraria no livro como cartao')
-checar('Ancora respeita as 48h do Stripe', 'lib/plan-checkout.ts', 'ancoraDeCobranca', 'cadastro do debito falha quando o dia acordado esta perto')
+checar('Webhook: forma real tambem na entrada', 'app/api/stripe/webhook/route.ts', 'metodo: metodoDoTipo(pag.tipo)', 'entrada por ACH entraria no livro como cartao')
+checar('Ancora respeita as 48h do Stripe (e a regua do contrato)', 'lib/plan-checkout.ts', 'ancoraDoDebito(', 'cadastro do debito falha quando o dia acordado esta perto')
 checar('Portal: fatura sabe se o plano aceita acao', 'app/api/portal/billing/route.ts', 'podeCadastrar', 'fatura parcelada ativa mostraria botao Pagar que a rota recusa')
 checar('Fatura enviada avisa o cliente', 'app/api/billing/invoices/route.ts', 'avisarClienteDaFatura', 'cliente nao saberia que tem fatura')
 
@@ -217,6 +461,28 @@ checar('SMS sai pela lib (consentimento conferido)', 'lib/billing-reminders.ts',
 checar('Idempotente (chave por plano e data)', 'lib/billing-reminders.ts', 'chaveUnica', 'cron rodando duas vezes avisaria duas vezes')
 checar('Fica na trilha (plan_audit)', 'lib/billing-reminders.ts', "'reminder_sent'", 'numa contestacao nao haveria prova do aviso')
 checar('Datas pelas mesmas regras do checkout', 'lib/billing-reminders.ts', 'nextBillingDayET', 'aviso em dia diferente do debito')
+
+titulo('DEBITO QUE FALHA: A MENSAGEM SO PROMETE O QUE O STRIPE MARCOU')
+// A equipe lia "O Stripe fara novas tentativas automaticas" e o cliente "Uma
+// nova tentativa sera feita automaticamente" -- sem ninguem saber. No debito em
+// conta (ACH) o Stripe NAO tenta de novo por padrao: o cliente esperava um
+// debito que nao vinha e a parcela ficava parada. Quem diz e a invoice do
+// evento (next_payment_attempt), lida em lib/aviso-de-falha.ts.
+{
+  const W = 'app/api/stripe/webhook/route.ts'
+  recusar('O webhook nao promete nova tentativa por conta propria', W,
+          /fará novas tentativas automáticas|nova tentativa será feita automaticamente/i,
+          'promessa fixa: no ACH o Stripe nao tenta de novo por padrao, e o cliente fica esperando')
+  checar('A mensagem da falha sai da invoice do evento', W,
+         /mensagensDaFalha\(\{[\s\S]{0,400}?proximaTentativa:\s*\(invoice as any\)\.next_payment_attempt/,
+         'sem a proxima tentativa marcada pelo Stripe, o texto volta a adivinhar')
+  checar('Equipe e cliente recebem o texto decidido', W,
+         /message:\s*aviso\.equipe,[\s\S]{0,200}?notifyClient\(db, plan\.client_id, aviso\.cliente\)/,
+         'mensagem escrita a mao ao lado da regra diverge dela')
+  checar('Proxima tentativa nula e "nenhuma", nao "agendada"', 'lib/aviso-de-falha.ts',
+         "if (proxima === null) return { situacao: 'nenhuma', data: null }",
+         'next_payment_attempt nulo e justamente o caso em que o Stripe nao vai tentar')
+}
 
 titulo('TEXTO: acentos corrompidos (mojibake) e BOM')
 // Mojibake: UTF-8 lido como Latin-1 e gravado de novo em UTF-8 (o "a" com til
@@ -379,6 +645,7 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
     ['Estornar',               'app/dashboard/billing/page.tsx', 'estornar',      'app/api/billing/payments/route.ts',         'estornar'],
     ['Cobrar de novo',         'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/recharge/route.ts',         'receber'],
     ['Cancelar parcelamento',  'app/dashboard/billing/page.tsx', 'cancelar',      'app/api/billing/installment-plan/route.ts', 'cancelar'],
+    ['Agendar parcelas',       'app/dashboard/billing/page.tsx', 'receber',       'app/api/billing/installment-plan/route.ts', 'receber'],
     ['Relatorios',             'app/dashboard/billing/page.tsx', 'verRelatorios', 'app/api/billing/reports/route.ts',          'verRelatorios'],
   ]
   let semPar = []
@@ -403,18 +670,20 @@ titulo('A TELA PEDE A MESMA CHAVE QUE A ROTA EXIGE')
   // liga as duas pontas. Sem esse elo, botao e trava voltam a poder divergir,
   // que e a falha de metodo que mais custou neste projeto.
   {
-    const rota = readFileSync(join(raiz, 'app/api/billing/recurring/route.ts'), 'utf8')
+    const rota = readFileSync(join(raiz, 'app/api/billing/contratos/route.ts'), 'utf8')
     const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
     const problemas = []
 
     if (!/const podeMexerEmContrato\s*=\s*\(nivel[\s\S]{0,160}?'owner'[\s\S]{0,60}?'manager'/.test(rota)) {
       problemas.push('a rota nao define podeMexerEmContrato por nivel (owner/manager)')
     }
-    // As DUAS portas de escrita: criar e alterar.
-    const guardas = (rota.match(/if \(!podeMexerEmContrato\(perms\.nivel\)\)/g) || []).length
+    // As DUAS portas de escrita: criar e alterar. O nivel vem de
+    // getStaffLevel (team_members), nao de `perms`: a concessao individual
+    // de `receber` nao pode abrir o contrato.
+    const guardas = (rota.match(/if \(!podeMexerEmContrato\(await getStaffLevel\(auth\.userId\)\)\)/g) || []).length
     if (guardas < 2) problemas.push(`so ${guardas} rota(s) de escrita travam por nivel -- esperado POST e PATCH`)
     // O elo: o GET manda a resposta pronta, calculada pela MESMA funcao.
-    if (!/podeContrato:\s*podeMexerEmContrato\(perms\.nivel\)/.test(rota)) {
+    if (!/podeContrato:\s*podeMexerEmContrato\(nivel\)/.test(rota)) {
       problemas.push('o GET nao manda podeContrato calculado por podeMexerEmContrato')
     }
     // E a tela OBEDECE, em vez de recalcular a regra por conta propria.
@@ -559,6 +828,7 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
   const ABERTAS = [
     'app/api/agenda/slots/route.ts',
     'app/api/agenda/bookings/route.ts',
+    'app/api/agenda/tipos/route.ts',
     'app/api/invite/[token]/route.ts',
     'app/api/firm/setup/[token]/route.ts',
     'app/api/auth/logout/route.ts',
@@ -618,6 +888,38 @@ titulo('TODA ROTA DE API CONFERE QUEM CHAMA')
     falta('Cada verbo de cada rota confere quem chama', `sem conferencia no proprio verbo: ${verbosSoltos.join(', ')}`)
   else
     ok(`Cada verbo de cada rota confere quem chama (${verbosVistos} verbos)`)
+}
+
+titulo('O NAVEGADOR NAO LE TABELA DIRETO')
+// Quem trabalha as tabelas e o servidor, com a service role; o navegador vai
+// por rota de /api. sql/rls-tabelas-expostas-v3.sql dizia ter conferido
+// "zero .from() em client component" -- e havia dois: a pagina publica
+// /agendar lia meeting_types com a anon key, e a agenda da equipe lia e
+// gravava staff_availability com a sessao. Fechar as tabelas tiraria as duas
+// telas do ar. Esta conferencia e a que faltava: todo arquivo do navegador
+// ("use client", ou que cria cliente de navegador) sem consulta a tabela.
+// Array.from, storage.from (arquivo, nao tabela) e Buffer.from ficam fora.
+{
+  const semComent = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const doNavegador = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.tsx', '.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.tsx', '.ts']),
+                     ...arquivos(join(raiz, 'lib'), ['.tsx', '.ts'])]) {
+    const bruto = readFileSync(arq, 'utf8'), cod = semComent(bruto)
+    if (/^\s*['"]use client['"]/.test(bruto) || /createBrowserClient\(|supabaseBrowser\(/.test(cod)) doNavegador.push([arq, cod])
+  }
+  const diretos = []
+  for (const [arq, cod] of doNavegador) {
+    const achados = [...cod.matchAll(/(\w+|\))\s*\.from\(\s*['"`](\w+)/g)]
+      .filter(m => !['Array', 'storage', 'Buffer'].includes(m[1]))
+    if (achados.length) diretos.push(`${rel(arq)} (${[...new Set(achados.map(m => m[2]))].join(', ')})`)
+  }
+  if (!doNavegador.length)
+    falta('O navegador nao le tabela direto', 'nenhum arquivo do navegador encontrado -- ancora perdida e FALHA')
+  else if (diretos.length)
+    falta('O navegador nao le tabela direto',
+      `${diretos.join(' · ')} -- va por rota de /api; fechar as tabelas (rls-tabelas-expostas-v3) tiraria a tela do ar`)
+  else ok(`O navegador nao le tabela direto (${doNavegador.length} arquivos do navegador)`)
 }
 
 titulo('EXCEDENTE DE TRANSACOES: SO CONTA, E COM A FRANQUIA MENSAL')
@@ -738,9 +1040,26 @@ recusar('Enviar nao pega carona em cancelar', 'app/api/billing/invoices/route.ts
         'soltar cancelar passaria a soltar o envio junto, calado')
 checar('Enviar tem trava propria', 'app/api/billing/invoices/route.ts',
        /if \(!perms\.enviar\)/, 'a acao send precisa conferir perms.enviar')
-checar('Criar e enviar passa pela mesma trava', 'app/api/billing/invoices/route.ts',
-       /b\.enviarAgora[\s\S]{0,120}!perms\.enviar/,
-       'o atalho de um clique nao pode furar a permissao de enviar')
+// O "criar e enviar" e o "virar fatura e enviar" passam pela MESMA funcao,
+// e ela comeca pela trava. Conferir so a primeira chamada deixaria a
+// segunda furar a permissao sem ninguem ver.
+{
+  const inv = readFileSync(join(raiz, 'app/api/billing/invoices/route.ts'), 'utf8')
+  const corpoEnviarJa = (() => {
+    const i = inv.indexOf('async function enviarJa(')
+    if (i < 0) return ''
+    const resto = inv.slice(i)
+    const j = resto.slice(1).search(/\n(export )?(async )?function /)
+    return j < 0 ? resto : resto.slice(0, j + 1)
+  })()
+  if (!corpoEnviarJa) falta('Criar e enviar passa pela mesma trava', 'enviarJa nao encontrada -- ancora perdida e FALHA')
+  else if (!(corpoEnviarJa.indexOf('if (!perms.enviar) return') >= 0
+             && corpoEnviarJa.indexOf('if (!perms.enviar) return') < corpoEnviarJa.indexOf('.update(')))
+    falta('Criar e enviar passa pela mesma trava', 'enviarJa tem de recusar (if (!perms.enviar) return) ANTES de mudar o status')
+  else if (!/b\.enviarAgora\s*\?\s*await enviarJa\(/.test(inv) || !/corpo\.enviarAgora\s*\?\s*await enviarJa\(/.test(inv))
+    falta('Criar e enviar passa pela mesma trava', 'o POST e a conversao do orcamento tem de enviar por enviarJa')
+  else ok('Criar e enviar passa pela mesma trava')
+}
 // Fechar a lista e deixar o ?id= aberto e fechar a porta e esquecer a
 // janela: bastaria o id para ver a fatura de qualquer um.
 checar('O ?id= respeita o mesmo escopo', 'app/api/billing/invoices/route.ts',
@@ -803,8 +1122,18 @@ checar('E deixa a fatura em aberto', 'lib/parcelamento.ts',
         'dizer que o debito "nao sera mais cobrado" a quem nunca foi cobrado assusta sem motivo')
   checar('A recusa do POST leva o plano existente', arq, /planoExistente: \{ id: ja\.id/,
          'mandar procurar o botao em outra aba e onde a equipe travava')
-  checar('A tela abre o cancelamento na propria recusa', 'app/dashboard/billing/page.tsx',
-         /d\?\.planoExistente/, 'a recusa tem de oferecer o caminho, nao so o texto')
+  // Dentro de criarParcelamento, nao em qualquer lugar do arquivo: o trecho
+  // ja morou no criarContrato, que nunca recebe esta recusa, e a conferencia
+  // por arquivo passava com o caminho morto.
+  {
+    const tela = readFileSync(join(raiz, 'app/dashboard/billing/page.tsx'), 'utf8')
+    const i = tela.indexOf('const criarParcelamento = async')
+    const j = i >= 0 ? tela.indexOf('\n  const ', i + 10) : -1
+    const corpo = i >= 0 ? tela.slice(i, j < 0 ? undefined : j) : ''
+    if (!corpo) falta('A tela abre o cancelamento na propria recusa', 'criarParcelamento nao encontrado -- ancora perdida e FALHA')
+    else if (/d\?\.planoExistente/.test(corpo) && /setPcCancelar\(pl\)/.test(corpo)) ok('A tela abre o cancelamento na propria recusa')
+    else falta('A tela abre o cancelamento na propria recusa', 'a recusa tem de oferecer o caminho, nao so o texto -- e no criarParcelamento, que e quem a recebe')
+  }
   // Quem decide e o SERVIDOR: a rota devolve `nuncaComecou` e a tela obedece.
   // Este invariante pedia o contrario (a tela lendo os ids do Stripe) e foi
   // justamente esse select que fez a lista de parcelamentos desaparecer.
@@ -1695,6 +2024,27 @@ titulo('A ORDEM DAS MIGRACOES APONTA PARA ARQUIVO QUE EXISTE')
       `nao existem: ${sumidos.join(', ')} -- a dependencia some em silencio e a ordem volta a alfabetica`)
   else
     ok(`A ordem das migracoes aponta para arquivo que existe (${pares.length} declaracoes)`)
+
+  // A ordenacao recebe o conjunto do que esta APLICADO, e o livro e um Map.
+  // A funcao aceitava "Set ou objeto" e o migrar.mjs passava o Map cru:
+  // `aplicados[x]` dava sempre undefined e TODA dependencia de migracao ja
+  // aplicada parecia faltar -- o --pendentes do GitHub recusou a
+  // equipe-unica-v1 (exit 3) com a dependencia dela listada como ok. Os
+  // testes passavam com Set: o defeito estava na LIGACAO entre os modulos.
+  const semComent = s => s.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const mig = semComent(readFileSync(join(raiz, 'scripts/migrar.mjs'), 'utf8'))
+  const ord = semComent(readFileSync(join(raiz, 'scripts/ordem-das-migracoes.mjs'), 'utf8'))
+  const chamadas = mig.match(/ordenarPorDependencia\([^\n]*/g) || []
+  const problemas = []
+  if (!chamadas.length) problemas.push('migrar.mjs nao chama ordenarPorDependencia -- ancora perdida e FALHA')
+  for (const c of chamadas)
+    if (!/ordenarPorDependencia\(paraAplicar, aplicadasParaDependencia\(livro, noDisco\)\)/.test(c))
+      problemas.push(`chamada sem o conjunto do que esta ok: ${c.trim().slice(0, 90)}`)
+  if (!/if \(!\(aplicados instanceof Set\)\) \{\s*throw new TypeError/.test(ord))
+    problemas.push('ordenarPorDependencia voltou a aceitar o livro cru em silencio')
+  problemas.length
+    ? falta('A ordem das migracoes recebe o que esta aplicado, nao o livro cru', problemas.join(' · '))
+    : ok('A ordem das migracoes recebe o que esta aplicado (Set de ok), nao o livro cru')
 }
 
 
@@ -1796,11 +2146,507 @@ titulo('LISTA FLUTUANTE NAO SE POSICIONA NA MAO')
 }
 
 
+titulo('A EQUIPE NUM LUGAR SO: O NIVEL MORA EM team_members')
+// Decisao do socio: "juntar tudo como team member". Eram tres cadastros da
+// mesma gente -- team_members (o CRM), auth.users (o login) e staff_roles (o
+// nivel) -- com tres telas, e eles discordavam. E havia um defeito mudo entre
+// eles: editar o telefone em Team Members comparava o papel com
+// user_metadata.role, que a migracao do papel esvaziou, achava que o papel
+// tinha mudado e REESCREVIA o nivel pelo papel. Gerente com papel de socio
+// virava socio; quem foi promovido em Minha Conta voltava a assistente.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+  // O corpo de uma funcao, da assinatura ate a proxima funcao de topo.
+  // Ancora perdida devolve '' -- e vazio e FALHA abaixo, nunca "nada achado".
+  const corpoDe = (txt, assinatura) => {
+    const i = txt.indexOf(assinatura)
+    if (i < 0) return ''
+    const resto = txt.slice(i + assinatura.length)
+    const j = resto.search(/\n(export )?(async )?function /)
+    return j < 0 ? resto : resto.slice(0, j)
+  }
+  const fontes = [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']),
+                  ...arquivos(join(raiz, 'lib'), ['.ts']),
+                  ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]
+
+  // 1. staff_roles esta CONGELADA (sql/equipe-unica-v1.sql). So staff-perms
+  //    le, e so quando a coluna nova ainda nao existe; ninguem grava.
+  const leemAntiga = [], gravamAntiga = [], gravamNivel = [], listam = []
+  const PODEM_GRAVAR_NIVEL = ['app/api/firm/users/[id]/route.ts', 'lib/equipe-servidor.ts']
+  for (const arq of fontes) {
+    const cod = semComent(readFileSync(arq, 'utf8'))
+    const nome = rel(arq)
+    if (/from\(\s*['"]staff_roles['"]\s*\)/.test(cod) && nome !== 'lib/staff-perms.ts') leemAntiga.push(nome)
+    if (/from\(\s*['"]staff_roles['"]\s*\)[\s\S]{0,80}?\.(insert|update|upsert|delete)\(/.test(cod)) gravamAntiga.push(nome)
+    // 2. Quem grava o NIVEL: a acao de nivel e o aceite do convite, e so.
+    if (!PODEM_GRAVAR_NIVEL.includes(nome)
+        && /from\(\s*['"]team_members['"]\s*\)[\s\S]{0,60}?\.(insert|update|upsert)\(/.test(cod)
+        && /\blevel\s*:/.test(cod)) gravamNivel.push(nome)
+    // 3. listUsers so com pagina, num lugar so (todosOsLogins).
+    if (/\.listUsers\(/.test(cod) && nome !== 'lib/equipe-servidor.ts') listam.push(nome)
+  }
+  leemAntiga.length
+    ? falta('Ninguem le o nivel em staff_roles', `o nivel mora em team_members (getStaffLevel): ${leemAntiga.join(', ')}`)
+    : ok('Ninguem le o nivel em staff_roles')
+  gravamAntiga.length
+    ? falta('Ninguem grava em staff_roles', `ela esta congelada -- a mudanca se perderia: ${gravamAntiga.join(', ')}`)
+    : ok('Ninguem grava em staff_roles')
+  gravamNivel.length
+    ? falta('O nivel so se grava pela acao de nivel e pelo aceite', `com senha, motivo e trilha: ${gravamNivel.join(', ')}`)
+    : ok('O nivel so se grava pela acao de nivel e pelo aceite')
+  listam.length
+    ? falta('Lista de logins so pagina por pagina', `listUsers() sem pagina devolve 50; use todosOsLogins: ${listam.join(', ')}`)
+    : ok('Lista de logins so pagina por pagina')
+  checar('A lista de logins para na pagina VAZIA, nao na curta', 'lib/equipe-servidor.ts',
+         /if \(!users\.length\) return/,
+         'se o servidor limitar a pagina abaixo do pedido, "veio menos" pararia cedo e cortaria a equipe sem aviso')
+
+  // 4. A leitura antiga so quando a coluna falta; erro nao cai na reserva.
+  const perms = ler('lib/staff-perms.ts')
+  const gsl = corpoDe(perms, 'export async function getStaffLevel')
+  const vmp = corpoDe(perms, 'export async function validateManagerPin')
+  if (!gsl || !vmp) falta('Ancoras de lib/staff-perms.ts', 'getStaffLevel ou validateManagerPin nao encontrados -- a conferencia nao conferiria nada')
+  else {
+    if (/colunaAusente\(error\) \? await nivelNaTabelaAntiga/.test(gsl)) ok('getStaffLevel so le staff_roles quando a coluna nova falta')
+    else falta('getStaffLevel so le staff_roles quando a coluna nova falta', 'a tabela antiga esta congelada e mente depois da migracao')
+    const iErro = gsl.indexOf("if (nivel === 'erro') return 'junior'")
+    const iReserva = gsl.indexOf('getUserById')
+    if (iErro >= 0 && iReserva > iErro) ok('Consulta do nivel que falha NAO cai na reserva do papel')
+    else falta('Consulta do nivel que falha NAO cai na reserva do papel', 'um gerente com papel firm viraria socio num tropeco de rede')
+    if (/data && data\.active === false\) nivel = 'junior'/.test(gsl)) ok('Quem saiu da equipe vale assistente, sem cair na reserva')
+    else falta('Quem saiu da equipe vale assistente, sem cair na reserva', 'a sessao aberta do desligado manteria o poder')
+    if (/\.eq\('active', true\)/.test(vmp)) ok('PIN de quem saiu nao aprova')
+    else falta('PIN de quem saiu nao aprova', 'o PIN do gerente desligado liberava desconto e troca de acesso no balcao')
+  }
+
+  // 5. Mudar o nivel: a regra unica, a senha do socio, a trilha ANTES.
+  const rota = ler('app/api/firm/users/[id]/route.ts')
+  const mudar = corpoDe(rota, 'async function mudarNivel')
+  const editar = corpoDe(rota, 'async function editar')
+  if (!mudar || !editar) falta('Ancoras de /api/firm/users/[id]', 'mudarNivel ou editar nao encontrados -- a conferencia nao conferiria nada')
+  else {
+    if (/decidirMudancaDeNivel\(/.test(mudar) && /signInWithPassword\(/.test(mudar)) ok('Mudar o nivel passa pela regra unica e pela senha do socio')
+    else falta('Mudar o nivel passa pela regra unica e pela senha do socio', 'o nivel e a raiz da matriz inteira (principio 3)')
+    const iTrilha = mudar.search(/gravarNaTrilha\(\{[\s\S]{0,200}?acao:\s*'nivel'/)
+    const iGrava = mudar.search(/from\('team_members'\)\.update\(/)
+    if (iTrilha >= 0 && iGrava > iTrilha && /if \(errTrilha\) \{[\s\S]{0,40}?return/.test(mudar)) ok('A trilha do nivel vem ANTES, e falhar recusa a mudanca')
+    else falta('A trilha do nivel vem ANTES, e falhar recusa a mudanca', 'poder que muda sem rastro e pior que mudanca nao feita (principio 2)')
+    if (/\blevel\b|nivelDoPapel|papelDoNivel|app_metadata/.test(editar)) falta('Editar nome e telefone NAO toca no nivel', 'foi assim que uma edicao de telefone promoveu gerente a socio')
+    else ok('Editar nome e telefone NAO toca no nivel')
+    if (/papelDoNivel\(/.test(mudar)) ok('O papel da porta acompanha o nivel')
+    else falta('O papel da porta acompanha o nivel', 'o papel e a reserva do nivel; os dois discordando e o defeito')
+  }
+  recusar('O CRM nao escolhe nivel nem funcao pelo corpo', 'app/api/team/route.ts',
+          /\bb\.(level|role)\b/,
+          'a coluna role era um rotulo que qualquer assistente trocava, e a tela mostrava Socio')
+
+  // 6. Uma definicao de nivel so: o Atendimento pergunta a getStaffLevel.
+  const wa = ler('lib/wa-auth.ts')
+  if (!/staff_roles/.test(wa) && /getStaffLevel\(/.test(wa)) ok('O Atendimento usa o mesmo nivel do resto do sistema')
+  else falta('O Atendimento usa o mesmo nivel do resto do sistema', "varria staff_roles por texto e lia 'admin' como gerente")
+
+  // 7. Convite e para quem nao tem login, e o anterior deixa de valer.
+  const conv = ler('app/api/firm/users/route.ts')
+  const iVelho = conv.search(/update\(\{\s*expires_at:/)
+  const iNovo = conv.search(/from\('staff_invitations'\)\.insert\(/)
+  if (/decidirConvite\(/.test(conv) && iVelho >= 0 && iNovo > iVelho) ok('Convite novo encerra o anterior e recusa quem ja tem login')
+  else falta('Convite novo encerra o anterior e recusa quem ja tem login', 'um link velho com outro nivel abria a conta por sete dias')
+  const aceite = ler('app/api/firm/setup/[token]/route.ts')
+  if (/vincularNaEquipe\(/.test(aceite) && !/staff_roles/.test(aceite)) ok('O aceite do convite completa a linha da equipe')
+  else falta('O aceite do convite completa a linha da equipe', 'inserir sempre punha a pessoa duas vezes no seletor do CRM')
+
+  // 8. A migracao fecha team_members e congela staff_roles.
+  checar('A migracao fecha team_members para o navegador', 'sql/equipe-unica-v1.sql',
+         'revoke all on public.team_members from anon, authenticated',
+         'o nivel mora la: aberta, um cliente logado gravaria owner na propria linha')
+  checar('A migracao congela staff_roles', 'sql/equipe-unica-v1.sql',
+         'revoke insert, update, delete, truncate on public.staff_roles from service_role',
+         'sem isso o codigo antigo gravaria o nivel la entre a migracao e o deploy, e a mudanca se perderia')
+}
+
+titulo('AS PARCELAS SAO AGENDADAS NO STRIPE (iterations saiu da API)')
+// As parcelas NUNCA foram cobradas: o agendamento mandava `iterations`, que a
+// API do Stripe removeu na 2025-09-30.clover, e o sistema fala na
+// 2026-06-24.dahlia. O Stripe recusava, o webhook respondia 500 com um
+// console.error, a entrada paga nao chegava a fatura e o portal oferecia
+// pagar a entrada de novo. O typecheck passava: o SDK instalado ainda declara
+// o campo. Quem confere e isto.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. Nenhum codigo manda `iterations` ao Stripe.
+  const comIterations = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts'])]) {
+    if (/\biterations\s*:/.test(semComent(readFileSync(arq, 'utf8')))) comIterations.push(rel(arq))
+  }
+  comIterations.length
+    ? falta('Nenhuma fase de agendamento usa iterations', `a API recusa (2025-09-30.clover): ${comIterations.join(', ')}`)
+    : ok('Nenhuma fase de agendamento usa iterations')
+
+  // 2. O agendamento mora num lugar so: duration, e o que ja existe e reaproveitado.
+  const ag = ler('lib/agendamento-parcelas.ts')
+  {
+    const iAchar = ag.indexOf('await agendamentoExistente(stripe, plano.stripe_customer_id, plano.id)')
+    const iCriar = ag.indexOf('stripe.subscriptionSchedules.create(')
+    if (/duration: f\.duration/.test(ag) && iAchar >= 0 && iCriar > iAchar)
+      ok('Agendamento por duration, reaproveitando o que ja existe')
+    else falta('Agendamento por duration, reaproveitando o que ja existe',
+      'sem procurar antes, o reenvio do evento ou a equipe agendando criam DOIS agendamentos: cada parcela cobrada duas vezes')
+  }
+
+  // 3. O webhook: a entrada entra na fatura ANTES do agendamento, e a falha avisa.
+  const wh = ler('app/api/stripe/webhook/route.ts')
+  {
+    const problemas = []
+    if (/function criarAgendamento|subscriptionSchedules\.create\(/.test(wh)) problemas.push('o webhook voltou a montar o agendamento por conta propria')
+    const i = wh.indexOf('async function handleInstallmentEntry(')
+    const j = wh.indexOf('\nasync function ', i + 10)
+    const entry = i >= 0 ? wh.slice(i, j < 0 ? undefined : j) : ''
+    if (!entry) problemas.push('handleInstallmentEntry nao encontrado -- ancora perdida e FALHA')
+    else {
+      const iLanca = entry.indexOf('lancarRecebimentoStripe(db, {')
+      const iAgenda = entry.indexOf('agendarOuAvisar(')
+      if (!(iLanca >= 0 && iAgenda > iLanca)) problemas.push('a entrada paga nao e lancada ANTES do agendamento')
+      // A decisao (pura, testada) vem antes de lancar e de agendar, e o que
+      // ela recusa sai da funcao: plano encerrado nao volta a cobrar, entrada
+      // devolvida nao e entrada, a segunda entrada vira alerta de estorno.
+      const iDecide = entry.indexOf('decidirEntradaDoWebhook({')
+      if (!(iDecide >= 0 && iLanca > iDecide)) problemas.push('a decisao da entrada nao vem antes de lancar e agendar')
+      if (!/if \(decisao\.acao === 'nada'\) return/.test(entry)
+          || !/if \(decisao\.acao === 'alertar'\) \{[\s\S]{0,1500}?await falhaNoParcelamento\(db, plan, decisao\.tipo, motivo\)\s*return\s*\}/.test(entry))
+        problemas.push('o que a decisao recusa segue adiante (plano cancelado reativado, entrada devolvida lancada)')
+      if (!/devolvido: pag\.devolvido, contestado: pag\.contestado/.test(entry)) problemas.push('a decisao nao recebe a devolucao e a contestacao da cobranca')
+    }
+    // O mandato (parcelamento sem entrada) so poe a cobrar o plano que espera o cliente.
+    {
+      const k = wh.indexOf('async function handleInstallmentSetup(')
+      const setup = k >= 0 ? wh.slice(k, wh.indexOf('\nasync function ', k + 10)) : ''
+      const iGuarda = setup.indexOf('!ESPERANDO_O_CLIENTE.includes(String(plan.status))'), iAg = setup.indexOf('agendarOuAvisar(')
+      if (!setup) problemas.push('handleInstallmentSetup nao encontrado -- ancora perdida e FALHA')
+      else if (!(iGuarda >= 0 && iAg > iGuarda)) problemas.push('o mandato reativa plano cancelado ou que ja andou (a guarda era so "ativo")')
+    }
+    if ((wh.match(/await agendarOuAvisar\(/g) || []).length < 2) problemas.push('entrada e mandato nao passam pelos dois o mesmo caminho')
+    if (!/catch \(e\) \{\s*await falhaNoParcelamento\(db, plan, 'agendamento_falhou'[\s\S]{0,200}?throw e/.test(wh)) problemas.push('falha no agendamento nao avisa a equipe (volta a ser so console.error)')
+    problemas.length
+      ? falta('Webhook: entrada lancada antes, falha avisada', problemas.join(' · '))
+      : ok('Webhook: entrada lancada antes, falha avisada; encerrado nao volta, devolvida nao conta, em dobro vira estorno')
+  }
+
+  // 3b. A cobranca diz o que aconteceu DEPOIS: o status da sessao continua
+  //     'paid' depois do reembolso.
+  if (/devolvido: Number\(charge\?\.amount_refunded \|\| 0\) \/ 100/.test(ag) && /contestado: !!charge\?\.disputed/.test(ag)
+      && /export function entradaIntegra\(p: PagamentoDaSessao\): boolean \{\s*return p\.modo === 'payment' && p\.concluido && !\(p\.devolvido > 0\) && !p\.contestado/.test(ag))
+    ok('Entrada devolvida ou contestada nao conta como paga')
+  else falta('Entrada devolvida ou contestada nao conta como paga',
+    'payment_status continua paid depois do reembolso: a entrada devolvida seria lancada e as parcelas agendadas')
+
+  // 4. Entrada paga nao se oferece de novo (o link novo cobraria outra vez).
+  const ck = ler('lib/plan-checkout.ts'), pb = ler('app/api/portal/billing/route.ts'), pc = ler('app/api/portal/plan-checkout/route.ts')
+  if (/entrada > 0 && plan\.entry_paid_at\) \{\s*throw new Error/.test(ck)
+      && /!\(p\.kind === 'installment' && p\.entry_paid_at/.test(pb)
+      && /plan\.kind === 'installment' && plan\.entry_paid_at/.test(pc))
+    ok('Entrada ja paga nao se cobra de novo (checkout, portal e rota)')
+  else falta('Entrada ja paga nao se cobra de novo (checkout, portal e rota)', 'o cliente do plano travado pagava a entrada outra vez')
+
+  // 5. A equipe agenda o que travou: Stripe primeiro, conta fechada, trilha antes.
+  const ip = ler('app/api/billing/installment-plan/route.ts')
+  {
+    const problemas = []
+    const iBranch = ip.indexOf("if (b.action === 'agendar') {")
+    if (iBranch < 0 || !/if \(b\.action === 'agendar'\) \{\s*if \(!perms\.receber\)/.test(ip)) problemas.push("a acao 'agendar' nao exige receber")
+    const i = ip.indexOf('async function agendarParcelamentoTravado(')
+    const corpo = i >= 0 ? ip.slice(i) : ''
+    if (!corpo) problemas.push('agendarParcelamentoTravado nao encontrado -- ancora perdida e FALHA')
+    else {
+      if (!/conferirSenhaPropria\(db, auth\.userId, b\.password\)/.test(corpo)) problemas.push('sem senha')
+      if (!/motivo\.length < 5/.test(corpo)) problemas.push('sem motivo')
+      if (!/oQueOClienteFez\(plano\)/.test(corpo)) problemas.push('decide pelo banco, nao pelo Stripe')
+      if (!/A conta não fecha/.test(corpo)) problemas.push('agenda sem conferir que as parcelas somam o saldo da fatura')
+      const iTrilha = corpo.indexOf("action: 'scheduled_by_staff'")
+      const iAgenda = corpo.indexOf('agendarParcelas(')
+      if (!(iTrilha >= 0 && iAgenda > iTrilha)) problemas.push('a trilha nao vem antes do agendamento')
+      if (!/installment_rescheduled/.test(corpo)) problemas.push('o cronograma nao anda para a nova 1a parcela')
+    }
+    // Cancelar "como proposta" um plano cuja entrada foi paga dizia ao cliente que nada foi cobrado.
+    const iCancel = ip.indexOf('export async function PATCH')
+    const cancel = iCancel >= 0 ? ip.slice(iCancel) : ''
+    const iConf = cancel.indexOf('entrada = await entradaNoStripe(plano)'), iEnc = cancel.indexOf('encerrarParcelamento(')
+    if (!(iConf >= 0 && iEnc > iConf)) problemas.push('cancelar nao confere no Stripe se a entrada foi paga')
+    if (!/const pago = entrada\.integra\s*\n/.test(cancel) || !/const nuncaComecou = planoNuncaComecou\(plano\) && !entradaVoltou/.test(cancel))
+      problemas.push('cancelar lanca a entrada que voltou, ou diz ao cliente que nada foi cobrado')
+    if (!/const entradasPagas = feitos\.filter\(f => entradaIntegra\(f\) && f\.paymentMethod\)/.test(ip))
+      problemas.push('agendar conta como entrada a que foi devolvida ou contestada')
+    if (!/&& !p\?\.entry_paid_at/.test(ip)) problemas.push('entrada paga ainda conta como "nunca comecou"')
+    problemas.length
+      ? falta('Agendar o parcelamento travado: Stripe, conta, senha e trilha', problemas.join(' · '))
+      : ok('Agendar o parcelamento travado: Stripe, conta fechada, senha, motivo e trilha antes')
+  }
+  checar('A tela oferece agendar a quem tem receber', 'app/dashboard/billing/page.tsx',
+         /pl\.podeAgendar && pcDados\.perms\?\.receber/, 'o botao some ou aparece para quem a rota recusa')
+  checar('O alerta de plano parado nao diz "nada foi cobrado" a quem pagou', 'lib/planos-parados.ts',
+         /plano\.kind === 'installment' && plano\.entry_paid_at/, 'a equipe ligava cobrando quem ja tinha pago')
+}
+
+titulo('ORCAMENTOS NUM LUGAR SO: O FINANCEIRO')
+// Decisao do socio. O modulo Quotes (aba da ficha do cliente) era uma segunda
+// tabela de orcamentos, com link de pagamento proprio: o dinheiro entrava
+// fora do livro (sem invoice_payments, sem conta de passagem, sem conciliar
+// com o repasse do Stripe). E o orcamento do Financeiro chegava ao cliente
+// como "Fatura ... Ver e pagar", num portal que so listava faturas.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. O modulo saiu, e ninguem mais grava na tabela dele.
+  const sairam = ['components/QuotesTab.tsx', 'app/api/quotes/route.ts', 'app/api/quotes/[id]/route.ts',
+                  'app/api/quotes/perms/route.ts', 'app/api/stripe/checkout/route.ts',
+                  'app/api/portal/quote/route.ts', 'lib/pricing-db.ts']
+  const voltaram = sairam.filter(a => existsSync(join(raiz, a)))
+  if (voltaram.length) falta('O modulo Quotes saiu', `voltaram: ${voltaram.join(', ')}`)
+  else ok('O modulo Quotes saiu')
+  // A ponte (traz os abertos), o webhook (link antigo ainda pago) e o
+  // impresso (recibo do que ja foi pago) sao os unicos que ainda tocam nela.
+  const PODEM = ['app/api/billing/orcamentos-antigos/route.ts', 'app/api/stripe/webhook/route.ts',
+                 'app/api/quotes/[id]/document/route.ts']
+  const gravam = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]) {
+    const nome = rel(arq)
+    if (PODEM.includes(nome)) continue
+    if (/from\(\s*['"]quotes['"]\s*\)/.test(semComent(readFileSync(arq, 'utf8')))) gravam.push(nome)
+  }
+  if (gravam.length) falta('Ninguem mais usa a tabela quotes', `o orcamento mora no Financeiro: ${gravam.join(', ')}`)
+  else ok('Ninguem mais usa a tabela quotes')
+
+  // 2. Quem se paga e a FATURA.
+  checar('Recebimento manual recusa orcamento', 'app/api/billing/payments/route.ts',
+         /if \(inv\.doc_type === 'estimate'\) \{\s*return NextResponse\.json/,
+         'o recebimento lancado num orcamento nao e de fatura nenhuma')
+  checar('O QR do balcao recusa orcamento', 'app/api/billing/cobranca-balcao/route.ts',
+         /if \(inv\.doc_type === 'estimate'\)\s*return \{ erro:/,
+         'a sessao do Stripe com o id do orcamento lancaria o pagamento nele')
+  const tela = ler('app/dashboard/billing/page.tsx')
+  if (/perms\?\.receber && inv\.doc_type !== 'estimate'/.test(tela)
+      && /inv\.doc_type !== 'estimate' && inv\.status !== 'draft' && inv\.status !== 'void' && inv\.saldo > 0 && perms\?\.enviar/.test(tela))
+    ok('A tela nao oferece cobrar nem receber orcamento')
+  else falta('A tela nao oferece cobrar nem receber orcamento', 'Receber, Lembrete e QR apareciam num orcamento enviado')
+
+  // 3. Orcamento vira fatura UMA vez, ligado a ela.
+  const rota = ler('app/api/billing/invoices/route.ts')
+  const conv = (() => {
+    const i = rota.indexOf("if (action === 'converter') {")
+    if (i < 0) return ''
+    const j = rota.indexOf("if (action === 'duplicate')", i)
+    return rota.slice(i, j < 0 ? undefined : j)
+  })()
+  if (!conv) falta('Orcamento vira fatura uma vez so', "acao 'converter' nao encontrada -- ancora perdida e FALHA")
+  else {
+    const iConfere = conv.search(/\.eq\('converted_from', inv\.id\)\.eq\('doc_type', 'invoice'\)/)
+    const iCria = conv.search(/from\('invoices'\)\.insert\(/)
+    if (iConfere >= 0 && iCria > iConfere && /converted_from: inv\.id/.test(conv) && /if \(!perms\.criar\)/.test(conv))
+      ok('Orcamento vira fatura uma vez so')
+    else falta('Orcamento vira fatura uma vez so', 'confere a fatura que ja existe ANTES de criar, liga por converted_from e exige criar')
+  }
+
+  // 4. O orcamento chega como orcamento, e o cliente o ve.
+  checar('O aviso do orcamento nao e o da fatura', 'lib/aviso-da-fatura.ts',
+         /const t = inv\.doc_type === 'estimate' \? \(TO\[lang\] \|\| TO\.en\)/,
+         'o cliente recebia "Fatura EST-... Ver e pagar" e nao achava nada no portal')
+  checar('O portal lista os orcamentos enviados', 'app/api/portal/billing/route.ts',
+         /orcamentos: \(orcs \|\| \[\]\)/, 'o aviso manda o cliente a Pagamentos -> Orcamentos')
+  checar('A pagina do portal mostra os orcamentos', 'app/portal/payments/page.tsx',
+         /orcamentos\.map\(/, 'sem isso o aviso do orcamento volta a apontar para o nada')
+  checar('Pagamentos do portal: consulta que falha nao vira "nada a pagar"', 'app/portal/payments/page.tsx',
+         /if \(!ok \|\| d\?\.error\) \{ setFalhou\(true\)/,
+         'o erro virava saldo zero com o check verde -- o cliente acreditava e a firma nao recebia')
+
+  // 5. O calculo da declaracao: catalogo e documentos que falham nao viram preco.
+  const calc = ler('app/api/billing/orcamento-automatico/route.ts')
+  if (/itensDaDeclaracao\(/.test(calc) && /for \(const \[oque, err\] of/.test(calc) && /cliente\.type === 'business'/.test(calc))
+    ok('O calculo da declaracao nao engole erro e nao calcula empresa')
+  else falta('O calculo da declaracao nao engole erro e nao calcula empresa', 'catalogo vazio vira "a base nao existe"; documentos vazios viram so a base')
+  checar('O calculo conta active nulo como ativo', 'lib/orcamento-automatico.ts',
+         /c && c\.active !== false \? c : null/, 'servico com active nulo sumia do orcamento (lib/catalogo-precos.ts)')
+
+  // 6. Quem chama nao e QUAL cliente: cada verbo confere o dono do documento.
+  const iPatch = rota.indexOf('export async function PATCH')
+  const iSend = rota.indexOf("if (action === 'send')", iPatch)
+  const trechoPatch = iPatch >= 0 && iSend > iPatch ? rota.slice(iPatch, iSend) : ''
+  if (/canAccessClient\(auth, inv\.client_id\)/.test(trechoPatch)
+      && /export async function DELETE[\s\S]*?canAccessClient\(auth, inv\.client_id\)/.test(rota))
+    ok('PATCH e DELETE do Financeiro conferem o dono do documento')
+  else falta('PATCH e DELETE do Financeiro conferem o dono do documento', 'por autorizacao, quem envia sem verEmpresas agia pelo id na fatura de uma empresa')
+  const pags = ler('app/api/billing/payments/route.ts')
+  if ((pags.match(/canAccessClient\(auth, (inv|pag)\.client_id\)/g) || []).length >= 3)
+    ok('Recebimentos conferem o dono (lista, estorno e baixa)')
+  else falta('Recebimentos conferem o dono (lista, estorno e baixa)', 'a lista de pagamentos de uma empresa saia pelo id da fatura')
+  checar('A lista do Financeiro obedece ao escopo', 'app/api/billing/invoices/route.ts',
+         /const visiveis = \(invoices \|\| \[\]\)\.filter\(\(i: any\) => !escopo\.ocultos\.has\(i\.client_id\)\)/,
+         'o seletor escondia o cliente e a lista mostrava as faturas dele')
+}
+
+
+titulo('CONTRATO RECORRENTE NUM LUGAR SO (payment_plans)')
+// Decisao do socio: os PLANOS (ficha do cliente) e os CONTRATOS RECORRENTES
+// (Financeiro) eram dois cadastros do mesmo acordo. Os planos cobravam
+// (Stripe, webhook) e eram um valor so, mensal; os contratos tinham a regra
+// (itens, desconto, prazo, intervalo) e NUNCA cobraram -- nada lia a tabela.
+// Ficou o motor dos planos (as assinaturas ativas vivem nele) com a regra
+// dos contratos; a rotina diaria emite a fatura do contrato por fatura.
+{
+  const semComent = t => t.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const ler = a => existsSync(join(raiz, a)) ? semComent(readFileSync(join(raiz, a), 'utf8')) : ''
+
+  // 1. Um cadastro so: a aba e as rotas antigas sairam, e ninguem grava na
+  //    tabela antiga (a migracao a congela; codigo que voltasse a gravar
+  //    levaria erro de permissao em producao, calado no meio de uma tela).
+  const sairam = ['components/PlansTab.tsx', 'app/api/plans/route.ts', 'app/api/plans/checkout/route.ts',
+                  'app/api/plans/pause/route.ts', 'app/api/billing/recurring/route.ts']
+  const voltaram = sairam.filter(a => existsSync(join(raiz, a)))
+  if (voltaram.length) falta('Os Planos sairam: o contrato tem um cadastro so', `voltaram: ${voltaram.join(', ')}`)
+  else ok('Os Planos sairam: o contrato tem um cadastro so')
+  const naAntiga = []
+  for (const arq of [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts']),
+                     ...arquivos(join(raiz, 'components'), ['.ts', '.tsx'])]) {
+    if (/from\(\s*['"]recurring_plan(s|_items|_audit)['"]\s*\)|\/api\/plans\b|\/api\/billing\/recurring\b/.test(semComent(readFileSync(arq, 'utf8')))) naAntiga.push(rel(arq))
+  }
+  if (naAntiga.length) falta('Ninguem usa o cadastro antigo', `recurring_plans esta congelada e /api/plans saiu: ${naAntiga.join(', ')}`)
+  else ok('Ninguem usa o cadastro antigo')
+
+  // 2. A rotina diaria existe, roda todo dia e so abre com o CRON_SECRET.
+  checar('Rotina dos contratos agendada na Vercel', 'vercel.json', '/api/cron/contratos',
+         'a rota existiria e nenhuma fatura de contrato sairia -- de novo o "nunca cobrou"')
+  const cron = ler('app/api/cron/contratos/route.ts')
+  if (/if \(!process\.env\.CRON_SECRET\)/.test(cron) && /timingSafeEqual\(/.test(cron) && /emitirFaturasDosContratos\(serviceDb\(\), \{\s*hoje: dataDaFirma\(\)/.test(cron))
+    ok('Rotina dos contratos: CRON_SECRET e o dia do escritorio')
+  else falta('Rotina dos contratos: CRON_SECRET e o dia do escritorio', 'sem a variavel a rota fica aberta; em UTC, as 20h de Malden ja e amanha')
+
+  // 3. QUANDO e QUANTO e a regra pura (com teste); a rotina so executa --
+  //    e nao emite duas vezes o mesmo periodo, nem pula um.
+  const emi = ler('lib/emissao-contratos.ts')
+  {
+    const iDecide = emi.indexOf('decidirEmissao(p, ')
+    const iConfere = emi.search(/\.eq\('plan_id', p\.id\)\.eq\('competencia', d\.competencia\)/)
+    const iNumera = emi.indexOf("rpc('next_invoice_number'")
+    const problemas = []
+    if (iDecide < 0) problemas.push('nao usa decidirEmissao')
+    if (!(iConfere >= 0 && iNumera > iConfere)) problemas.push('nao confere o periodo ANTES de numerar')
+    if (!/errInv\.code === '23505'/.test(emi)) problemas.push('nao trata a corrida (23505) como ja emitida')
+    if (!/\.eq\('id', p\.id\)\.eq\('next_charge_date', de\)/.test(emi)) problemas.push('a regua anda sem a condicao do valor lido')
+    if (!/email: aviso\.email, motivo: aviso\.motivo/.test(emi)) problemas.push('o resultado do e-mail nao vai para a trilha')
+    if (/stripe/i.test(emi)) problemas.push('a rotina da FATURA fala com o Stripe -- quem cobra no debito e a assinatura')
+    problemas.length
+      ? falta('Rotina dos contratos: uma fatura por periodo, a regua anda um passo', problemas.join(' · '))
+      : ok('Rotina dos contratos: uma fatura por periodo, a regua anda um passo')
+  }
+
+  // 4. Debito e fatura sao acordos diferentes: quem tem fatura nao recebe
+  //    "vamos debitar", nao ganha assinatura, e o debito segue a regua.
+  checar('Aviso de debito pula o contrato por fatura', 'lib/billing-reminders.ts',
+         /if \(p\.collection_method === 'fatura'\) continue/,
+         'o cliente por fatura ouviria "vamos debitar" de um debito que nao existe')
+  const ck = ler('lib/plan-checkout.ts')
+  if (/plan\.kind !== 'installment' && plan\.collection_method === 'fatura'\) \{\s*throw new Error/.test(ck)
+      && /recurring: recorrenciaDoStripe\(plan\.billing_interval\)/.test(ck)
+      && /ancoraDoDebito\(normalizarDiaCobranca\(plan\.due_day\), plan\.start_date, plan\.billing_interval/.test(ck)
+      && !/recurring: \{ interval: 'month', interval_count: 1 \}/.test(ck))
+    ok('Debito: assinatura no intervalo e na regua do contrato; fatura nao vira assinatura')
+  else falta('Debito: assinatura no intervalo e na regua do contrato; fatura nao vira assinatura',
+             'o trimestral era mensal no Stripe -- cobrava o valor do trimestre TODO MES')
+  checar('Assinar o contrato por fatura nao leva ao cadastro do debito', 'app/api/portal/contract-return/route.ts',
+         /plan\.collection_method !== 'fatura' && \['draft', 'awaiting_entry', 'awaiting_setup'\]\.includes\(plan\.status\)/,
+         'o cliente que assinou um contrato por fatura cairia numa assinatura do Stripe')
+  checar('Enviar o contrato por fatura nao o poe "aguardando o debito"', 'app/api/signatures/contract/route.ts',
+         /if \(\['draft'\]\.includes\(plan\.status\) && !porFatura\)/,
+         'o portal ofereceria um debito que o contrato nao tem, e a ativacao (so de rascunho) ficaria impossivel')
+
+  // 5. O valor e o de CADA COBRANCA; a receita mensal divide pelo intervalo.
+  checar('Receita recorrente mensal divide pelo intervalo', 'lib/relatorios-financeiro.ts',
+         /mensal: valorMensalEquivalente\(p\.monthly_amount, p\.billing_interval\)/,
+         'o trimestral somado como mes triplicava o numero em que o socio decide')
+  const rel1 = ler('app/api/billing/reports/route.ts'), dash = ler('app/dashboard/page.tsx')
+  if (/select\('id, kind, status, description, monthly_amount, billing_interval/.test(rel1)
+      && /select\('id, kind, status, monthly_amount, billing_interval/.test(dash))
+    ok('Relatorio e painel leem o intervalo do contrato')
+  else falta('Relatorio e painel leem o intervalo do contrato', 'sem a coluna, valorMensalEquivalente trata tudo como mensal')
+
+  // 6. A fatura do debito diz os itens so quando a conta bate com o cobrado.
+  checar('Fatura do debito: itens so quando batem com o cobrado', 'app/api/stripe/webhook/route.ts',
+         /const detalhe = linhasDaMensalidade\(linhasDoPlano \|\| \[\], plan\.discount, valor\)/,
+         'a fatura diria um valor que nao foi o debitado')
+
+  // 7. Editar: a trilha ANTES, o Stripe ANTES de gravar, e o valor e derivado
+  //    no banco (salvar_itens_do_plano) -- nunca escrito a parte.
+  const rota = ler('app/api/billing/contratos/route.ts')
+  {
+    const i = rota.indexOf('const pode = decidirEdicao(plano)')
+    const ed = i >= 0 ? rota.slice(i) : ''
+    const problemas = []
+    if (!ed) problemas.push('trecho de edicao nao encontrado -- ancora perdida e FALHA')
+    else {
+      const iT = ed.indexOf("trilha(db, plano, 'edited'"), iS = ed.indexOf('stripe.subscriptions.update(sub.id'), iG = ed.indexOf('gravarItens(db, plano.id')
+      if (!(iT >= 0 && iS > iT && iG > iS)) problemas.push('a ordem nao e trilha -> Stripe -> gravar')
+      if (/monthly_amount:/.test(ed)) problemas.push('a edicao escreve monthly_amount a parte das linhas')
+      // Na chamada que MUDA o preco, nao em qualquer lugar do trecho: a
+      // reversao (se gravar falhar) tem o mesmo texto, e a primeira versao
+      // desta conferencia passava com o proporcional de volta na mudanca.
+      if (!(iS >= 0 && ed.slice(iS, iS + 400).includes("proration_behavior: 'none'")))
+        problemas.push('o preco novo cobraria proporcional')
+    }
+    if (!/rpc\('salvar_itens_do_plano'/.test(rota)) problemas.push('as linhas nao passam pela funcao do banco')
+    if (!/Intervalo, dia e forma de cobrar não mudam/.test(rota)) problemas.push('intervalo e forma viraram editaveis')
+    if (!/O Stripe não cancelou a assinatura — o contrato continua ativo/.test(rota)) problemas.push('encerrar engole a recusa do Stripe')
+    problemas.length
+      ? falta('Contrato: editar e encerrar com trilha antes e Stripe primeiro', problemas.join(' · '))
+      : ok('Contrato: editar e encerrar com trilha antes e Stripe primeiro')
+  }
+
+  // 8. Quem chama nao e QUAL cliente: o escopo por tipo em todo verbo.
+  {
+    const inst = ler('app/api/billing/installment-plan/route.ts'), sig = ler('app/api/signatures/contract/route.ts')
+    const problemas = []
+    if (!/const visiveis = \(planos \|\| \[\]\)\.filter\(\(p: any\) => !escopo\.ocultos\.has\(p\.client_id\)\)/.test(rota)) problemas.push('contratos: a lista nao filtra')
+    if (!/canAccessClient\(auth, b\.clientId\)/.test(rota) || !/canAccessClient\(auth, plano\.client_id\)/.test(rota)) problemas.push('contratos: POST ou PATCH sem o dono')
+    if (!/clientesOcultos\(auth\)/.test(inst) || !/canAccessClient\(auth, inv\.client_id\)/.test(inst) || !/canAccessClient\(auth, plano\.client_id\)/.test(inst)) problemas.push('parcelamentos: lista, criar ou cancelar sem o escopo')
+    if ((sig.match(/canAccessClient\(auth, plan\.client_id\)/g) || []).length < 2) problemas.push('contrato do DocuSign: previa ou envio sem o dono')
+    problemas.length
+      ? falta('Contrato e parcelamento obedecem ao escopo por tipo', problemas.join(' · '))
+      : ok('Contrato e parcelamento obedecem ao escopo por tipo (lista, criar, mexer, DocuSign)')
+  }
+
+  // 9. O contrato que vai ao DocuSign escapa o que vem da URL e do banco: o
+  //    `title` da previa vinha da querystring direto para o HTML.
+  const ch = ler('lib/contract-html.ts')
+  if (/const signerTitle = params\.signerTitle \? esc\(params\.signerTitle\) : null/.test(ch)
+      && /esc\(client\.email\)/.test(ch) && !/\$\{client\.(name|email|business_name)\}/.test(ch))
+    ok('Contrato em HTML escapa a URL e o banco')
+  else falta('Contrato em HTML escapa a URL e o banco', 'um link com <script> no cargo rodaria na sessao do socio')
+
+  // 10. O parcelamento antigo (sem fatura) so se desiste como PROPOSTA depois
+  //     de perguntar ao Stripe. Ate 10/2026 o agendamento travava depois da
+  //     entrada paga, e o plano ficava com cara de proposta: desistir dizia
+  //     ao cliente que nada foi cobrado.
+  {
+    const ip = ler('app/api/billing/installment-plan/route.ts')
+    const i = ip.indexOf('async function desistirDaPropostaAntiga(')
+    const corpo = i >= 0 ? ip.slice(i, ip.indexOf('\n}\n', i)) : ''
+    const iConf = corpo.indexOf('entrada = await entradaNoStripe(plano)'), iCanc = corpo.indexOf("status: 'cancelled'")
+    if (!corpo) falta('Proposta antiga so se desiste depois de perguntar ao Stripe', 'desistirDaPropostaAntiga nao encontrada -- ancora perdida e FALHA')
+    else if (!(iConf >= 0 && iCanc > iConf) || !/entry_paid_at: quando\.toISOString\(\)/.test(corpo)
+             || !/const pago = entrada\.integra\s*\n/.test(corpo) || !/avisarNoPortal\(db, plano\.client_id, entradaVoltou\s*\?/.test(corpo))
+      falta('Proposta antiga so se desiste depois de perguntar ao Stripe',
+            'a entrada paga no Stripe nao e conferida (ou nao fica registrada) antes de desistir: o cliente ouviria que nada foi cobrado')
+    else ok('Proposta antiga so se desiste depois de perguntar ao Stripe')
+  }
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
+// Resolvidas: Plans x recurring_plans (sql/contrato-unico-v1.sql), Quotes x
+// estimates (orcamentos no Financeiro), staff_roles x team_members
+// (sql/equipe-unica-v1.sql). Duplicacao nova entra aqui com o arquivo que a denuncia.
 for (const d of [
-  ['Orcamentos: modulo Quotes x estimates do faturamento', 'components/QuotesTab.tsx'],
-  ['Contratos: modulo Plans x recurring_plans', 'components/PlansTab.tsx'],
-  ['Equipe: staff_roles (permissao) x team_members (CRM)', 'app/team/page.tsx'],
 ]) if (existsSync(join(raiz, d[1]))) ver(d[0])
 
 titulo('MENU DUPLICADO EM QUANTOS LAYOUTS')

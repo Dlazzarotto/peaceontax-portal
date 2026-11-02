@@ -28,3 +28,40 @@ export function filtroDeRecebimento(...ids: (string | null | undefined)[]): stri
   if (!limpos.length) return null
   return limpos.flatMap(id => [`stripe_object.eq.${id}`, `reference.eq.${id}`]).join(',')
 }
+
+/**
+ * Lança no livro (invoice_payments) um recebimento que veio do Stripe — UMA
+ * vez, procurando por TODAS as chaves do pagamento nas duas colunas.
+ *
+ * Uma função só para o webhook e para a equipe (agendar o parcelamento que
+ * travou): duas cópias da regra divergiriam, e a cópia que procurasse só pela
+ * própria chave lançaria o mesmo dinheiro de novo.
+ *
+ * `recebidoEm` é a hora em que o dinheiro ENTROU — quando o lançamento chega
+ * dias depois (o agendamento travado), a data de hoje poria a receita no dia
+ * errado do caixa. Não lança erro: devolve o que houve, e quem chama decide.
+ */
+export async function lancarRecebimentoStripe(db: any, r: {
+  invoiceId: string | null | undefined
+  clientId: string
+  valor: number
+  metodo: string
+  referencia: string | null | undefined
+  objetoStripe: string
+  recebidoEm?: Date | null
+}): Promise<{ ok: true; lancado: boolean } | { ok: false; motivo: string }> {
+  if (!r.invoiceId || !(Number(r.valor) > 0)) return { ok: true, lancado: false }
+  const filtro = filtroDeRecebimento(r.objetoStripe, r.referencia)
+  if (!filtro) return { ok: false, motivo: 'pagamento sem identificação do Stripe' }
+  const { data: ja, error } = await db.from('invoice_payments').select('id').or(filtro).limit(1)
+  // Consulta que falha não é "não existe": gravar no escuro é o recebimento em dobro.
+  if (error) return { ok: false, motivo: `não deu para conferir se já estava lançado: ${error.message}` }
+  if (ja?.length) return { ok: true, lancado: false }
+  const { error: errIns } = await db.from('invoice_payments').insert({
+    invoice_id: r.invoiceId, client_id: r.clientId, amount: r.valor,
+    method: r.metodo, reference: r.referencia || null, stripe_object: r.objetoStripe,
+    received_at: (r.recebidoEm || new Date()).toISOString(),
+  })
+  if (errIns) return { ok: false, motivo: errIns.message }
+  return { ok: true, lancado: true }
+}

@@ -1,9 +1,28 @@
-// GET /api/bookkeeping/vendors?clientId=...&year=2020
-// Relatório por fornecedor (payee): total pago, nº de transações, categorias —
-// com seção de candidatos a 1099 (Contract Labor / Rent / Legal ≥ $600 no ano).
+// GET /api/bookkeeping/vendors?clientId=...&from=YYYY-MM-DD&to=YYYY-MM-DD[&report=vendors|1099]
+//   (ou year=YYYY, como sempre aceitou — lib/periodo-relatorio.ts converte)
+// Relatório por fornecedor (payee): total pago, nº de transações, categorias.
+// Com report=1099, a lista do 1099: TODA despesa paga nas contas que o sócio
+// marcou no plano de contas (botão do 1099, `bookkeeping_categories.form_1099`),
+// por prestador e por formulário, contra o limite DO ANO. Quem decide é
+// lib/relatorio-1099.ts: limite 600 até 2025 e 2000 a partir de 2026; o que
+// saiu da conta bancária entra, inclusive PayPal/Venmo/Cash App (decisão do
+// sócio: a transferência pessoal não tem 1099-K), e o cartão de crédito fica
+// fora (vai no 1099-K); grafias do mesmo prestador somadas juntas. A linha
+// mostra o que veio por plataforma, porque o pagamento a perfil de negócio
+// ("goods & services") vai no 1099-K e o extrato não diz qual foi.
+// O 1099 é por ANO-CALENDÁRIO: período livre vira o ano do fim dele, e o
+// relatório diz qual.
+//
+// Todo texto que vem do banco sai escapado: o payee nasce da descrição do
+// extrato e o nome do cliente é digitado por ele no aceite do convite.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { apurar1099, ehContaDeDespesa, formularioDoPedido, FORMULARIOS_1099,
+         type Formulario1099, type Linha1099 } from '@/lib/relatorio-1099'
+import { colunaAusente } from '@/lib/caixa-firma'
+import { periodoDosParametros, periodoDeAno, anoDe, rotuloDoPeriodo } from '@/lib/periodo-relatorio'
+import { todasAsLinhas } from '@/lib/paginar'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 
@@ -13,9 +32,6 @@ const FIRM = {
   phone: '(833) 732-2327',
 }
 
-// Categorias tipicamente reportáveis em 1099-NEC/MISC (pagamentos ≥ $600/ano)
-const CATS_1099 = ['Contract Labor', 'Subcontractors (COGS)']
-
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
@@ -23,9 +39,12 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
-  const year = parseInt(sp.get('year') || '')
   const report = sp.get('report') === '1099' ? '1099' : 'vendors'
-  if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
+  const pedido = periodoDosParametros(k => sp.get(k))
+  if (!clientId || !pedido) return NextResponse.json({ error: 'clientId e período (from/to ou year) obrigatórios' }, { status: 400 })
+  // 1099 é por ano-calendário (lei): o período livre vira o ano do FIM dele
+  const { de, ate } = report === '1099' ? periodoDeAno(anoDe(pedido.ate)) : pedido
+  const rotulo = rotuloDoPeriodo(de, ate)
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
   if (auth?.isStaff) {
@@ -43,12 +62,16 @@ export async function GET(req: NextRequest) {
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
-  const { data: txs } = await db.from('bank_transactions')
-    .select('payee, category, amount')
-    .eq('client_id', clientId)
-    .eq('fiscal_year', year)
-    .in('status', ['approved', 'reviewed'])
-    .limit(10000)
+  // Por DATA (fiscal_year nasce dela) e em páginas de 1000: `.limit(10000)`
+  // parava em mil sem avisar — e o 1099 saía com fornecedor FALTANDO.
+  const { data: txs, error: errTxs } = await todasAsLinhas<any>(() =>
+    db.from('bank_transactions')
+      .select('payee, category, amount, account_id, description')
+      .eq('client_id', clientId)
+      .gte('tx_date', de).lte('tx_date', ate)
+      .in('status', ['approved', 'reviewed']))
+  // Consulta que falha não vira "No categorized payments" — isso é uma afirmação.
+  if (errTxs) return NextResponse.json({ error: `Relatório não gerado — falhou ao ler os lançamentos: ${errTxs.message}` }, { status: 500 })
 
   // Agrega por payee — saídas (vendors) e entradas (customers) separadas
   const byPayee: Record<string, { total: number; count: number; cats: Set<string> }> = {}
@@ -79,18 +102,84 @@ export async function GET(req: NextRequest) {
     .map(([payee, v]) => ({ payee, total: v.total, count: v.count, cats: Array.from(v.cats) }))
     .sort((a, b) => b.total - a.total)
 
-  const candidates1099 = vendors.filter(v =>
-    v.total >= 600 && v.cats.some(c => CATS_1099.includes(c)))
+  // ── 1099: as contas marcadas no plano e quais contas do cliente são cartão
+  let apuracao: ReturnType<typeof apurar1099> | null = null
+  const contas1099: { name: string; form: Formulario1099 }[] = []
+  if (report === '1099') {
+    const [{ data: cats, error: errCats }, { data: contasBanco, error: errContas }] = await Promise.all([
+      db.from('bookkeeping_categories').select('name, kind, form_1099').not('form_1099', 'is', null),
+      db.from('bank_accounts').select('id, type').eq('client_id', clientId),
+    ])
+    if (errCats) {
+      return colunaAusente(errCats)
+        ? NextResponse.json({ error: 'O 1099 por conta precisa da migração sql/plano-de-contas-1099-v1.sql. Rode no SQL Editor e abra o relatório de novo.' }, { status: 409 })
+        : NextResponse.json({ error: `Relatório não gerado — falhou ao ler o plano de contas: ${errCats.message}` }, { status: 500 })
+    }
+    // Sem as contas do cliente não dá para separar o cartão: o 1099 sairia
+    // com pagamento que não vai nele. Falhar é melhor que errar.
+    if (errContas) return NextResponse.json({ error: `Relatório não gerado — falhou ao ler as contas do cliente: ${errContas.message}` }, { status: 500 })
+    const formularioDaConta: Record<string, Formulario1099> = {}
+    for (const c of (cats || []) as any[]) {
+      const f = formularioDoPedido(c.form_1099)
+      if (f && ehContaDeDespesa(c.kind)) { formularioDaConta[c.name] = f; contas1099.push({ name: c.name, form: f }) }
+    }
+    contas1099.sort((a, b) => a.form.localeCompare(b.form) || a.name.localeCompare(b.name))
+    apuracao = apurar1099({
+      lancamentos: txs || [], formularioDaConta, ano: anoDe(ate),
+      contasDeCartao: ((contasBanco || []) as any[]).filter(a => a.type === 'credit_card').map(a => a.id),
+    })
+  }
 
   const displayName = client?.business_name || client?.name || ''
   const money = (n: number) => `$${n.toFixed(2)}`
+  const dinheiroInteiro = (n: number) => `$${n.toLocaleString('en-US')}`
+  const esc = escaparHtml
+  // O que a linha precisa dizer para quem prepara decidir: quanto do total
+  // veio por plataforma (pagamento a perfil de negócio sai do NEC), se o
+  // prestador só passa do limite com isso, e o que foi no cartão (fora).
+  const notaDaLinha = (l: Linha1099) => {
+    const partes: string[] = []
+    if (l.porPlataforma > 0) partes.push(`${l.dependeDaPlataforma ? '⚠️ ' : ''}incl. ${money(l.porPlataforma)} via PayPal/Venmo/Cash App${
+      l.dependeDaPlataforma ? ' — reaches the threshold only with these: confirm they were personal transfers' : ''}`)
+    if (l.porCartao > 0) partes.push(`${money(l.porCartao)} by credit card not included (Form 1099-K)`)
+    return partes.length ? `<div class="nota">${partes.join(' · ')}</div>` : ''
+  }
+  const linhas1099 = (lista: Linha1099[], destaque: boolean) => lista.map(l => `<tr${destaque ? ' class="k1099"' : ''}>
+      <td><b>${esc(l.prestador)}</b>${notaDaLinha(l)}</td>
+      <td>${l.contas.map(c => `<span class="badge">${esc(c)}</span>`).join('')}</td>
+      <td class="r" style="font-weight:400">${money(l.pago)}</td>
+      <td class="r" style="font-weight:400">${l.devolvido ? `-${money(l.devolvido)}` : '—'}</td>
+      <td class="r">${money(l.total)}</td>
+      <td class="r" style="font-weight:400">${l.pagamentos}</td>
+    </tr>`).join('')
+  const cabecalho1099 = '<tr><th>Payee</th><th>1099 accounts</th><th style="text-align:right">Paid</th><th style="text-align:right">Refunds</th><th style="text-align:right">Total</th><th style="text-align:right">Payments</th></tr>'
+  const secao1099 = !apuracao ? '' : `
+  <h3>1099 — calendar year ${apuracao.ano} · threshold ${dinheiroInteiro(apuracao.limite)} per payee and form</h3>
+  <p style="font-size:12.5px; margin:0 0 6px">Accounts marked for 1099 in the chart of accounts: ${contas1099.length
+    ? contas1099.map(c => `<span class="badge">${esc(c.name)} · ${c.form}</span>`).join('')
+    : '<b>none</b>. Mark the expense accounts in Chart of accounts (Plano de contas) and open this report again.'}</p>
+  ${FORMULARIOS_1099.map(f => {
+    const lista = apuracao!.candidatos.filter(l => l.formulario === f)
+    return lista.length ? `
+  <h3>⚠️ Form 1099-${f} candidates</h3>
+  <table>${cabecalho1099}${linhas1099(lista, true)}</table>` : ''
+  }).join('')}
+  ${apuracao.candidatos.length ? '' : `<p style="color:#6a7a9a; font-size:13px; margin-top:10px">No payee reached ${dinheiroInteiro(apuracao.limite)} in the accounts marked for 1099.</p>`}
+  ${apuracao.abaixoDoLimite.length ? `
+  <h3>Below the threshold (no 1099 required)</h3>
+  <table>${cabecalho1099}${linhas1099(apuracao.abaixoDoLimite.map(l => ({ ...l, prestador: `${l.prestador} · ${l.formulario}` })), false)}</table>` : ''}
+  ${apuracao.foraDoFormulario.cartao > 0 ? `<div class="warn">💳 ${money(apuracao.foraDoFormulario.cartao)} was paid by credit card in the 1099 accounts. Card payments are not reported on 1099-NEC/MISC: the card processor reports them on Form 1099-K.</div>` : ''}
+  ${apuracao.plataformaNoTotal > 0 ? `<div class="warn">📱 ${money(apuracao.plataformaNoTotal)} of the totals above was paid through PayPal, Venmo or Cash App from a bank account, and it is included. A personal transfer (friends &amp; family) gets no Form 1099-K from the platform, so the 1099 is the payer's to file. The exception is a payment to a business profile or marked “goods &amp; services”: the platform reports it on Form 1099-K, and it must not go on the 1099-NEC/MISC. The bank statement does not show which one it was — check the payment type in the app and take those out before filing.</div>` : ''}
+  ${apuracao.semPrestador.lancamentos > 0 ? `<div class="warn">📌 ${apuracao.semPrestador.lancamentos} payment(s) totaling ${money(apuracao.semPrestador.total)} in the 1099 accounts have no payee identified${
+    apuracao.semPrestador.viaPlataforma ? ` (${apuracao.semPrestador.viaPlataforma} through PayPal, Venmo or Cash App: the bank statement does not name who received the transfer)` : ''}. Identify the payee, or a 1099 may be missed.</div>` : ''}
+  ${apuracao.candidatos.length ? '<div class="warn">Collect Form W-9 from these payees and confirm the entity type. Corporations are generally exempt, except for attorney fees and medical payments. Verify amounts before filing.</div>' : ''}`
 
   const barra = barraDoRelatorio({
     voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
-<title>Vendors ${year} — ${displayName}</title>
+<title>${report === '1099' ? '1099' : 'Vendors'} ${rotulo} — ${esc(displayName)}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
@@ -110,6 +199,7 @@ export async function GET(req: NextRequest) {
   td.r { text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
   .badge { display:inline-block; font-size:10.5px; border:1px solid #000; padding:1px 8px; margin-right:4px; }
   .k1099 { background:#fff7e0; }
+  .nota { font-size:11px; font-weight:400; color:#5a4a10; margin-top:2px; }
   .warn { margin-top:14px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
   .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
   ${barra.css}
@@ -125,31 +215,17 @@ export async function GET(req: NextRequest) {
 
 ${barra.html}
 <div class="sheet">
-  <h1>${displayName}</h1>
-  <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${year} (cash basis, payments only)</h2>
+  <h1>${esc(displayName)}</h1>
+  <h2>${report === '1099' ? '1099 Report' : 'Vendor / Payee Report'} — ${rotulo} (cash basis, payments only)</h2>
 
-  ${report === '1099' ? `
-  ${candidates1099.length ? `
-  <h3>⚠️ 1099 Candidates (≥ $600 in reportable categories)</h3>
-  <table>
-    <tr><th>Payee</th><th>Categories</th><th style="text-align:right">Total Paid</th><th style="text-align:right">Payments</th></tr>
-    ${candidates1099.map(v => `<tr class="k1099">
-      <td><b>${v.payee}</b></td>
-      <td>${v.cats.map(c => `<span class="badge">${c}</span>`).join('')}</td>
-      <td class="r">${money(v.total)}</td><td class="r" style="font-weight:400">${v.count}</td>
-    </tr>`).join('')}
-  </table>
-  <div class="warn">Collect Form W-9 from these payees and confirm entity type — corporations are generally exempt from 1099-NEC. Verify amounts before filing.</div>
-  ` : `<h3>1099 Candidates</h3><p style="color:#6a7a9a; font-size:13px;">None found (no payee with ≥ $600 in Contract Labor or Subcontractors).</p>`}
-
-  ` : ''}
+  ${secao1099}
 
   ${report === 'vendors' ? `<h3>All Vendors by Total Paid</h3>
   <table>
     <tr><th>Payee</th><th>Categories</th><th style="text-align:right">Total Paid</th><th style="text-align:right">Payments</th></tr>
     ${vendors.map(v => `<tr>
-      <td>${v.payee}</td>
-      <td>${v.cats.map(c => `<span class="badge">${c}</span>`).join('')}</td>
+      <td>${esc(v.payee)}</td>
+      <td>${v.cats.map(c => `<span class="badge">${esc(c)}</span>`).join('')}</td>
       <td class="r">${money(v.total)}</td><td class="r" style="font-weight:400">${v.count}</td>
     </tr>`).join('') || '<tr><td colspan="4" style="color:#9aaab0">No categorized payments with payee yet.</td></tr>'}
   </table>
@@ -160,10 +236,10 @@ ${barra.html}
   <h3>💰 Customers by Total Received (money in)</h3>
   <table>
     <tr><th>Customer</th><th style="text-align:right">Total Received</th><th style="text-align:right">Payments</th></tr>
-    ${customers.map(c => `<tr><td>${c.payee}</td><td class="r">${money(c.total)}</td><td class="r" style="font-weight:400">${c.count}</td></tr>`).join('')}
+    ${customers.map(c => `<tr><td>${esc(c.payee)}</td><td class="r">${money(c.total)}</td><td class="r" style="font-weight:400">${c.count}</td></tr>`).join('')}
   </table>` : ''}
 
-  ${noPayeeCount > 0 ? `<div class="warn">📌 ${noPayeeCount} payment(s) totaling ${money(noPayeeTotal)} have no payee identified — run "Categorizar pendentes" to extract payees, or fill manually.</div>` : ''}
+  ${report === 'vendors' && noPayeeCount > 0 ? `<div class="warn">📌 ${noPayeeCount} payment(s) totaling ${money(noPayeeTotal)} have no payee identified — run "Categorizar pendentes" to extract payees, or fill manually.</div>` : ''}
 
   <div class="foot">${FIRM.name} &middot; ${FIRM.address} &middot; ${FIRM.phone}<br>Prepared · Generated ${new Date().toLocaleDateString('en-US',{ timeZone:'America/New_York', month:'long', day:'numeric', year:'numeric' })} · Internal working document — verify before filing</div>
 </div>

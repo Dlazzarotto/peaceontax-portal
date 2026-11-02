@@ -15,7 +15,9 @@
 // em que alguém clica, nunca guardada para mandar depois.
 
 import Stripe from 'stripe'
-import { ancoraDeCobranca, normalizarDiaCobranca } from '@/lib/plans'
+import { normalizarDiaCobranca } from '@/lib/plans'
+import { ancoraDoDebito, recorrenciaDoStripe } from '@/lib/contrato-unico'
+import { dataDaFirma } from '@/lib/dia-da-firma'
 import { APP_URL, localeStripe } from '@/lib/avisos'
 import { sessaoComFormasDisponiveis } from '@/lib/stripe-formas'
 
@@ -55,6 +57,11 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
   if (!STATUS_QUE_GERAM_LINK.includes(plan.status)) {
     throw new Error(`Plano em status '${plan.status}' não gera novo link`)
   }
+  // Contrato POR FATURA é cobrado pela fatura que a rotina emite: um
+  // cadastro de débito aqui criaria uma assinatura e o cliente pagaria duas vezes.
+  if (plan.kind !== 'installment' && plan.collection_method === 'fatura') {
+    throw new Error('Contrato por fatura não tem débito automático — ele é cobrado pela fatura do período.')
+  }
   const client = plan.clients || {}
   const lang = client.language || 'en'
   const locale = localeStripe(lang) as Stripe.Checkout.SessionCreateParams.Locale
@@ -71,6 +78,12 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
 
   if (plan.kind === 'installment') {
     const entrada = Number(plan.entry_amount || 0)
+    // Entrada JÁ paga (o agendamento das parcelas travou depois dela): um
+    // link novo cobraria a entrada outra vez. Quem conclui é a equipe, em
+    // Financeiro → Parcelamentos → "Conferir pagamento e agendar".
+    if (entrada > 0 && plan.entry_paid_at) {
+      throw new Error('A entrada deste parcelamento já foi paga — falta só agendar as parcelas (Financeiro → Parcelamentos).')
+    }
     const metadata: Record<string, string> = {
       planId, clientId: plan.client_id,
       planKind: entrada > 0 ? 'installment_entry' : 'installment_setup',
@@ -118,10 +131,14 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
       update.status = 'awaiting_setup'
     }
   } else {
-    // Mensalidade: trial até o dia acordado, e o Stripe repete no mesmo dia.
-    // ancoraDeCobranca garante as 48h que o Stripe exige (dia acordado na
+    // Contrato no débito: trial até a primeira cobrança da RÉGUA do contrato
+    // (início, dia e intervalo), e o Stripe repete no intervalo do contrato.
+    // ancoraDoDebito garante as 48h que o Stripe exige (dia acordado na
     // véspera cairia em erro e o cliente não conseguiria cadastrar o débito).
-    const anchor = ancoraDeCobranca(normalizarDiaCobranca(plan.due_day))
+    // Antes era sempre "o próximo dia X, todo mês": o trimestral virava
+    // mensal no Stripe, cobrando o valor do trimestre TODO MÊS.
+    const primeira = ancoraDoDebito(normalizarDiaCobranca(plan.due_day), plan.start_date, plan.billing_interval, dataDaFirma())
+    const anchor = new Date(`${primeira}T12:00:00Z`)
     const metadata = { planId, planKind: 'bookkeeping', clientId: plan.client_id }
     const r = await sessaoComFormasDisponiveis(stripe, ['card', 'us_bank_account'], (formas) => ({
       mode: 'subscription',
@@ -136,7 +153,7 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
               : (lang === 'pt' ? 'Bookkeeping mensal — Peace on Tax' : 'Monthly bookkeeping — Peace on Tax')),
           },
           unit_amount: Math.round(Number(plan.monthly_amount) * 100),
-          recurring: { interval: 'month', interval_count: 1 },
+          recurring: recorrenciaDoStripe(plan.billing_interval),
         },
         quantity: 1,
       }],
@@ -149,7 +166,7 @@ export async function criarSessaoDoPlano(db: any, stripe: Stripe, plan: any, opt
     session = r.session
     recusadas = r.recusadas
     update.status = 'awaiting_setup'
-    update.next_charge_date = anchor.toISOString().slice(0, 10)
+    update.next_charge_date = primeira
   }
 
   update.stripe_session_id = session.id

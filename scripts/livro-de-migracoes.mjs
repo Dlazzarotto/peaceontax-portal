@@ -76,6 +76,27 @@ export function estadoDaMigracao(caminho, hash, livro) {
 }
 
 /**
+ * As migracoes que contam como APLICADAS para quem depende delas: as do
+ * livro com o MESMO conteudo do disco (estado ok). Devolve o Set de caminhos
+ * que `ordenarPorDependencia` recebe.
+ *
+ * O livro em si e um Map, e passa-lo direto fazia toda dependencia de
+ * migracao aplicada parecer faltar (ordem-das-migracoes.mjs conta). "Mudou
+ * depois de aplicado" e as linhas tortas ficam de fora DE PROPOSITO:
+ * depender de um arquivo que nao e o que rodou e decisao de gente, e a
+ * recusa diz qual e.
+ *
+ * `arquivos`: [{ nome: 'sql/x.sql', hash }] -- o que esta no disco.
+ */
+export function aplicadasParaDependencia(livro, arquivos) {
+  const ok = new Set()
+  for (const { nome, hash } of arquivos || []) {
+    if (estadoDaMigracao(nome, hash, livro) === ESTADOS.OK) ok.add(nome)
+  }
+  return ok
+}
+
+/**
  * O SQL que conserta uma linha gravada com o nome curto.
  *
  * RENOMEIA E SO. A primeira versao tambem gravava `sha256 = <hash atual>`, e
