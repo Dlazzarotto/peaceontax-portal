@@ -4,9 +4,12 @@
 // Com report=1099, a lista do 1099: TODA despesa paga nas contas que o sócio
 // marcou no plano de contas (botão do 1099, `bookkeeping_categories.form_1099`),
 // por prestador e por formulário, contra o limite DO ANO. Quem decide é
-// lib/relatorio-1099.ts: limite 600 até 2025 e 2000 a partir de 2026, cartão
-// de crédito e PayPal/Venmo/Cash App fora (vão no 1099-K), grafias do mesmo
-// prestador somadas juntas. A lista fixa no código saiu.
+// lib/relatorio-1099.ts: limite 600 até 2025 e 2000 a partir de 2026; o que
+// saiu da conta bancária entra, inclusive PayPal/Venmo/Cash App (decisão do
+// sócio: a transferência pessoal não tem 1099-K), e o cartão de crédito fica
+// fora (vai no 1099-K); grafias do mesmo prestador somadas juntas. A linha
+// mostra o que veio por plataforma, porque o pagamento a perfil de negócio
+// ("goods & services") vai no 1099-K e o extrato não diz qual foi.
 // O 1099 é por ANO-CALENDÁRIO: período livre vira o ano do fim dele, e o
 // relatório diz qual.
 //
@@ -131,8 +134,18 @@ export async function GET(req: NextRequest) {
   const money = (n: number) => `$${n.toFixed(2)}`
   const dinheiroInteiro = (n: number) => `$${n.toLocaleString('en-US')}`
   const esc = escaparHtml
+  // O que a linha precisa dizer para quem prepara decidir: quanto do total
+  // veio por plataforma (pagamento a perfil de negócio sai do NEC), se o
+  // prestador só passa do limite com isso, e o que foi no cartão (fora).
+  const notaDaLinha = (l: Linha1099) => {
+    const partes: string[] = []
+    if (l.porPlataforma > 0) partes.push(`${l.dependeDaPlataforma ? '⚠️ ' : ''}incl. ${money(l.porPlataforma)} via PayPal/Venmo/Cash App${
+      l.dependeDaPlataforma ? ' — reaches the threshold only with these: confirm they were personal transfers' : ''}`)
+    if (l.porCartao > 0) partes.push(`${money(l.porCartao)} by credit card not included (Form 1099-K)`)
+    return partes.length ? `<div class="nota">${partes.join(' · ')}</div>` : ''
+  }
   const linhas1099 = (lista: Linha1099[], destaque: boolean) => lista.map(l => `<tr${destaque ? ' class="k1099"' : ''}>
-      <td><b>${esc(l.prestador)}</b></td>
+      <td><b>${esc(l.prestador)}</b>${notaDaLinha(l)}</td>
       <td>${l.contas.map(c => `<span class="badge">${esc(c)}</span>`).join('')}</td>
       <td class="r" style="font-weight:400">${money(l.pago)}</td>
       <td class="r" style="font-weight:400">${l.devolvido ? `-${money(l.devolvido)}` : '—'}</td>
@@ -156,8 +169,9 @@ export async function GET(req: NextRequest) {
   <h3>Below the threshold (no 1099 required)</h3>
   <table>${cabecalho1099}${linhas1099(apuracao.abaixoDoLimite.map(l => ({ ...l, prestador: `${l.prestador} · ${l.formulario}` })), false)}</table>` : ''}
   ${apuracao.foraDoFormulario.cartao > 0 ? `<div class="warn">💳 ${money(apuracao.foraDoFormulario.cartao)} was paid by credit card in the 1099 accounts. Card payments are not reported on 1099-NEC/MISC: the card processor reports them on Form 1099-K.</div>` : ''}
-  ${apuracao.foraDoFormulario.plataforma > 0 ? `<div class="warn">📱 ${money(apuracao.foraDoFormulario.plataforma)} was paid through PayPal, Venmo or Cash App in the 1099 accounts. Third-party network payments are reported on Form 1099-K, not on 1099-NEC/MISC. Confirm each one before filing.</div>` : ''}
-  ${apuracao.semPrestador.lancamentos > 0 ? `<div class="warn">📌 ${apuracao.semPrestador.lancamentos} payment(s) totaling ${money(apuracao.semPrestador.total)} in the 1099 accounts have no payee identified. Identify the payee, or a 1099 may be missed.</div>` : ''}
+  ${apuracao.plataformaNoTotal > 0 ? `<div class="warn">📱 ${money(apuracao.plataformaNoTotal)} of the totals above was paid through PayPal, Venmo or Cash App from a bank account, and it is included. A personal transfer (friends &amp; family) gets no Form 1099-K from the platform, so the 1099 is the payer's to file. The exception is a payment to a business profile or marked “goods &amp; services”: the platform reports it on Form 1099-K, and it must not go on the 1099-NEC/MISC. The bank statement does not show which one it was — check the payment type in the app and take those out before filing.</div>` : ''}
+  ${apuracao.semPrestador.lancamentos > 0 ? `<div class="warn">📌 ${apuracao.semPrestador.lancamentos} payment(s) totaling ${money(apuracao.semPrestador.total)} in the 1099 accounts have no payee identified${
+    apuracao.semPrestador.viaPlataforma ? ` (${apuracao.semPrestador.viaPlataforma} through PayPal, Venmo or Cash App: the bank statement does not name who received the transfer)` : ''}. Identify the payee, or a 1099 may be missed.</div>` : ''}
   ${apuracao.candidatos.length ? '<div class="warn">Collect Form W-9 from these payees and confirm the entity type. Corporations are generally exempt, except for attorney fees and medical payments. Verify amounts before filing.</div>' : ''}`
 
   const barra = barraDoRelatorio({
@@ -185,6 +199,7 @@ export async function GET(req: NextRequest) {
   td.r { text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
   .badge { display:inline-block; font-size:10.5px; border:1px solid #000; padding:1px 8px; margin-right:4px; }
   .k1099 { background:#fff7e0; }
+  .nota { font-size:11px; font-weight:400; color:#5a4a10; margin-top:2px; }
   .warn { margin-top:14px; background:#fff7e0; border:1px solid #e8c46a; border-radius:8px; padding:10px 14px; font-size:12.5px; color:#7a5a10; }
   .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
   ${barra.css}

@@ -15,16 +15,35 @@
 //     correção pela inflação a partir de 2027. Quando o IRS publicar o valor
 //     corrigido, ele entra em LIMITES; até lá vale o último da tabela.
 //
-//  2. PAGAMENTO POR CARTÃO OU POR PLATAFORMA NÃO VAI NO 1099-NEC/MISC. Quem
-//     informa é a processadora, no 1099-K (instruções do 1099-NEC). Despesa
-//     paga numa conta de cartão de crédito do cliente, ou por PayPal, Venmo ou
-//     Cash App, aparece no relatório à parte e fica fora do total. Zelle NÃO é
-//     plataforma para esse fim: pagamento por Zelle continua no 1099.
+//  2. O QUE SAIU DA CONTA BANCÁRIA ENTRA; O CARTÃO DE CRÉDITO NÃO. Cheque,
+//     Zelle, ACH, wire — e também PayPal, Venmo e Cash App pagos a partir da
+//     conta bancária (decisão do sócio). A lei tira do 1099-NEC/MISC o
+//     pagamento por cartão e a "third party network transaction": quem
+//     informa é a processadora, no 1099-K. A transferência PESSOAL do Venmo
+//     ou do PayPal (friends & family) não é transação de rede — a plataforma
+//     não emite 1099-K para ela, e o 1099 continua sendo do pagador. É o
+//     jeito comum de pagar prestador, e a regra anterior, que tirava todo
+//     Venmo do total, deixava de fora formulário obrigatório: multa para o
+//     cliente. A exceção que a lei mantém é o pagamento a perfil de NEGÓCIO
+//     ou marcado "goods & services", que a plataforma informa no 1099-K e
+//     não vai no NEC. O extrato do banco não diz qual dos dois foi, então a
+//     linha diz quanto veio por plataforma (`porPlataforma`) e se o
+//     prestador só chega ao limite com isso (`dependeDaPlataforma`): quem
+//     prepara confere no app e tira o que foi de negócio. Errar para dentro
+//     se corrige tirando o valor antes de enviar; errar para fora é multa.
+//     O cartão de crédito continua fora: na conta de cartão o pagamento é de
+//     cartão, e cartão é 1099-K.
 //
 //  3. O MESMO PRESTADOR COM GRAFIA DIFERENTE É UM SÓ. "JOHN SMITH" e
 //     "John Smith." somados em separado deixam cada metade abaixo do limite, e
 //     o 1099 não sai. A chave é a mesma do cadastro de clientes
 //     (`chaveDoNome`), e o relatório mostra a grafia mais usada.
+//
+// E um cuidado de leitura: payee que É a plataforma ("Venmo", "PAYPAL INST
+// XFER") não é prestador. O extrato do banco costuma não dizer quem recebeu a
+// transferência; somar tudo sob "Venmo" daria um 1099 em nome do Venmo e
+// esconderia o prestador de verdade. Vai para "sem prestador", que pede para
+// identificar quem recebeu.
 //
 // Puro, sem banco: a rota lê, este módulo decide. Testado em
 // testes/relatorio-1099.mts. Trabalha em CENTAVOS para não acumular erro de
@@ -65,8 +84,12 @@ export function limiteDo1099(ano: number): number {
   return LIMITES[LIMITES.length - 1].valor
 }
 
-/** PayPal, Venmo e Cash App informam no 1099-K. Zelle não. */
-export const PLATAFORMA_1099K = /\b(paypal|venmo|cash\s?app)\b/i
+/**
+ * PayPal, Venmo e Cash App. Pagos pela conta bancária ENTRAM no 1099 (regra 2);
+ * a marca serve para a linha dizer quanto veio por eles. Zelle não é
+ * plataforma: é transferência entre bancos, sem 1099-K em nenhum caso.
+ */
+export const PLATAFORMA = /\b(paypal|venmo|cash\s?app)\b/i
 
 export interface Lancamento1099 {
   payee: string | null
@@ -80,17 +103,24 @@ export interface Linha1099 {
   /** A grafia mais usada do prestador. */
   prestador: string
   formulario: Formulario1099
-  /** Saídas pelo banco, em dólar. */
+  /** Saídas pela conta bancária, em dólar — inclusive por PayPal, Venmo e Cash App. */
   pago: number
   /** Entradas do mesmo prestador nas contas do 1099 (reembolso). */
   devolvido: number
   /** pago − devolvido, nunca negativo. É o que se compara com o limite. */
   total: number
-  /** Pago no cartão de crédito: fora do NEC/MISC, vai no 1099-K. */
+  /** Pago no cartão de crédito: FORA do total, vai no 1099-K. */
   porCartao: number
-  /** Pago por PayPal, Venmo ou Cash App: idem. */
+  /**
+   * Quanto do total veio por PayPal, Venmo ou Cash App pela conta bancária.
+   * JÁ ESTÁ no total; aparece à parte porque o pagamento a perfil de negócio
+   * ("goods & services") vai no 1099-K e sai do NEC — e o extrato não diz qual
+   * foi. Nunca passa do total.
+   */
   porPlataforma: number
-  /** Quantas saídas pelo banco. */
+  /** É candidato só por causa do que veio por plataforma: conferir no app antes de enviar. */
+  dependeDaPlataforma: boolean
+  /** Quantas saídas pela conta bancária. */
   pagamentos: number
   /** As contas do 1099 em que o prestador apareceu. */
   contas: string[]
@@ -102,10 +132,16 @@ export interface Apuracao1099 {
   limite: number
   candidatos: Linha1099[]
   abaixoDoLimite: Linha1099[]
-  /** Saídas pelo banco em conta do 1099 sem prestador identificado. */
-  semPrestador: { total: number; lancamentos: number }
-  /** O que ficou fora do formulário, somado na carteira daquele cliente. */
-  foraDoFormulario: { cartao: number; plataforma: number }
+  /**
+   * Saídas pela conta bancária em conta do 1099 sem prestador identificado.
+   * `viaPlataforma` conta quantas delas foram por PayPal, Venmo ou Cash App —
+   * o extrato dessas costuma não dizer quem recebeu.
+   */
+  semPrestador: { total: number; lancamentos: number; viaPlataforma: number }
+  /** O que ficou fora do formulário, somado na carteira daquele cliente: só o cartão. */
+  foraDoFormulario: { cartao: number }
+  /** Soma de `porPlataforma` das linhas listadas: o que veio por plataforma DENTRO dos totais. */
+  plataformaNoTotal: number
 }
 
 const centavos = (v: unknown) => Math.round(Number(v) * 100)
@@ -120,12 +156,15 @@ export function apurar1099(p: {
   ano: number
 }): Apuracao1099 {
   const cartoes = new Set(p.contasDeCartao)
+  // Tudo em centavos. `platPago`/`platDevolvido` são a parte de `pago`/
+  // `devolvido` que veio por plataforma — subconjunto, nunca soma à parte.
   type Grupo = {
     formulario: Formulario1099; pago: number; devolvido: number; porCartao: number
-    porPlataforma: number; pagamentos: number; contas: Set<string>; grafias: Map<string, number>
+    platPago: number; platDevolvido: number; pagamentos: number
+    contas: Set<string>; grafias: Map<string, number>
   }
   const grupos = new Map<string, Grupo>()
-  let semTotal = 0, semLancamentos = 0, foraCartao = 0, foraPlataforma = 0
+  let semTotal = 0, semLancamentos = 0, semPlataforma = 0, foraCartao = 0
 
   for (const l of p.lancamentos || []) {
     const formulario = l.category ? p.formularioDaConta[l.category] : undefined
@@ -133,30 +172,39 @@ export function apurar1099(p: {
     const valor = centavos(l.amount)
     if (!Number.isFinite(valor) || valor === 0) continue
     const viaCartao = !!l.account_id && cartoes.has(l.account_id)
-    const viaPlataforma = !viaCartao &&
-      (PLATAFORMA_1099K.test(String(l.description || '')) || PLATAFORMA_1099K.test(String(l.payee || '')))
-
     const nome = String(l.payee || '').trim()
-    if (!nome) {
+    const viaPlataforma = !viaCartao &&
+      (PLATAFORMA.test(String(l.description || '')) || PLATAFORMA.test(nome))
+
+    // Payee vazio, ou que é a própria plataforma: ninguém identificado.
+    if (!nome || PLATAFORMA.test(nome)) {
       if (viaCartao) foraCartao -= valor
-      else if (viaPlataforma) foraPlataforma -= valor
-      else if (valor < 0) { semTotal -= valor; semLancamentos++ }
+      else if (valor < 0) {
+        semTotal -= valor; semLancamentos++
+        if (viaPlataforma) semPlataforma++
+      }
       continue
     }
 
     const chave = `${formulario}|${chaveDoNome(nome)}`
     let g = grupos.get(chave)
     if (!g) {
-      g = { formulario, pago: 0, devolvido: 0, porCartao: 0, porPlataforma: 0, pagamentos: 0,
-            contas: new Set(), grafias: new Map() }
+      g = { formulario, pago: 0, devolvido: 0, porCartao: 0, platPago: 0, platDevolvido: 0,
+            pagamentos: 0, contas: new Set(), grafias: new Map() }
       grupos.set(chave, g)
     }
     g.grafias.set(nome, (g.grafias.get(nome) || 0) + 1)
     g.contas.add(l.category as string)
 
     if (viaCartao) { g.porCartao -= valor; foraCartao -= valor; continue }
-    if (viaPlataforma) { g.porPlataforma -= valor; foraPlataforma -= valor; continue }
-    if (valor < 0) { g.pago -= valor; g.pagamentos++ } else g.devolvido += valor
+    // Saiu (ou voltou) pela conta bancária: entra, seja cheque, Zelle ou plataforma.
+    if (valor < 0) {
+      g.pago -= valor; g.pagamentos++
+      if (viaPlataforma) g.platPago -= valor
+    } else {
+      g.devolvido += valor
+      if (viaPlataforma) g.platDevolvido += valor
+    }
   }
 
   const limite = limiteDo1099(p.ano)
@@ -166,22 +214,28 @@ export function apurar1099(p: {
     let prestador = '', maior = -1
     for (const [grafia, n] of Array.from(g.grafias.entries())) if (n > maior) { prestador = grafia; maior = n }
     const total = Math.max(0, g.pago - g.devolvido)
+    const semPlataforma = Math.max(0, (g.pago - g.platPago) - (g.devolvido - g.platDevolvido))
+    const porPlataforma = Math.min(total, Math.max(0, g.platPago - g.platDevolvido))
+    const candidato = total >= limiteC
     linhas.push({
       prestador, formulario: g.formulario,
       pago: dolares(g.pago), devolvido: dolares(g.devolvido), total: dolares(total),
-      porCartao: dolares(Math.max(0, g.porCartao)), porPlataforma: dolares(Math.max(0, g.porPlataforma)),
+      porCartao: dolares(Math.max(0, g.porCartao)), porPlataforma: dolares(porPlataforma),
+      dependeDaPlataforma: candidato && semPlataforma < limiteC,
       pagamentos: g.pagamentos, contas: Array.from(g.contas).sort(),
-      candidato: total >= limiteC,
+      candidato,
     })
   }
   const ordem = (a: Linha1099, b: Linha1099) =>
     b.total - a.total || a.prestador.localeCompare(b.prestador, undefined, { sensitivity: 'base' })
+  const listadas = linhas.filter(l => l.total > 0)
 
   return {
     ano: p.ano, limite,
-    candidatos: linhas.filter(l => l.candidato).sort(ordem),
-    abaixoDoLimite: linhas.filter(l => !l.candidato && l.total > 0).sort(ordem),
-    semPrestador: { total: dolares(semTotal), lancamentos: semLancamentos },
-    foraDoFormulario: { cartao: dolares(Math.max(0, foraCartao)), plataforma: dolares(Math.max(0, foraPlataforma)) },
+    candidatos: listadas.filter(l => l.candidato).sort(ordem),
+    abaixoDoLimite: listadas.filter(l => !l.candidato).sort(ordem),
+    semPrestador: { total: dolares(semTotal), lancamentos: semLancamentos, viaPlataforma: semPlataforma },
+    foraDoFormulario: { cartao: dolares(Math.max(0, foraCartao)) },
+    plataformaNoTotal: dolares(listadas.reduce((s, l) => s + Math.round(l.porPlataforma * 100), 0)),
   }
 }
