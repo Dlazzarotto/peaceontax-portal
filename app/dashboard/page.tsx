@@ -428,7 +428,7 @@ const CSS = `
 .pnl-barra { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; height: 100%; }
 .pnl-haste { flex: 1; width: 100%; display: flex; align-items: flex-end;
   border-bottom: 1px solid ${LINHA}; }
-.pnl-haste > div { width: 100%; border-radius: 2px 2px 0 0; }
+.pnl-haste div { width: 100%; border-radius: 2px 2px 0 0; }
 .pnl-barra .mes { font-size: 10.5px; color: ${FRACO}; white-space: nowrap; }
 .pnl-barra .mes.atual { color: ${LINK}; font-weight: 700; }
 .pnl-legenda { font-size: 12px; color: ${FRACO}; margin: 10px 0 0; line-height: 1.5; }
