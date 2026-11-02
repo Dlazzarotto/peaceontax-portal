@@ -1,14 +1,16 @@
 // /api/caixa/fluxo — fluxo de caixa da firma
 //
-// GET [?meses=12]  → realizado (pelo extrato), saldo em conta e projeção
-//                    (faturas em aberto × contas a pagar em aberto)
+// GET [?meses=12]  → realizado (pelo extrato), saldo em conta, projeção
+//                    (faturas em aberto × contas a pagar em aberto) e os três
+//                    números do topo do caixa (em aberto · a receber · pagas
+//                    no mês)
 //
 // SÓ O SÓCIO. É o dinheiro da firma.
 //
 // Só leitura: não grava nada e não decide nada. A conta inteira mora em
 // `lib/fluxo-de-caixa.ts`, que é puro e tem teste — aqui só se busca.
 //
-// DUAS COISAS QUE PARECEM DETALHE E NÃO SÃO
+// TRÊS COISAS QUE PARECEM DETALHE E NÃO SÃO
 // 1. O realizado lê SÓ O EXTRATO. O livro guarda também a conta de passagem
 //    ("Recebimentos a depositar"), e somar as duas conta o mesmo depósito
 //    duas vezes. A separação está explicada em lib/fluxo-de-caixa.ts.
@@ -16,13 +18,22 @@
 //    que o escopo por tipo esconde de quem não é sócio. Por isso esta rota
 //    é do sócio e de mais ninguém: aqui não cabe `clientesOcultos`, cabe
 //    não abrir a porta.
+// 3. O PostgREST corta a resposta em 1000 linhas por padrão, e
+//    `.limit(5000)` ou `.limit(20000)` NÃO passam disso. O extrato vinha com
+//    `order('tx_date')` crescente: acima de mil linhas eram os meses
+//    RECENTES que sumiam do fluxo, em silêncio. E a lista de faturas em
+//    aberto parava na milésima — na temporada, com quase mil clientes, o
+//    a receber ficava menor do que é. Tudo aqui é lido em páginas de 1000
+//    com `order`, como já faz /api/bookkeeping/overview.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, serviceDb } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import { idDaFirma } from '@/lib/caixa-firma'
-import { dataDaFirma } from '@/lib/dia-da-firma'
-import { fluxoRealizado, saldoEmConta, projetarCaixa } from '@/lib/fluxo-de-caixa'
+import { dataDaFirma, janelaDaFirma } from '@/lib/dia-da-firma'
+import { janelas } from '@/lib/painel'
+import { fluxoRealizado, saldoEmConta, projetarCaixa,
+         faturasEmAberto, aReceber, somaRecebido } from '@/lib/fluxo-de-caixa'
 import { colunaAusente } from '@/lib/caixa-firma'
 
 export const dynamic = 'force-dynamic'
@@ -44,6 +55,25 @@ async function contasDaFirma(db: any, firma: string) {
   const r = await busca('id, name, type, current_balance, balance_as_of')
   if (r.error && colunaAusente(r.error)) return busca('id, name, type')
   return r
+}
+
+/**
+ * Lê TODAS as linhas de uma consulta, em páginas de 1000 com `order('id')`.
+ * `monta` devolve um builder NOVO a cada página: o builder do supabase-js é
+ * mutável, e reaproveitar um empilharia `range` sobre `range`.
+ * Devolve `{ data, error }` como o supabase, para o laço de erros abaixo
+ * tratar tudo do mesmo jeito.
+ */
+async function todasAsLinhas(monta: () => any): Promise<{ data: any[]; error: { message: string } | null }> {
+  const PAGINA = 1000
+  const linhas: any[] = []
+  for (let de = 0; ; de += PAGINA) {
+    const { data, error } = await monta().order('id').range(de, de + PAGINA - 1)
+    if (error) return { data: linhas, error }
+    linhas.push(...(data || []))
+    if (!data || data.length < PAGINA) break
+  }
+  return { data: linhas, error: null }
 }
 
 /** Primeiro dia do mês, `n` meses atrás. */
@@ -68,24 +98,32 @@ export async function GET(req: NextRequest) {
   const meses = Number.isFinite(pedido) ? Math.min(Math.max(pedido, 1), 60) : 12
   const de = mesesAtras(hoje, meses - 1)
 
-  const [lanc, contas, faturas, aPagar] = await Promise.all([
-    db.from('bank_transactions')
+  // "Pagas no mês" é o que ENTROU no mês do ESCRITÓRIO: a janela do relatório
+  // de recebimentos (fim exclusivo, `.lt`), não a data UTC do servidor.
+  const inicioMes = janelas(hoje).inicioMes
+  const janela = janelaDaFirma(inicioMes, hoje)
+
+  const [lanc, contas, faturas, aPagar, pagamentos] = await Promise.all([
+    todasAsLinhas(() => db.from('bank_transactions')
       .select('id, tx_date, amount, source, account_id, transfer_match_id, balance')
-      .eq('client_id', firma).gte('tx_date', de).order('tx_date').limit(20000),
+      .eq('client_id', firma).gte('tx_date', de)),
     contasDaFirma(db, firma),
     // O que a firma tem a receber: faturas em aberto de TODOS os clientes.
     // A firma como cliente de si mesma não entra — ela não se deve nada.
-    db.from('invoices').select('id, due_date, total, paid_total, status, client_id')
-      .in('status', ['sent', 'partial', 'overdue']).neq('client_id', firma).limit(5000),
+    todasAsLinhas(() => db.from('invoices').select('id, due_date, total, paid_total, status, client_id')
+      .in('status', ['sent', 'partial', 'overdue']).neq('client_id', firma)),
     db.from('firm_bills').select('id, due_date, amount, status')
       .eq('client_id', firma).eq('status', 'aberta').limit(2000),
+    todasAsLinhas(() => db.from('invoice_payments').select('id, amount, received_at')
+      .gte('received_at', janela.inicio).lt('received_at', janela.fimExclusivo)),
   ])
 
   // Cada consulta responde pelo próprio erro. Num Promise.all, conferir uma
   // e ignorar as outras faz a que falhou virar lista vazia — e aqui lista
   // vazia é a afirmação mais cara que existe: "não há nada a receber".
   for (const [oque, r] of [['os lançamentos', lanc], ['as contas bancárias', contas],
-                           ['as faturas em aberto', faturas], ['as contas a pagar', aPagar]] as const) {
+                           ['as faturas em aberto', faturas], ['as contas a pagar', aPagar],
+                           ['os pagamentos do mês', pagamentos]] as const) {
     if (r.error) return NextResponse.json(
       { error: `Fluxo não calculado — falhou ao ler ${oque}: ${r.error.message}` }, { status: 500 })
   }
@@ -109,5 +147,13 @@ export async function GET(req: NextRequest) {
     hoje,
   })
 
-  return NextResponse.json({ hoje, de, meses, saldo, realizado, projecao })
+  // Os três números do topo. Definições em lib/fluxo-de-caixa.ts (com teste):
+  // nenhuma conta nova aqui, só reuso do que a projeção já calculou.
+  const resumo = {
+    emAberto: faturasEmAberto((faturas.data || []) as any),
+    aReceber: aReceber(projecao),
+    recebidoNoMes: { ...somaRecebido((pagamentos.data || []) as any), desde: inicioMes },
+  }
+
+  return NextResponse.json({ hoje, de, meses, saldo, realizado, projecao, faturas: resumo })
 }

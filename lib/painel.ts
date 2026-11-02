@@ -7,12 +7,31 @@
 // Datas são sempre a data civil de Nova York em 'YYYY-MM-DD' (string), para
 // não escorregar de dia por causa de fuso.
 
-import { round2 } from '@/lib/plans'
+// Importes RELATIVOS com extensão, como lib/excedente-transacoes.ts: é o que
+// deixa `testes/painel.mts` importar este módulo direto no Node.
+import { round2 } from './plans.ts'
+import { dataDaFirma } from './dia-da-firma.ts'
 
 export type Pagamento = { amount: number | string; received_at: string }
 export type ClienteRef = { type?: string | null; stage?: string | null; created_at?: string | null }
 
-const dia = (v: unknown) => String(v ?? '').slice(0, 10)
+/**
+ * O dia CIVIL de um instante, no fuso do ESCRITÓRIO.
+ *
+ * `received_at` e `created_at` são timestamps. Cortar os 10 primeiros
+ * caracteres é a data em UTC — e às 20h de Malden o UTC já virou amanhã: o
+ * recebimento das 22h do dia 31 caía no mês SEGUINTE, e o "recebido no mês"
+ * do painel discordava do relatório (que corta por `janelaDaFirma`) e do
+ * caixa. Uma data pura ('YYYY-MM-DD') não tem hora para converter e fica
+ * como está; o que não é data nenhuma cai no corte antigo e não casa com
+ * janela alguma.
+ */
+const dia = (v: unknown) => {
+  const s = String(v ?? '')
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  const t = new Date(s)
+  return Number.isNaN(t.getTime()) ? s.slice(0, 10) : dataDaFirma(t)
+}
 const p2 = (n: number) => String(n).padStart(2, '0')
 
 /** Data civil de Nova York, em YYYY-MM-DD. */

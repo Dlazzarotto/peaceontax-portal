@@ -397,6 +397,27 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   faz a firma gastar o que não tem. Toda rota de `/api/caixa/` é **só do
   sócio** (a auditoria confere as quatro), porque o a receber é a carteira
   inteira, inclusive as empresas que o escopo por tipo esconde.
+- **Os três números do topo do caixa reusam definições que JÁ existem**
+  (`faturasEmAberto`, `aReceber`, `somaRecebido` em `lib/fluxo-de-caixa.ts`,
+  servidos por `/api/caixa/fluxo`): **em aberto** é a MESMA régua da projeção
+  (só fatura com saldo) e mostra o EMITIDO; **a receber** é o projetado mais
+  o vencido que a projeção separa de propósito; **pagas no mês** é o que
+  ENTROU no mês do ESCRITÓRIO (`janelaDaFirma`, a janela do relatório de
+  recebimentos). Achado anotado, decisão do sócio: o painel (`/dashboard`)
+  ainda corta "recebido no mês" pela data UTC (`somaPeriodo`), então um
+  pagamento das 20h do dia 31 cai em meses diferentes nas duas telas.
+  **O botão "Ocultar valores"** (`components/OcultarValores.tsx`) mascara só
+  o DINHEIRO — contagens ficam, dizem quantas e não quanto —, vale no fluxo,
+  nos depósitos e nas contas a pagar; o livro (`BookkeepingTab`) fica de
+  fora, porque é o componente dos clientes. A escolha mora no navegador
+  (localStorage): conforto de quem olha, não regra do sistema. Todo
+  componente do caixa formata dinheiro por `useDinheiro()`, nunca por
+  `money` direto, senão um valor escapa da máscara.
+  **E a rota passou a paginar.** Fatura em aberto, pagamento do mês e o
+  extrato do realizado liam com `.limit(5000)`/`.limit(20000)`, que o
+  PostgREST corta em 1000; o extrato vinha em ordem crescente, então os
+  meses RECENTES eram os que sumiam do fluxo. 13 casos novos em
+  `testes/fluxo-de-caixa.mts`.
 - **O saldo da conta vem do BANCO; o do extrato é reserva** (`saldoEmConta`,
   `bank_accounts.current_balance`, migração `sql/caixa-saldo-da-conta-v1.sql`).
   O `/transactions/sync` do Plaid traz a transação, **não o saldo depois
@@ -1101,17 +1122,32 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   **o limite muda com o ano** (US$ 600 até 2025, US$ 2.000 para pagamentos a
   partir de 2026 pelo One Big Beautiful Bill Act, corrigido pela inflação a
   partir de 2027, e o valor novo entra em `LIMITES` quando o IRS publicar);
-  **cartão de crédito e PayPal, Venmo e Cash App ficam fora** (vão no 1099-K,
-  aparecem à parte), Zelle continua dentro; e **o mesmo prestador com grafia
-  diferente soma junto** (`chaveDoNome`), senão cada metade fica abaixo do
-  limite e o 1099 não sai. Reembolso do prestador abate, sem deixar negativo.
-  A conta é em centavos. A migração marca as duas contas da lista antiga só se
+  **o cartão de crédito fica fora** (vai no 1099-K, aparece à parte); e **o
+  mesmo prestador com grafia diferente soma junto** (`chaveDoNome`), senão
+  cada metade fica abaixo do limite e o 1099 não sai. Reembolso do prestador
+  abate, sem deixar negativo. A conta é em centavos.
+  **O que saiu da conta bancária entra — inclusive PayPal, Venmo e Cash App**
+  (decisão do sócio, 11/2026). A primeira versão tirava toda plataforma do
+  total "porque vai no 1099-K", e isso só vale quando a plataforma age como
+  processadora: a transferência PESSOAL (friends & family), que é como se paga
+  prestador, não gera 1099-K, e o 1099 continua sendo do pagador — tirar
+  deixava formulário obrigatório de fora, que é multa para o cliente. A
+  exceção que a lei mantém (pagamento a perfil de negócio ou marcado "goods &
+  services", que a plataforma informa no 1099-K) o extrato do banco não mostra:
+  a linha diz quanto do total veio por plataforma (`porPlataforma`) e se o
+  prestador só chega ao limite com isso (`dependeDaPlataforma`), e quem
+  prepara confere no app antes de enviar. Errar para dentro se corrige tirando
+  o valor; errar para fora é multa — por isso o padrão é dentro. Payee que É a
+  plataforma ("Venmo", "PAYPAL INST XFER") não é prestador: vai para "sem
+  prestador", senão o 1099 sairia em nome do Venmo. Venmo pago no CARTÃO segue
+  a regra do cartão. A migração marca as duas contas da lista antiga só se
   ninguém marcou nada, e a tela esconde o botão até ela rodar. De passagem:
   os quatro impressos passaram a escapar o nome do cliente (digitado por ele
   no convite), o payee e o nome da conta bancária, e a contagem de uso do plano
   de contas lia só os primeiros mil lançamentos. A auditoria exige o módulo,
-  recusa a lista fixa e o limite no código da rota, e recusa texto do banco
-  cru nos quatro impressos. 45 casos em `testes/relatorio-1099.mts`.
+  recusa a lista fixa e o limite no código da rota, recusa texto do banco
+  cru nos quatro impressos, recusa tirar a plataforma do total e exige a nota
+  da plataforma na linha. 61 casos em `testes/relatorio-1099.mts`.
 - **Plano de contas: editar é UMA transação, e a conta que o código grava
   não muda** (`lib/plano-de-contas.ts`, `/api/bookkeeping/categories`, tela
   `/dashboard/accounts`, migrações `sql/plano-de-contas-edicao-v1.sql` e

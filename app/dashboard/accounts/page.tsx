@@ -355,7 +355,10 @@ export default function ChartOfAccountsPage() {
         <p style={{ fontSize: 14, color: '#6A7A9A', margin: '8px 0 0', lineHeight: 1.5 }}>
           <b>1099:</b> marque as contas de despesa cujo pagamento a prestador vai para o 1099. Toda despesa
           paga numa conta marcada entra na lista do 1099 de cada cliente. NEC é serviço; MISC é aluguel.
-          Pagamento no cartão de crédito ou por PayPal, Venmo e Cash App fica fora, porque vai no 1099-K.
+          Entra tudo o que saiu da conta bancária: cheque, Zelle, ACH e também PayPal, Venmo e Cash App. Fica
+          fora o que foi pago no cartão de crédito, que vai no 1099-K. O relatório marca em cada prestador o que
+          veio por plataforma: o pagamento a perfil de negócio (goods &amp; services) também vai no 1099-K e sai
+          antes de enviar.
         </p>
         {migracao1099 && (
           <p style={{ fontSize: 13.5, color: '#B02020', fontWeight: 700, margin: '8px 0 0' }}>
