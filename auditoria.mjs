@@ -448,6 +448,28 @@ checar('Idempotente (chave por plano e data)', 'lib/billing-reminders.ts', 'chav
 checar('Fica na trilha (plan_audit)', 'lib/billing-reminders.ts', "'reminder_sent'", 'numa contestacao nao haveria prova do aviso')
 checar('Datas pelas mesmas regras do checkout', 'lib/billing-reminders.ts', 'nextBillingDayET', 'aviso em dia diferente do debito')
 
+titulo('DEBITO QUE FALHA: A MENSAGEM SO PROMETE O QUE O STRIPE MARCOU')
+// A equipe lia "O Stripe fara novas tentativas automaticas" e o cliente "Uma
+// nova tentativa sera feita automaticamente" -- sem ninguem saber. No debito em
+// conta (ACH) o Stripe NAO tenta de novo por padrao: o cliente esperava um
+// debito que nao vinha e a parcela ficava parada. Quem diz e a invoice do
+// evento (next_payment_attempt), lida em lib/aviso-de-falha.ts.
+{
+  const W = 'app/api/stripe/webhook/route.ts'
+  recusar('O webhook nao promete nova tentativa por conta propria', W,
+          /fará novas tentativas automáticas|nova tentativa será feita automaticamente/i,
+          'promessa fixa: no ACH o Stripe nao tenta de novo por padrao, e o cliente fica esperando')
+  checar('A mensagem da falha sai da invoice do evento', W,
+         /mensagensDaFalha\(\{[\s\S]{0,400}?proximaTentativa:\s*\(invoice as any\)\.next_payment_attempt/,
+         'sem a proxima tentativa marcada pelo Stripe, o texto volta a adivinhar')
+  checar('Equipe e cliente recebem o texto decidido', W,
+         /message:\s*aviso\.equipe,[\s\S]{0,200}?notifyClient\(db, plan\.client_id, aviso\.cliente\)/,
+         'mensagem escrita a mao ao lado da regra diverge dela')
+  checar('Proxima tentativa nula e "nenhuma", nao "agendada"', 'lib/aviso-de-falha.ts',
+         "if (proxima === null) return { situacao: 'nenhuma', data: null }",
+         'next_payment_attempt nulo e justamente o caso em que o Stripe nao vai tentar')
+}
+
 titulo('TEXTO: acentos corrompidos (mojibake) e BOM')
 // Mojibake: UTF-8 lido como Latin-1 e gravado de novo em UTF-8 (o "a" com til
 // vira "A" com til seguido de libra; o travessao vira "a" com circunflexo e euro).

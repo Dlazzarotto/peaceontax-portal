@@ -12,9 +12,11 @@
 //                                mensalidade: baixa na fatura do mês (cria se
 //                                o finalized não tiver chegado)
 //   invoice.payment_failed     → fatura fica em aberto com o motivo (NSF etc.);
-//                                parcela marcada 'failed'; alerta à equipe
-//                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
-//   invoice.payment_failed     → alerta a equipe (cobrança manual)
+//                                parcela marcada 'failed'; alerta à equipe e aviso
+//                                ao cliente com a próxima tentativa que o STRIPE
+//                                marcou — ou dizendo que não haverá nenhuma
+//                                (lib/aviso-de-falha; a assinatura é lida nos dois
+//                                formatos da API — lib/stripe-invoice)
 //   checkout.session.expired   → débito em conta começado e não concluído: a
 //                                fatura sai de "dinheiro a caminho"
 //   invoice.voided             → cobrança anulada no painel: cancela a fatura
@@ -49,6 +51,7 @@ import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
 import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
+import { mensagensDaFalha, novaTentativa } from '@/lib/aviso-de-falha'
 import { linhasDaMensalidade, rotuloDoPeriodo } from '@/lib/contrato-unico'
 
 export const runtime = 'nodejs'
@@ -505,6 +508,10 @@ export async function POST(req: NextRequest) {
       const clientName = (plan.clients as any)?.name || plan.client_id
       const amount = ((invoice.amount_due ?? 0) / 100).toFixed(2)
       const motivo = motivoDaFalha(await comPagamentos(stripe, invoice))
+      // Se o Stripe vai tentar de novo, e quando, quem diz é a invoice do
+      // evento — nunca esta mensagem. No débito em conta ele NÃO tenta por
+      // padrão (lib/aviso-de-falha.ts).
+      const proxima = novaTentativa((invoice as any).next_payment_attempt)
 
       await db.from('payment_plans').update({
         status: 'payment_failed', updated_at: new Date().toISOString(),
@@ -528,7 +535,7 @@ export async function POST(req: NextRequest) {
             }).eq('invoice_id', plan.invoice_id).eq('seq', alvo.seq)
             await db.from('invoice_audit').insert({
               invoice_id: plan.invoice_id, action: 'charge_failed',
-              next: { parcela: alvo.seq, valor: Number(amount), motivo, stripeInvoice: invoice.id },
+              next: { parcela: alvo.seq, valor: Number(amount), motivo, stripeInvoice: invoice.id, novaTentativa: proxima.data },
             }).then(() => null, () => null)
             parcelaQueFalhou = alvo.seq
           }
@@ -537,16 +544,22 @@ export async function POST(req: NextRequest) {
         const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
         if (inv) await db.from('invoice_audit').insert({
           invoice_id: inv.id, action: 'charge_failed',
-          next: { valor: Number(amount), motivo, stripeInvoice: invoice.id },
+          next: { valor: Number(amount), motivo, stripeInvoice: invoice.id, novaTentativa: proxima.data },
         }).then(() => null, () => null)
       }
 
+      const aviso = mensagensDaFalha({
+        valor: Number(amount), cliente: clientName, motivo,
+        oQue: plan.kind === 'installment' ? `parcela ${parcelaQueFalhou ?? '?'}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`,
+        proximaTentativa: (invoice as any).next_payment_attempt,
+        tentativasFeitas: (invoice as any).attempt_count,
+      })
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
-        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${parcelaQueFalhou ?? '?'}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
+        message: aviso.equipe,
       })
 
-      await notifyClient(db, plan.client_id, '⚠️ Não conseguimos processar seu pagamento. Uma nova tentativa será feita automaticamente. Se preferir, entre em contato: (833) 732-2327.')
+      await notifyClient(db, plan.client_id, aviso.cliente)
       return NextResponse.json({ received: true })
     }
 
