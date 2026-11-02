@@ -47,7 +47,7 @@ import {
 } from '@/lib/agendamento-parcelas'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
-import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
+import { amarrarCobrancaAParcela, parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
 import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
@@ -343,17 +343,14 @@ export async function POST(req: NextRequest) {
 
       if (plan.kind === 'installment') {
         if (plan.invoice_id) {
-          // A primeira parcela em aberto que ainda não tem invoice do Stripe.
-          // Antes o número vinha de paid_installments + 1, que erra assim que
-          // uma parcela falha ou é quitada por fora.
-          const { data: alvo } = await db.from('invoice_installments')
-            .select('seq').eq('invoice_id', plan.invoice_id)
-            .in('status', ['scheduled', 'failed']).is('stripe_invoice', null)
-            .order('seq').limit(1)
-          if (alvo?.length) {
-            await db.from('invoice_installments').update({ stripe_invoice: invoice.id })
-              .eq('invoice_id', plan.invoice_id).eq('seq', alvo[0].seq)
-          } else {
+          // A primeira parcela em aberto que ainda não tem invoice do Stripe
+          // (antes o número vinha de paid_installments + 1, que erra assim que
+          // uma parcela falha ou é quitada por fora). A amarração é
+          // IDEMPOTENTE e leitura que falha LANÇA (500, o Stripe reenvia): o
+          // evento repetido, ou o invoice.paid chegando antes, encontram a
+          // parcela já amarrada — nunca viram "sem parcela" (lib/parcela-stripe.ts).
+          const destino = await amarrarCobrancaAParcela(db, plan.invoice_id, invoice.id as string)
+          if (destino.acao === 'sem_parcela') {
             // NENHUMA parcela em aberto para esta invoice: o cronograma já foi
             // todo liquidado (parcela paga por fora — Zelle, dinheiro — faz a
             // régua sobrar uma cobrança no fim). Esta invoice não representa
@@ -1215,7 +1212,17 @@ async function anularCobrancaSemParcela(db: any, stripe: Stripe, plan: any, invo
   const valor = round2((invoice.amount_due ?? 0) / 100)
   let anulada = false
   try { await stripe.invoices.voidInvoice(invoice.id as string); anulada = true }
-  catch (e) { console.error('anularCobrancaSemParcela:', (e as Error).message) }
+  catch (e) {
+    console.error('anularCobrancaSemParcela:', (e as Error).message)
+    // Antes de alarmar, pergunta ao Stripe em que pé ela está. A entrega
+    // repetida do evento encontra a invoice JÁ anulada pela primeira — não é
+    // falha, e o alerta "não consegui anular" mandaria anular o que já está
+    // anulado. A que já foi debitada não se anula mais: quem trata é o
+    // invoice.paid (cobrado a mais, com o reembolso).
+    let situacao: string | null = null
+    try { situacao = (await stripe.invoices.retrieve(invoice.id as string)).status ?? null } catch { /* fica o alerta */ }
+    if (situacao === 'void' || situacao === 'paid') return
+  }
   await db.from('invoice_audit').insert({
     invoice_id: plan.invoice_id, action: 'stripe_invoice_voided',
     reason: anulada

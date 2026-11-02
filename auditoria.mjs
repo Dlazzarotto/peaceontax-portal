@@ -405,6 +405,29 @@ checar('Plano: so plano liberado pela equipe (awaiting_*)', 'app/api/portal/plan
 checar('Sessao dos planos numa lib so', 'lib/plan-checkout.ts', 'criarSessaoDoPlano', 'tres rotas montando a sessao de tres jeitos')
 checar('Parcela vem da invoice, nao de contador', 'lib/parcela-stripe.ts', 'export async function parcelaDaInvoice', 'evento fora de ordem dava baixa na parcela errada')
 checar('Total de parcelas e recontado, nao incrementado', 'lib/parcela-stripe.ts', 'export async function recontarParcelas', 'paid_installments divergia do cronograma')
+// A cobranca do Stripe so e ANULADA quando nao representa parcela nenhuma, e
+// essa resposta so sai da amarracao idempotente (lib/parcela-stripe.ts,
+// testada com banco falso): o evento repetido -- o Stripe entrega pelo menos
+// uma vez -- ou o invoice.paid chegando antes acham a parcela ja amarrada, e a
+// leitura que falha LANCA (500, o Stripe reenvia). Na primeira versao do
+// parcelamento pago por fora, o evento repetido da ULTIMA parcela, ou um
+// tropeco do banco, anulava a cobranca legitima.
+{
+  const W = 'app/api/stripe/webhook/route.ts'
+  checar('Cobranca so e anulada quando a amarracao diz sem parcela', W,
+         /const destino = await amarrarCobrancaAParcela\(db, plan\.invoice_id, invoice\.id as string\)\s*if \(destino\.acao === 'sem_parcela'\) \{[\s\S]{0,700}?await anularCobrancaSemParcela\(db, stripe, plan, invoice\)/,
+         'o evento repetido da ultima parcela, ou uma leitura que falha, anulava a cobranca legitima')
+  const chamadas = existsSync(join(raiz, W))
+    ? (readFileSync(join(raiz, W), 'utf8').match(/await anularCobrancaSemParcela\(/g) || []).length : 0
+  chamadas === 1 ? ok('Anular cobranca tem um ponto de chamada so')
+    : falta('Anular cobranca tem um ponto de chamada so', `achei ${chamadas}: anular por outro caminho pula a amarracao idempotente`)
+  for (const [rotulo, re] of [
+    ['parcelaDaInvoice lanca quando a leitura falha', /if \(erroAmarrada\) throw[\s\S]{0,400}?if \(erroAberta\) throw/],
+    ['A amarracao lanca quando a leitura falha', /if \(error\) throw new Error\(`amarrarCobrancaAParcela[\s\S]{0,1600}?if \(erroAberta\) throw[\s\S]{0,1600}?if \(erroUpdate\) throw/],
+    ['A amarracao confere de novo antes de dizer sem parcela', /const depois = await jaAmarrada\(\)\s*return depois != null \? \{ acao: 'ja_amarrada', seq: depois \} : \{ acao: 'sem_parcela' \}/],
+    ['A amarracao so grava parcela ainda livre', /\.eq\('seq', seq\)\.is\('stripe_invoice', null\)/],
+  ]) checar(rotulo, 'lib/parcela-stripe.ts', re, 'consulta que falha ou entrega repetida viraria "sem parcela" e a cobranca seria anulada')
+}
 checar('Webhook usa a lib da parcela', 'app/api/stripe/webhook/route.ts', "from '@/lib/parcela-stripe'", 'webhook voltaria a contar na mao')
 checar('Webhook: cobranca anulada no Stripe cancela a fatura aqui', 'app/api/stripe/webhook/route.ts', "event.type === 'invoice.voided'", 'fatura anulada la seguia no contas a receber aqui')
 checar('Um plano, uma assinatura', 'app/api/stripe/webhook/route.ts', 'cancelarAssinaturaDuplicada', 'cadastro concluido duas vezes cobrava o cliente em dobro para sempre')
