@@ -694,7 +694,19 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Competência sai de `lines[0].period.start` (o serviço), nunca de
   `invoice.period_start`. Débito que falha deixa a fatura em aberto com o
   motivo; `billing/recharge` cobra de novo; baixa manual marca a invoice do
-  Stripe como paga fora dele (sai da linha de cobrança). Parcelamento é
+  Stripe como paga fora dele (sai da linha de cobrança). **E a mensagem da
+  falha só promete o que o Stripe marcou** (`lib/aviso-de-falha.ts`, 32 casos
+  em `testes/aviso-de-falha.mts`): a equipe lia "O Stripe fará novas
+  tentativas automáticas" e o cliente "Uma nova tentativa será feita
+  automaticamente", sem ninguém saber — e no débito em conta (ACH) o Stripe
+  NÃO tenta de novo por padrão (só com a opção ligada no painel, no máximo
+  2 vezes em 40 dias e só por falta de fundos). O cliente esperava um débito
+  que não vinha e a parcela ficava parada. Quem diz é `next_payment_attempt`
+  da invoice do evento: com data, o texto diz a data (dia do ESCRITÓRIO,
+  MM/DD/YYYY); NULO é "não haverá nova tentativa" e aponta os caminhos;
+  campo ausente não afirma nada para nenhum lado. A data vai também para
+  `invoice_audit.charge_failed`. A auditoria recusa a promessa fixa de
+  volta. Parcelamento é
   sempre de uma fatura; além da quitação antecipada e da parcela que falhou
   recebida por fora (`billing/payments`), **agora se cancela em andamento**
   (`PATCH /api/billing/installment-plan`, motivo `plano_cancelado`): para o
