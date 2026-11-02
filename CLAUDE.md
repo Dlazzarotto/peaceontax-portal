@@ -740,6 +740,43 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cliente é outro (o link deixou de valer), senão ele procura uma cobrança
   que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
   abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
+- **Parcela paga por fora: o Stripe cobra UMA A MENOS** (`decidirRecebimentoManual`
+  e `proximaParcelaAberta` em `lib/parcelamento.ts`, `/api/billing/payments`,
+  webhook). A regra só aceitava a parcela que já tinha FALHADO; o cliente que
+  pagava em cash ANTES do débito ficava sem baixa — e a tela ainda dizia "só
+  o saldo inteiro", porque `cobranca.automatica` olhava a `stripe_invoice` da
+  FATURA, e num parcelamento as invoices ficam nas PARCELAS. Tela e trava
+  discordavam. Agora as duas decidem pelo mesmo `parcelamentoVivo`, o GET
+  manda a `proxima` parcela e a tela tem o botão "Receber a parcela N". A
+  liquidação: invoice da parcela já existe → paga fora do Stripe; não existe
+  → a régua segue e **a cobrança que sobrar no fim não encontra parcela em
+  aberto e é anulada no `invoice.finalized`**; se um débito ainda assim
+  sobrar, `invoice.paid` sem parcela aberta NÃO lança (seria acima do saldo)
+  e alerta `cobranca_a_mais` para reembolso. `paid_installments` é recontado,
+  nunca `+1` (`parcelamentoVivo` não traz `invoice_id`: a fatura vai
+  explícita, senão a recontagem cai no contador velho). `awaiting_*` fica
+  como está: pagar em cash não é cadastrar cartão. 19 casos em
+  `testes/parcelamento.mts`. Limite anotado: parcelas desiguais (a última com
+  os centavos) deslocam as amarras e a última cobrança pode sair pelo
+  valor-base — a fatura mostra os centavos, que é a verdade. Entrada paga
+  por fora: sem caminho ainda.
+  **Anular é a única saída destrutiva, e só a amarração idempotente a
+  autoriza** (`amarrarCobrancaAParcela`, `lib/parcela-stripe.ts`). O Stripe
+  entrega cada evento pelo menos uma vez, e o `invoice.paid` pode chegar
+  antes do `invoice.finalized` (ele amarra a parcela ao pagar). A primeira
+  versão não conferia "já há parcela com ESTA invoice": a segunda entrega
+  amarrava a parcela seguinte e, na ÚLTIMA, não achava nenhuma em aberto e
+  ANULAVA a cobrança legítima — e a leitura que falhava também virava "sem
+  parcela". Agora: parcela já amarrada responde `ja_amarrada`; a gravação só
+  pega parcela livre (`stripe_invoice is null`) e, se outra cobrança levou
+  a parcela no meio, tenta a próxima; antes de dizer `sem_parcela` confere
+  de novo (outra entrega pode ter amarrado entre as duas leituras); e
+  leitura que falha LANÇA — 500, o Stripe reenvia. `parcelaDaInvoice` também
+  lança: no `invoice.paid`, o null de uma leitura que falhou deixava o
+  pagamento sem lançamento e mandava a equipe REEMBOLSAR uma parcela
+  legítima (`cobranca_a_mais`). 42 casos em `testes/parcela-stripe.mts`, com
+  banco falso que injeta falha e corrida; a auditoria exige que a anulação
+  tenha um ponto de chamada só, debaixo de `sem_parcela`.
 - **As parcelas são agendadas por `duration`, NUNCA por `iterations` — e
   até 10/2026 nenhuma foi cobrada** (`lib/agendamento-parcelas.ts`, 44 casos
   em `testes/agendamento-parcelas.mts`). O webhook criava o
