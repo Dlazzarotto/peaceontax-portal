@@ -176,9 +176,16 @@ titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
 // Decisao do socio: um botao em cada conta de despesa do plano de contas
 // (bookkeeping_categories.form_1099), e TODA despesa paga na conta marcada
 // entra. Tres regras de lei que a lista nao tinha: o limite muda com o ano
-// (600 ate 2025, 2000 a partir de 2026), cartao de credito e PayPal, Venmo e
-// Cash App vao no 1099-K e ficam fora, e grafias do mesmo prestador somam
-// juntas. A regra mora em lib/relatorio-1099.ts, testada.
+// (600 ate 2025, 2000 a partir de 2026), o cartao de credito vai no 1099-K e
+// fica fora, e grafias do mesmo prestador somam juntas. A regra mora em
+// lib/relatorio-1099.ts, testada.
+// PayPal, Venmo e Cash App pagos pela conta bancaria ENTRAM (decisao do socio,
+// 11/2026): a transferencia pessoal nao tem 1099-K, e o 1099 e do pagador -- a
+// regra anterior tirava todo Venmo e deixava formulario obrigatorio de fora. A
+// excecao da lei (perfil de negocio, "goods & services", vai no 1099-K) o
+// extrato nao mostra, entao a LINHA diz quanto veio por plataforma e se o
+// prestador so passa do limite com isso. Sem a nota na linha, quem prepara nao
+// acha o pagamento de negocio para tirar.
 {
   const V = 'app/api/bookkeeping/vendors/route.ts'
   recusar('O 1099 nao usa lista fixa de contas', V, /CATS_1099/, 'a lista fixa ignora a marca que o socio poe no plano de contas')
@@ -186,6 +193,13 @@ titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
   recusar('A rota do 1099 nao fixa o limite', V, />=\s*(600|2000)\b/, 'o limite muda com o ano: 600 ate 2025, 2000 a partir de 2026')
   checar('O limite do 1099 muda em 2026', 'lib/relatorio-1099.ts', /desde:\s*2026,\s*valor:\s*2000/, 'pagamento a partir de 2026 tem limite de US$ 2.000')
   checar('O cartao de credito fica fora do 1099', V, /type === 'credit_card'/, 'pagamento no cartao vai no 1099-K, nao no NEC/MISC')
+  recusar('O 1099 nao tira toda plataforma do total', 'lib/relatorio-1099.ts', /if \(viaPlataforma\)[^\n]*continue/,
+          'transferencia pessoal por Venmo/PayPal e 1099 do pagador; tirar todas deixa formulario obrigatorio de fora')
+  checar('A linha do 1099 leva a nota da plataforma', V, /<b>\$\{esc\(l\.prestador\)\}<\/b>\$\{notaDaLinha\(l\)\}/,
+         'sem a nota quem prepara nao acha o pagamento a perfil de negocio (1099-K) para tirar')
+  checar('A nota diz quanto veio por plataforma e quem so passa do limite com isso', V,
+         /l\.porPlataforma > 0[\s\S]{0,400}?l\.dependeDaPlataforma/,
+         'o prestador que so chega ao limite por Venmo depende do tipo do pagamento no app')
   // A RECUSA, nao a mencao: a funcao aparece tambem na linha que tira a marca
   // de quem muda de grupo, e a primeira versao passava com a recusa desligada.
   // A regra saiu da rota para lib/plano-de-contas.ts (a tela e a rota chamam
