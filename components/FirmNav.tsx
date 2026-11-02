@@ -37,11 +37,12 @@ const LISTAS: [string, string][] = [
   ['Plano de contas',        '/dashboard/accounts'],
   ['Fornecedores e clientes','/dashboard/payees'],
   ['Regras gerais',          '/rules'],
-  ['Equipe',                 '/team'],
 ]
 
+// A equipe num lugar só: o "Equipe" de Listas (o CRM) e o "Settings" (os
+// logins) eram duas telas da mesma gente, e o nível morava numa terceira.
 const ITENS_2: [string, string][] = [
-  ['Settings', '/settings/users'],
+  ['Equipe',   '/settings/users'],
   ['Conta',    '/dashboard/account'],
   ['Precos',   '/dashboard/pricing'],
 ]
@@ -165,7 +166,7 @@ const CSS = `
 }
 .fw-sub-abrir { background:none; border:none; font-family:inherit; cursor:pointer; }
 
-/* ── Computador (>= 1100px): barra horizontal ────────────── */
+/* ── Computador (1100px ou mais): barra horizontal ────────────── */
 @media (min-width:1100px) {
   .fw-mob { display:none; }
   .fw-desk { display:flex; align-items:center; gap:2px; }
@@ -189,7 +190,7 @@ const CSS = `
   .fw-sub-item.on { background:#F0F4FF; font-weight:700; }
 }
 
-/* ── Celular e tablet (< 1100px): sanfona ────────────────── */
+/* ── Celular e tablet (menos de 1100px): sanfona ────────────────── */
 @media (max-width:1099px) {
   .fw-desk { display:none; }
   .fw-mob { position:relative; }

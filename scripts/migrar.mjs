@@ -45,7 +45,7 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { credencialDoPostgres, pistaDoErroDoPsql, conferirProjeto } from './credencial-postgres.mjs'
 import { ordenarPorDependencia } from './ordem-das-migracoes.mjs'
-import { lerLivro, estadoDaMigracao, ESTADOS,
+import { lerLivro, estadoDaMigracao, ESTADOS, aplicadasParaDependencia,
          consertoDoNomeCurto, consertoDoShaVazio } from './livro-de-migracoes.mjs'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -273,9 +273,11 @@ async function main() {
     let n = 0
     const paraAplicar = []
     const consertos = []
+    const noDisco = []
     for (const f of todos) {
       const nome = `sql/${f}`
       const hash = sha(readFileSync(join(dirSql, f), 'utf-8'))
+      noDisco.push({ nome, hash })
       const est = estadoDaMigracao(nome, hash, livro)
       if (est !== ESTADOS.OK) n++
       // Os tres estados-problema que NAO sao PENDENTE tem conserto de uma
@@ -318,7 +320,10 @@ async function main() {
     // ('f' < 'v') e `recebimento-seguro-v1` antes de `status-da-fatura-v2`
     // ('r' < 's') -- as duas invertidas, as duas em arquivo que o proprio
     // cabecalho diz a ordem. Enquanto estavam aplicadas ninguem viu.
-    const { ordem, faltando, ciclos } = ordenarPorDependencia(paraAplicar, livro)
+    // Aplicada, para quem depende, e a que esta no livro com o conteudo do
+    // disco -- um Set. O livro cru (um Map) fazia toda dependencia ja
+    // aplicada parecer faltar, e o --pendentes recusava com exit(3).
+    const { ordem, faltando, ciclos } = ordenarPorDependencia(paraAplicar, aplicadasParaDependencia(livro, noDisco))
     if (faltando.length) {
       // Recusa em vez de aplicar e torcer: a dependencia pode estar em
       // "MUDOU DEPOIS DE APLICADO", que fica fora do automatico de proposito.

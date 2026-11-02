@@ -18,6 +18,13 @@
 //      (metadata.planId). O Stripe reenvia o evento, e a equipe pode agendar
 //      à mão: dois agendamentos seriam cada parcela cobrada duas vezes.
 //   3. A conta das fases é pura e tem teste (testes/agendamento-parcelas.mts).
+//   4. Só o plano que ESPERA o cliente se põe a cobrar. Com o agendamento
+//      funcionando, um evento antigo reenviado (pelo Stripe ou pelo painel)
+//      reativava o plano cancelado e agendava as parcelas de um acordo
+//      desfeito: a única guarda era "já está ativo".
+//   5. Entrada DEVOLVIDA ou contestada não é entrada. O `payment_status` da
+//      sessão continua 'paid' depois do reembolso; quem diz é a cobrança
+//      (`amount_refunded`, `disputed`).
 
 import type Stripe from 'stripe'
 import { FREQ_STRIPE, type Frequency } from './plans.ts'
@@ -179,6 +186,10 @@ export interface PagamentoDaSessao {
   intent: string | null
   quando: Date | null
   valor: number
+  /** payment: quanto o Stripe já DEVOLVEU desta cobrança, em dólar */
+  devolvido: number
+  /** payment: a cobrança tem contestação (chargeback, ACH não autorizado) */
+  contestado: boolean
 }
 
 /** Lê da sessão a forma de pagamento salva — da entrada paga ou do mandato. */
@@ -188,6 +199,7 @@ export async function pagamentoDaSessao(stripe: Stripe, s: Stripe.Checkout.Sessi
     concluido: false, emProcessamento: false,
     paymentMethod: null, tipo: null, intent: null, quando: null,
     valor: Number(s.amount_total || 0) / 100,
+    devolvido: 0, contestado: false,
   }
   if (s.mode === 'setup') {
     const siId = typeof s.setup_intent === 'string' ? s.setup_intent : (s.setup_intent as any)?.id
@@ -206,14 +218,87 @@ export async function pagamentoDaSessao(stripe: Stripe, s: Stripe.Checkout.Sessi
   if (s.payment_status !== 'paid' || !piId) return base
   const pi = await stripe.paymentIntents.retrieve(piId, { expand: ['payment_method', 'latest_charge'] })
   const pm = pi.payment_method as Stripe.PaymentMethod | string | null
-  const charge = (pi as any).latest_charge
+  // A cobrança diz o que aconteceu DEPOIS: reembolso e contestação não mudam
+  // o status da sessão nem o do PaymentIntent. Sem ela não se sabe — e não
+  // saber não é "não houve": busca-se.
+  let charge = (pi as any).latest_charge as Stripe.Charge | string | null
+  if (typeof charge === 'string') charge = await stripe.charges.retrieve(charge)
   return {
     ...base, concluido: true, intent: pi.id,
     paymentMethod: typeof pm === 'string' ? pm : pm?.id || null,
     tipo: typeof pm === 'string' ? null : pm?.type || null,
     // A hora em que o dinheiro entrou: a da cobrança, não a de hoje.
     quando: new Date(Number(charge?.created || pi.created) * 1000),
+    devolvido: Number(charge?.amount_refunded || 0) / 100,
+    contestado: !!charge?.disputed,
   }
+}
+
+/**
+ * A entrada que está com a firma: paga, sem devolução e sem contestação.
+ * Devolução PARCIAL também tira daqui — lançar o valor cheio seria receita
+ * que não existe, e decidir quanto ficou não é coisa que o sistema adivinhe.
+ */
+export function entradaIntegra(p: PagamentoDaSessao): boolean {
+  return p.modo === 'payment' && p.concluido && !(p.devolvido > 0) && !p.contestado
+}
+
+/** Paga, e depois devolvida (no todo ou em parte) ou contestada. */
+export function entradaQueVoltou(p: PagamentoDaSessao): boolean {
+  return p.modo === 'payment' && p.concluido && !entradaIntegra(p)
+}
+
+/** Planos que ainda esperam o cliente: só neles a entrada ou o mandato põem o parcelamento a cobrar. */
+export const ESPERANDO_O_CLIENTE = ['draft', 'awaiting_entry', 'awaiting_setup']
+/** Planos encerrados: nada os põe de volta a cobrar. */
+export const ENCERRADOS = ['cancelled', 'completed']
+
+export type DecisaoDaEntrada =
+  /** lança a entrada (se ainda não está no livro) e agenda as parcelas */
+  | { acao: 'seguir' }
+  /** ACH concluído e ainda não confirmado pelo banco: espera o async_payment_succeeded */
+  | { acao: 'aguardar_banco' }
+  /** reenvio, ou plano que já andou: nada a fazer */
+  | { acao: 'nada' }
+  /** dinheiro que não é a entrada deste plano: a equipe decide (estorno, acordo novo) */
+  | { acao: 'alertar'; tipo: 'entrada_em_dobro' | 'entrada_devolvida' | 'entrada_em_plano_encerrado' }
+
+/**
+ * O que o webhook faz com a sessão de ENTRADA de um parcelamento — que chega
+ * na primeira vez, e volta sempre que o Stripe (ou alguém no painel) reenvia
+ * o evento. Pura, com a tabela inteira em testes/agendamento-parcelas.mts.
+ *
+ * `noLivro` só tem sentido com fatura: é esta sessão já em invoice_payments.
+ */
+export function decidirEntradaDoWebhook(a: {
+  status: string
+  pago: boolean
+  devolvido: number
+  contestado: boolean
+  comFatura: boolean
+  noLivro: boolean
+  entradaRegistrada: boolean
+}): DecisaoDaEntrada {
+  const esperando = ESPERANDO_O_CLIENTE.includes(a.status)
+  const encerrado = ENCERRADOS.includes(a.status)
+  // Plano que já andou ou acabou não espera ACH de entrada nenhuma.
+  if (!a.pago) return esperando ? { acao: 'aguardar_banco' } : { acao: 'nada' }
+  // O dinheiro voltou (ou pode voltar): não é entrada. No plano que ainda
+  // espera, a equipe precisa saber — agendar cobraria as parcelas de um
+  // acordo desfeito. No que já andou, quem cuida é o estorno (charge.refunded).
+  if (a.devolvido > 0 || a.contestado) return esperando ? { acao: 'alertar', tipo: 'entrada_devolvida' } : { acao: 'nada' }
+  if (a.comFatura) {
+    if (a.noLivro) return esperando ? { acao: 'seguir' } : { acao: 'nada' }
+    // Fora do livro: num plano encerrado é dinheiro de um acordo que acabou;
+    // em quem já tem entrada (registrada, ou o plano já anda) é a segunda.
+    if (encerrado) return { acao: 'alertar', tipo: 'entrada_em_plano_encerrado' }
+    if (!esperando || a.entradaRegistrada) return { acao: 'alertar', tipo: 'entrada_em_dobro' }
+    return { acao: 'seguir' }
+  }
+  // Sem fatura (parcelamento antigo): a entrada não vai ao livro, então não
+  // há como saber se é reenvio. O que espera segue; o encerrado avisa.
+  if (esperando) return { acao: 'seguir' }
+  return encerrado ? { acao: 'alertar', tipo: 'entrada_em_plano_encerrado' } : { acao: 'nada' }
 }
 
 /** As sessões de Checkout deste plano. A paga pode não ser a última gerada. */

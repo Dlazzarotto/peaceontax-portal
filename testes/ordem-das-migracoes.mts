@@ -5,6 +5,7 @@
 // parecia inofensiva e está INVERTIDA em dois casos reais deste repositório.
 
 import { ordenarPorDependencia, DEPENDE_DE } from '../scripts/ordem-das-migracoes.mjs'
+import { lerLivro, aplicadasParaDependencia } from '../scripts/livro-de-migracoes.mjs'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -89,6 +90,54 @@ eq('lista vazia', ordenarPorDependencia([]).ordem, [])
 eq('nulo não quebra', ordenarPorDependencia(null as any).ordem, [])
 eq('nenhum arquivo sai nem entra',
   ordenarPorDependencia(['sql/x.sql', 'sql/y.sql']).ordem.length, 2)
+
+// ── O livro de VERDADE: o que o migrar.mjs lê e passa adiante ──────────
+// O defeito: o livro é um Map (lerLivro) e a ordenação aceitava "Set ou
+// objeto". Com o Map, `aplicados[x]` dava sempre undefined e TODA dependência
+// de migração já aplicada parecia faltar — o --pendentes do GitHub recusou a
+// equipe-unica-v1 dizendo que papel-no-app-metadata-v1 "não está aplicada nem
+// na lista", com ela listada como ok três linhas acima. Os testes passavam
+// porque usavam Set: o que falhou foi a LIGAÇÃO entre os dois módulos, e é
+// ela que se testa aqui.
+{
+  const h = (c: string) => c.repeat(64)
+  const papel = 'sql/papel-no-app-metadata-v1.sql', equipe = 'sql/equipe-unica-v1.sql'
+  const livroDe = (linhas: any[]) => lerLivro(JSON.stringify(linhas))
+  const disco = [{ nome: papel, hash: h('a') }, { nome: equipe, hash: h('b') }]
+
+  const livro = livroDe([{ arquivo: papel, sha256: h('a') }])
+  const ok = aplicadasParaDependencia(livro, disco)
+  eq('do livro: a aplicada com o mesmo conteúdo conta', [...ok], [papel])
+  const r = ordenarPorDependencia([equipe], ok)
+  eq('dependência aplicada (pelo livro de verdade) não é cobrada', r.faltando, [])
+  eq('...e a pendente sai na ordem', r.ordem, [equipe])
+
+  let erro = ''
+  try { ordenarPorDependencia([equipe], livro as any) } catch (e) { erro = (e as Error).message }
+  eq('o livro CRU (Map) é recusado em voz alta, nunca vira "falta" calada', /tem de ser um Set/.test(erro), true)
+  erro = ''
+  try { ordenarPorDependencia([equipe], { [papel]: true } as any) } catch (e) { erro = (e as Error).message }
+  eq('objeto comum também é recusado (a outra forma que se aceitava)', /tem de ser um Set/.test(erro), true)
+
+  // Fora do conjunto, de propósito: depender de arquivo que não é o que rodou
+  // é decisão de gente — a recusa diz qual é.
+  const mudou = aplicadasParaDependencia(livroDe([{ arquivo: papel, sha256: h('c') }]), disco)
+  eq('MUDOU DEPOIS DE APLICADO não conta como aplicada', mudou.has(papel), false)
+  eq('...e a dependente é recusada, dizendo qual',
+    ordenarPorDependencia([equipe], mudou).faltando, [{ arquivo: equipe, dep: papel }])
+  eq('registro SEM SHA não conta', aplicadasParaDependencia(livroDe([{ arquivo: papel, sha256: '' }]), disco).has(papel), false)
+  eq('registro com NOME CURTO não conta',
+    aplicadasParaDependencia(livroDe([{ arquivo: 'papel-no-app-metadata-v1.sql', sha256: h('a') }]), disco).has(papel), false)
+  eq('livro vazio: nada conta', aplicadasParaDependencia(livroDe([]), disco).size, 0)
+  eq('sem arquivos no disco: nada conta', aplicadasParaDependencia(livro, null as any).size, 0)
+  // O caso real inteiro: a cadeia do #60 e do #62, com a base aplicada.
+  const cadeia = ['sql/contrato-unico-funcao-v1.sql', 'sql/contrato-unico-v1.sql', equipe]
+  const real = ordenarPorDependencia(cadeia, ok, {
+    [equipe]: [papel], 'sql/contrato-unico-v1.sql': [equipe], 'sql/contrato-unico-funcao-v1.sql': ['sql/contrato-unico-v1.sql'],
+  })
+  eq('a cadeia equipe → contrato → função sai em ordem, sem falta', [real.ordem, real.faltando],
+    [[equipe, 'sql/contrato-unico-v1.sql', 'sql/contrato-unico-funcao-v1.sql'], []])
+}
 
 // ── O mapa declarado aponta para caminhos, não para nomes curtos ────────
 // A chave do livro é o CAMINHO (`sql/x.sql`). Nome curto vira linha que

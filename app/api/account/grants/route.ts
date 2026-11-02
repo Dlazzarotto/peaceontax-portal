@@ -5,7 +5,7 @@
 //
 // Só sócio. Ninguém mexe no próprio acesso, e sócio não recebe concessão
 // negativa: tirar poder de sócio se faz mudando o NÍVEL, à vista, em
-// Settings → Team — não por uma chave solta que passa despercebida.
+// Equipe (botão Nível) — não por uma chave solta que passa despercebida.
 //
 // A tabela é append-only: cada decisão grava uma linha com quem autorizou,
 // o motivo e o conflito de separação de funções, se houve. O estado atual
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
   const nivel = await getStaffLevel(String(targetUserId))
   if (nivel === 'owner')
     return NextResponse.json({
-      error: 'Sócio tem acesso completo. Para mudar, altere o nível em Settings → Team.',
+      error: 'Sócio tem acesso completo. Para mudar, use o botão Nível na linha da pessoa, em Equipe.',
     }, { status: 400 })
 
   // O conjunto COMO FICARÁ — é sobre ele que se calcula o conflito.

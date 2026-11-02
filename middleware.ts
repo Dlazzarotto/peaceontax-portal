@@ -9,6 +9,7 @@ const API_PUBLIC = [
   '/api/invite',
   '/api/agenda/slots',
   '/api/agenda/bookings',
+  '/api/agenda/tipos',  // a lista de reuniões da página pública /agendar
   '/api/stripe/webhook',
   '/api/sms/webhook',  // Twilio: STOP/START e mensagens recebidas — validado por X-Twilio-Signature
   '/api/cron',         // rotinas agendadas da Vercel — validado por CRON_SECRET (Authorization: Bearer)

@@ -7,6 +7,8 @@
 // navegador não é permissão, é decoração.
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
+import { ehDaFirma, papelGravado } from '@/lib/papeis'
+import { getStaffLevel } from '@/lib/staff-perms'
 
 export type Nivel = 'owner' | 'manager' | 'junior' | null
 
@@ -21,9 +23,15 @@ export function admin(): SupabaseClient {
 export type Autor = { id: string; email: string; nome: string; nivel: Nivel }
 
 /**
- * Lê o token do cabeçalho Authorization, confirma o usuário e
- * descobre o nível em staff_roles. A leitura de staff_roles é
- * tolerante ao nome das colunas (user_id / staff_id / email).
+ * Lê o token do cabeçalho Authorization, confirma o usuário e descobre o
+ * nível pelo MESMO caminho do resto do sistema: a porta da firma
+ * (lib/papeis.ts) e o nível da equipe (getStaffLevel).
+ *
+ * Aqui havia uma SEGUNDA definição de nível: lia staff_roles inteira e
+ * procurava a pessoa em QUALQUER coluna de texto igual ao id ou ao e-mail, e
+ * o nível em role/nivel/level/papel por substring — 'admin' virava gerente,
+ * enquanto para o resto do sistema era assistente. Duas definições do mesmo
+ * nível discordam no primeiro caso estranho, e é justamente nele que importa.
  */
 export async function autorDaRequisicao(req: Request): Promise<Autor | null> {
   const cab = req.headers.get('authorization') || ''
@@ -37,21 +45,8 @@ export async function autorDaRequisicao(req: Request): Promise<Autor | null> {
   const user = u.user
   const email = (user.email || '').toLowerCase()
 
-  let nivel: Nivel = null
-  const { data: papeis } = await db.from('staff_roles').select('*').limit(200)
-  if (papeis?.length) {
-    const linha = papeis.find((p: any) =>
-      Object.values(p).some(
-        (v) => typeof v === 'string' && (v === user.id || v.toLowerCase() === email)
-      )
-    )
-    const bruto = linha
-      ? String(linha.role ?? linha.nivel ?? linha.level ?? linha.papel ?? '').toLowerCase()
-      : ''
-    if (bruto.includes('owner') || bruto.includes('socio') || bruto.includes('sócio')) nivel = 'owner'
-    else if (bruto.includes('manager') || bruto.includes('gerente') || bruto.includes('admin')) nivel = 'manager'
-    else if (bruto) nivel = 'junior'
-  }
+  // Cliente não tem nível: a porta decide antes do poder.
+  const nivel: Nivel = ehDaFirma(papelGravado(user)) ? await getStaffLevel(user.id) : null
 
   const nome =
     (user.user_metadata as any)?.full_name ||

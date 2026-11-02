@@ -7,6 +7,7 @@
 //   /api/pricing            (tela Preços, orçamentos)  — TODOS os itens
 //   /api/billing/invoices   (a fatura)                 — só `active = true`
 //   /api/plans              (contrato mensal)          — só `active = true`
+//                           (hoje /api/billing/contratos, com FILTRO_ATIVO)
 //
 // E o POST de /api/pricing criava o item SEM gravar `active`. Quando a coluna
 // não tem `default true`, o item nasce com `active` NULO: aparece na tela de

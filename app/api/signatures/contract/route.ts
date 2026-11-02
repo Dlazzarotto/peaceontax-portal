@@ -17,7 +17,7 @@
 // Só manager/owner.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuth, serviceDb } from '@/lib/api-auth'
+import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import { sendEnvelope, exigirProducao, ambienteDocusign } from '@/lib/docusign'
 import { montarContratoHtml, FIRM } from '@/lib/contract-html'
@@ -35,6 +35,23 @@ async function carregarPlano(planId: string) {
   return plan
 }
 
+/**
+ * As linhas do contrato recorrente, para o texto dizer de que se compõe o
+ * valor. Consulta que falha NÃO vira "contrato sem linhas": o cliente
+ * assinaria um texto diferente do acordo — recusa e diz.
+ */
+async function linhasDoPlano(plan: any): Promise<{ itens: any[]; erro: string | null }> {
+  if (plan.kind === 'installment') return { itens: [], erro: null }
+  const { data, error } = await serviceDb().from('payment_plan_items')
+    .select('description, quantity, unit_price, sort_order').eq('plan_id', plan.id).order('sort_order')
+  if (error) {
+    // Antes da migração a tabela não existe: o contrato sai como sempre saiu (uma linha só).
+    if (/payment_plan_items/.test(error.message) && /exist|find/i.test(error.message)) return { itens: [], erro: null }
+    return { itens: [], erro: `Não foi possível ler as linhas do contrato: ${error.message}` }
+  }
+  return { itens: data || [], erro: null }
+}
+
 // ───────────────────────── PRÉVIA ─────────────────────────
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
@@ -49,6 +66,10 @@ export async function GET(req: NextRequest) {
 
   const plan = await carregarPlano(planId)
   if (!plan) return new NextResponse('Plano não encontrado', { status: 404 })
+  // isStaff diz QUEM chama; o cliente do contrato passa pelo escopo por tipo.
+  if (!(await canAccessClient(auth, plan.client_id))) return new NextResponse('Sem acesso a este cliente', { status: 403 })
+  const { itens, erro: errItens } = await linhasDoPlano(plan)
+  if (errItens) return new NextResponse(errItens, { status: 500 })
 
   const client = (plan as any).clients || {}
   const html = montarContratoHtml({
@@ -56,6 +77,7 @@ export async function GET(req: NextRequest) {
     client,
     signerTitle: req.nextUrl.searchParams.get('title'),
     previa: true,
+    itens,
   })
 
   return new NextResponse(html, {
@@ -85,6 +107,14 @@ export async function POST(req: NextRequest) {
   const db = serviceDb()
   const plan = await carregarPlano(planId)
   if (!plan) return NextResponse.json({ error: 'Plano não encontrado' }, { status: 404 })
+  if (!(await canAccessClient(auth, plan.client_id))) return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  if (['cancelled', 'completed'].includes(plan.status)) {
+    return NextResponse.json({ error: 'Contrato encerrado não se manda para assinatura.' }, { status: 409 })
+  }
+  const { itens, erro: errItens } = await linhasDoPlano(plan)
+  if (errItens) return NextResponse.json({ error: errItens }, { status: 500 })
+  // Contrato por fatura não tem débito: depois de assinar, nada a cadastrar.
+  const porFatura = plan.kind !== 'installment' && plan.collection_method === 'fatura'
 
   const client = (plan as any).clients
   if (!client?.email || !client.email.includes('@')) {
@@ -104,7 +134,7 @@ export async function POST(req: NextRequest) {
   }
 
   const lang = client.language === 'pt' ? 'pt' : 'en'
-  const html = montarContratoHtml({ plan, client, signerTitle, previa: false })
+  const html = montarContratoHtml({ plan, client, signerTitle, previa: false, itens })
 
   try {
     const { envelopeId } = await sendEnvelope({
@@ -137,8 +167,11 @@ export async function POST(req: NextRequest) {
       created_by: auth.userId,
     }).select('id').single()
 
-    // Libera o plano para o cliente: depois de assinar, ele cadastra o débito
-    if (['draft'].includes(plan.status)) {
+    // Libera o plano para o cliente: depois de assinar, ele cadastra o débito.
+    // Por fatura, não: o contrato fica em rascunho até a equipe ATIVAR (é a
+    // ativação que põe a rotina diária a emitir) — e "aguardando cadastro"
+    // ofereceria ao cliente um débito que este contrato não tem.
+    if (['draft'].includes(plan.status) && !porFatura) {
       await db.from('payment_plans').update({
         status: plan.kind === 'installment' && Number(plan.entry_amount || 0) > 0 ? 'awaiting_entry' : 'awaiting_setup',
         updated_at: new Date().toISOString(),
@@ -153,9 +186,13 @@ export async function POST(req: NextRequest) {
     // O cliente fica sabendo pela firma (princípio 4), com o caminho do portal
     let emailContrato: { ok: boolean; motivo?: string } = { ok: false, motivo: 'aviso por e-mail nao se aplica a este envio' }
     if (noPortal) {
-      const texto = lang === 'pt'
-        ? `✍️ Seu contrato de serviços está pronto para assinatura. Em Pagamentos, clique em "Assinar contrato": depois de assinar, você cadastra o débito automático na mesma tela.`
-        : `✍️ Your service agreement is ready to sign. Under Payments, click "Sign agreement": after signing, you will set up the automatic debit on the same screen.`
+      const texto = porFatura
+        ? (lang === 'pt'
+            ? `✍️ Seu contrato de serviços está pronto para assinatura. Em Pagamentos, clique em "Assinar contrato". As faturas chegam pelo portal e por e-mail a cada período.`
+            : `✍️ Your service agreement is ready to sign. Under Payments, click "Sign agreement". Invoices will arrive through the portal and by e-mail each period.`)
+        : (lang === 'pt'
+            ? `✍️ Seu contrato de serviços está pronto para assinatura. Em Pagamentos, clique em "Assinar contrato": depois de assinar, você cadastra o débito automático na mesma tela.`
+            : `✍️ Your service agreement is ready to sign. Under Payments, click "Sign agreement": after signing, you will set up the automatic debit on the same screen.`)
       await avisarNoPortal(db, client.id, texto)
       // Guardado, nao descartado: contrato que o cliente nunca recebeu e
       // assinatura que nao acontece, e ninguem sabe por que.

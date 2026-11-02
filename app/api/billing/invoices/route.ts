@@ -2,7 +2,11 @@
 //
 // GET    ?doc=&status=&clientId=   → lista + clientes + suas permissões
 // POST   { clientId, docType, dueDate, paymentPlan, expectedMethod, discount, notes, items[] }
-// PATCH  { id, action: 'send' | 'resend' | 'cancel' | 'duplicate' | 'edit' }
+// PATCH  { id, action: 'send' | 'resend' | 'cancel' | 'duplicate' | 'edit' | 'converter' }
+//          converter → o ORÇAMENTO aprovado vira FATURA (uma só): mesmos
+//                   itens, desconto e observações, o vencimento do orçamento
+//                   (ou hoje, se ele já passou), `converted_from` apontando
+//                   para o orçamento
 //          resend → repete o AVISO da fatura ao cliente (e-mail + portal), sem
 //                   mexer no status; serve à fatura que nasceu enviada pelo Stripe
 //          remind → LEMBRETE DE COBRANÇA: outro texto, sabe se está vencida
@@ -25,8 +29,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb, canAccessClient, clientesOcultos } from '@/lib/api-auth'
 import { permissoesFinanceiro, RECUSA } from '@/lib/billing-perms'
-import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL } from '@/lib/avisos'
-import { fmtUS, money } from '@/lib/format'
+import { avisarClienteDaFatura } from '@/lib/aviso-da-fatura'
 import Stripe from 'stripe'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { achEmTransito, diasEmTransito } from '@/lib/ach-transito'
@@ -170,11 +173,30 @@ export async function GET(req: NextRequest) {
   if (errServicos) return NextResponse.json({ error: `Catalogo de servicos: ${errServicos.message}` }, { status: 500 })
   if (escopo.erro)  return NextResponse.json({ error: escopo.erro }, { status: 500 })
 
+  // A lista de DOCUMENTOS obedece ao mesmo escopo da lista de clientes. O
+  // seletor escondia o cliente (empresa para quem não tem `verEmpresas`, o
+  // caixa da firma para quem não é sócio) e a lista mostrava as faturas dele.
+  const visiveis = (invoices || []).filter((i: any) => !escopo.ocultos.has(i.client_id))
+
+  // Orçamento que já virou fatura: a tela mostra qual, em vez de oferecer
+  // "Virar fatura" de novo. Em blocos — 400 ids numa URL só passam do limite.
+  const idsOrc = visiveis.filter((i: any) => i.doc_type === 'estimate').map((i: any) => i.id)
+  const viraram: Record<string, string> = {}
+  for (let k = 0; k < idsOrc.length; k += 100) {
+    const { data: filhas, error: errFilhas } = await db.from('invoices')
+      .select('number, converted_from')
+      .in('converted_from', idsOrc.slice(k, k + 100))
+      .eq('doc_type', 'invoice').neq('status', 'void')
+    if (errFilhas) return NextResponse.json({ error: `Orçamentos convertidos: ${errFilhas.message}` }, { status: 500 })
+    for (const f of filhas || []) viraram[f.converted_from] = f.number
+  }
+
   return NextResponse.json({
-    invoices: (invoices || []).map((i: any) => ({
+    invoices: visiveis.map((i: any) => ({
       ...i,
       cliente: i.clients?.business_name || i.clients?.name || '—',
       saldo: round2(Number(i.total) - Number(i.paid_total)),
+      convertidoEm: i.doc_type === 'estimate' ? (viraram[i.id] || null) : null,
     })),
     // A lista de clientes da fatura obedece ao mesmo escopo do POST: sem
     // `verEmpresas`, empresa nao entra. Mostrar o nome e recusar no salvar
@@ -182,7 +204,9 @@ export async function GET(req: NextRequest) {
     // justamente o que o escopo esconde.
     clients: (clients || [])
       .filter((c: any) => !escopo.ocultos.has(c.id))
-      .map((c: any) => ({ id: c.id, nome: c.business_name || c.name })),
+      // O tipo vai junto: o cálculo da declaração pelos documentos é só de
+      // pessoa física, e a tela não oferece o botão para empresa.
+      .map((c: any) => ({ id: c.id, nome: c.business_name || c.name, tipo: c.type })),
     // Catálogo de preços (tela Preços) — fonte única para os itens da fatura
     services: (services || []).map((x: any) => ({
       id: x.id, nome: x.label, preco: Number(x.amount) || 0, code: x.code, kind: x.kind,
@@ -315,26 +339,9 @@ export async function POST(req: NextRequest) {
   // confere antes de o cliente ver. Mas para quem já pode enviar, obrigar a
   // criar, achar na lista e clicar Enviar são três passos no balcão com fila.
   // Quem não pode enviar não perde o trabalho: o rascunho fica salvo.
-  let envio = ''
-  let aviso: string | null = null
-  if (b.enviarAgora) {
-    if (!perms.enviar) {
-      aviso = RECUSA.enviar
-    } else {
-      const { data: cheia } = await db.from('invoices').select('*').eq('id', inv.id).single()
-      await db.from('invoices')
-        .update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', inv.id)
-      await db.from('invoice_audit').insert({
-        invoice_id: inv.id, action: 'sent', performed_by: auth.userId, staff_level: perms.nivel,
-      }).then(() => null, () => null)
-      const r = await avisarClienteDaFatura(db, cheia)
-      envio = r.email
-        ? ' e enviado ao cliente (e-mail e portal)'
-        : r.motivo
-          ? ` e enviado (portal; e-mail não saiu: ${r.motivo})`
-          : ' e enviado ao cliente (portal)'
-    }
-  }
+  const { envio, aviso } = b.enviarAgora
+    ? await enviarJa(db, inv.id, auth.userId, perms)
+    : { envio: '', aviso: null }
 
   const doc = docType === 'estimate' ? 'Orçamento' : 'Fatura'
   const partes = [
@@ -364,6 +371,12 @@ export async function PATCH(req: NextRequest) {
   const db = serviceDb()
   const { data: inv } = await db.from('invoices').select('*').eq('id', id).single()
   if (!inv) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+  // Quem chama não é QUAL cliente: o POST conferia o escopo e o PATCH não.
+  // Quem tivesse `enviar` ou `cancelar` por autorização, sem `verEmpresas`,
+  // agia pelo id na fatura de uma empresa — e o gerente, no caixa da firma.
+  if (!(await canAccessClient(auth, inv.client_id))) {
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  }
 
   if (action === 'send') {
     // Estava preso a `perms.cancelar`. Dava no mesmo enquanto tudo era por
@@ -400,6 +413,10 @@ export async function PATCH(req: NextRequest) {
     }
     if (inv.status === 'void') {
       return NextResponse.json({ error: 'Fatura cancelada não vai ao cliente.' }, { status: 409 })
+    }
+    // Orçamento não se cobra: ninguém deve nada por ele. Reenviar, sim.
+    if (inv.doc_type === 'estimate' && lembrete) {
+      return NextResponse.json({ error: 'Orçamento não se cobra — use Reenviar, ou Virar fatura quando o cliente aprovar.' }, { status: 400 })
     }
     const saldoAberto = Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100
     if (saldoAberto <= 0) {
@@ -566,6 +583,86 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: true, message: `${inv.number} atualizada (${total2.toFixed(2)}).` })
   }
 
+  // ── Orçamento aprovado vira FATURA ──
+  // Era o que o módulo Quotes fazia pelo atalho errado: o link de pagamento
+  // saía da própria cotação, e o dinheiro entrava numa tabela fora do livro
+  // (sem `invoice_payments`, sem conta de passagem, sem conciliação com o
+  // repasse do Stripe). Aqui o orçamento vira uma fatura de verdade, e a
+  // fatura é que se paga, parcela e concilia.
+  if (action === 'converter') {
+    if (!perms.criar) return NextResponse.json({ error: 'Emitir fatura exige autorização.' }, { status: 403 })
+    if (inv.doc_type !== 'estimate') return NextResponse.json({ error: 'Só orçamento vira fatura.' }, { status: 400 })
+    if (inv.status === 'void') return NextResponse.json({ error: 'Orçamento cancelado não vira fatura.' }, { status: 409 })
+
+    // Um orçamento, UMA fatura. Duas seriam a mesma cobrança duas vezes.
+    const { data: ja, error: errJa } = await db.from('invoices').select('number')
+      .eq('converted_from', inv.id).eq('doc_type', 'invoice').neq('status', 'void').limit(1)
+    if (errJa) return NextResponse.json({ error: `Não foi possível conferir a conversão: ${errJa.message}` }, { status: 500 })
+    if (ja?.length) return NextResponse.json({ error: `Este orçamento já virou a fatura ${ja[0].number}.` }, { status: 409 })
+
+    const { data: linhasOrc, error: errLinhas } = await db.from('invoice_items')
+      .select('service_id, description, qty, unit_price, amount, sort').eq('invoice_id', inv.id).order('sort')
+    if (errLinhas) return NextResponse.json({ error: `Itens do orçamento: ${errLinhas.message}` }, { status: 500 })
+    if (!linhasOrc?.length) return NextResponse.json({ error: 'O orçamento não tem itens.' }, { status: 409 })
+
+    const { data: num, error: numErr } = await db.rpc('next_invoice_number', { p_kind: 'invoice' })
+    if (numErr) return NextResponse.json({ error: `Numeração: ${numErr.message}` }, { status: 500 })
+
+    // Parcelamento não se copia: o cronograma nasce na fatura, com as regras
+    // dela (Parcelar). Copiar só o rótulo deixaria uma fatura "parcelada" sem
+    // parcela nenhuma.
+    const parcelado = inv.payment_plan === 'installments'
+    // O vencimento que a equipe pôs no orçamento vale para a fatura; se ele
+    // já passou (ou não havia), vence hoje, no dia do ESCRITÓRIO — fatura
+    // nascendo vencida apareceria como "Cobrar" no primeiro minuto.
+    const hojeFirma = dataDaFirma()
+    const venc = inv.due_date && String(inv.due_date).slice(0, 10) >= hojeFirma
+      ? String(inv.due_date).slice(0, 10) : hojeFirma
+    const { data: nova, error: errNova } = await db.from('invoices').insert({
+      client_id: inv.client_id, doc_type: 'invoice', number: num, status: 'draft',
+      due_date: venc,
+      subtotal: inv.subtotal, discount: inv.discount, total: inv.total,
+      payment_plan: parcelado ? 'full' : (inv.payment_plan || 'full'),
+      expected_method: inv.expected_method, financier: inv.financier, notes: inv.notes,
+      converted_from: inv.id, created_by: auth.userId,
+    }).select('id, number').single()
+    if (errNova) return NextResponse.json({ error: errNova.message }, { status: 500 })
+
+    const { error: errItens } = await db.from('invoice_items').insert(linhasOrc.map((i: any) => ({
+      invoice_id: nova.id, service_id: i.service_id, description: i.description,
+      qty: i.qty, unit_price: i.unit_price, amount: i.amount, sort: i.sort,
+    })))
+    if (errItens) {
+      // Fatura sem itens não serve para nada: desfaz, como no POST.
+      await db.from('invoices').delete().eq('id', nova.id)
+      return NextResponse.json({ error: `Itens: ${errItens.message}` }, { status: 500 })
+    }
+
+    await db.from('invoice_audit').insert({
+      invoice_id: nova.id, action: 'created', performed_by: auth.userId, staff_level: perms.nivel,
+      next: { number: nova.number, total: inv.total, doOrcamento: inv.number },
+    }).then(() => null, () => null)
+
+    // O orçamento passa a "Aceito" quando o banco conhece esse status (o CHECK
+    // nasceu no painel). Se recusar, o vínculo de verdade continua sendo
+    // `converted_from` — é por ele que a lista mostra "virou INV-…". O erro é
+    // lido de propósito e descartado: recusa de CHECK (23514) é esperada.
+    const { error: errAceito } = await db.from('invoices')
+      .update({ status: 'accepted', updated_at: new Date().toISOString() }).eq('id', inv.id)
+    if (errAceito && errAceito.code !== '23514') console.error('orcamento aceito:', errAceito.message)
+
+    const { envio, aviso } = corpo.enviarAgora
+      ? await enviarJa(db, nova.id, auth.userId, perms)
+      : { envio: '', aviso: null }
+
+    return NextResponse.json({
+      ok: true, id: nova.id, number: nova.number, aviso,
+      message: `Orçamento ${inv.number} virou a fatura ${nova.number}`
+        + (envio ? `,${envio.replace(/^ e/, '')}` : ' (rascunho)')
+        + (parcelado ? ' · era parcelado: use Parcelar na fatura' : '') + '.',
+    })
+  }
+
   if (action === 'duplicate') {
     if (!perms.duplicar) return NextResponse.json({ error: RECUSA.duplicar }, { status: 403 })
     const { data: num } = await db.rpc('next_invoice_number', { p_kind: inv.doc_type })
@@ -600,8 +697,11 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ error: 'id obrigatório' }, { status: 400 })
 
   const db = serviceDb()
-  const { data: inv } = await db.from('invoices').select('number, paid_total').eq('id', id).single()
+  const { data: inv } = await db.from('invoices').select('number, paid_total, client_id').eq('id', id).single()
   if (!inv) return NextResponse.json({ error: 'Documento não encontrado' }, { status: 404 })
+  if (!(await canAccessClient(auth, inv.client_id))) {
+    return NextResponse.json({ error: 'Sem acesso a este cliente' }, { status: 403 })
+  }
   if (Number(inv.paid_total) > 0) {
     return NextResponse.json({ error: 'Documento com pagamento não pode ser apagado — cancele.' }, { status: 409 })
   }
@@ -611,72 +711,29 @@ export async function DELETE(req: NextRequest) {
   return NextResponse.json({ ok: true, message: `${inv.number} apagado.` })
 }
 
-/** E-mail e aviso no portal quando a fatura é enviada. Não derruba a operação se o e-mail falhar. */
-async function avisarClienteDaFatura(
-  db: any, inv: any, tom: 'envio' | 'lembrete' = 'envio',
-): Promise<{ email: boolean; motivo?: string }> {
-  const { data: c } = await db.from('clients').select('id, name, email, language').eq('id', inv.client_id).maybeSingle()
-  if (!c) return { email: false, motivo: 'cliente não encontrado' }
-  const lang = (c.language || 'en').toLowerCase()
-  const valor = money(Math.round((Number(inv.total) - Number(inv.paid_total || 0)) * 100) / 100)
-  const venc = fmtUS(inv.due_date)
-  const parcelada = inv.payment_plan === 'installments'
-  // Vencida? Comparação por data civil, sem passar por fuso.
-  const hoje = new Date().toISOString().slice(0, 10)
-  const vencida = !!inv.due_date && String(inv.due_date).slice(0, 10) < hoje
-
-  // Envio e cobrança não dizem a mesma coisa. Quem pede o documento de novo
-  // não é quem está atrasado, e o cliente percebe a diferença.
-  const T: Record<string, { texto: string; assunto: string; botao: string }> = {
-    pt: {
-      texto: tom === 'lembrete'
-        ? (parcelada
-            ? `⏰ Lembrete: a fatura ${inv.number} está parcelada e o débito automático não foi concluído. Em Pagamentos você regulariza ou refaz o cadastro do débito.`
-            : `⏰ Lembrete: a fatura ${inv.number} de ${valor}${venc ? (vencida ? ` venceu em ${venc}` : ` vence em ${venc}`) : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`)
-        : (parcelada
-            ? `🧾 Fatura ${inv.number} (${valor}) enviada. Ela é parcelada: em Pagamentos, cadastre o débito automático.`
-            : `🧾 Fatura ${inv.number} de ${valor}${venc ? `, vencimento ${venc}` : ''}. Em Pagamentos você paga com cartão, débito em conta ou Klarna.`),
-      assunto: tom === 'lembrete' ? `Lembrete: fatura ${inv.number} — Peace on Tax` : `Fatura ${inv.number} — Peace on Tax`,
-      botao: tom === 'lembrete' ? 'Pagar agora' : (parcelada ? 'Cadastrar débito automático' : 'Ver e pagar a fatura'),
-    },
-    es: {
-      texto: tom === 'lembrete'
-        ? (parcelada
-            ? `⏰ Recordatorio: la factura ${inv.number} está en cuotas y el débito automático no se completó. En Pagos puede regularizar o registrar el débito de nuevo.`
-            : `⏰ Recordatorio: la factura ${inv.number} de ${valor}${venc ? (vencida ? ` venció el ${venc}` : ` vence el ${venc}`) : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`)
-        : (parcelada
-            ? `🧾 Factura ${inv.number} (${valor}) enviada. Es en cuotas: en Pagos, registre el débito automático.`
-            : `🧾 Factura ${inv.number} de ${valor}${venc ? `, vence el ${venc}` : ''}. En Pagos puede pagar con tarjeta, débito en cuenta o Klarna.`),
-      assunto: tom === 'lembrete' ? `Recordatorio: factura ${inv.number} — Peace on Tax` : `Factura ${inv.number} — Peace on Tax`,
-      botao: tom === 'lembrete' ? 'Pagar ahora' : (parcelada ? 'Registrar débito automático' : 'Ver y pagar la factura'),
-    },
-    en: {
-      texto: tom === 'lembrete'
-        ? (parcelada
-            ? `⏰ Reminder: invoice ${inv.number} is on an installment plan and the automatic debit did not go through. Under Payments you can settle it or set up the debit again.`
-            : `⏰ Reminder: invoice ${inv.number} for ${valor}${venc ? (vencida ? ` was due on ${venc}` : ` is due on ${venc}`) : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`)
-        : (parcelada
-            ? `🧾 Invoice ${inv.number} (${valor}) sent. It is an installment plan: under Payments, set up automatic debit.`
-            : `🧾 Invoice ${inv.number} for ${valor}${venc ? `, due ${venc}` : ''}. Under Payments you can pay by card, bank debit (ACH) or Klarna.`),
-      assunto: tom === 'lembrete' ? `Reminder: invoice ${inv.number} — Peace on Tax` : `Invoice ${inv.number} — Peace on Tax`,
-      botao: tom === 'lembrete' ? 'Pay now' : (parcelada ? 'Set up automatic debit' : 'View and pay invoice'),
-    },
-  }
-  const t = T[lang] || T.en
-  // O portal e o canal que SEMPRE deveria funcionar: se ele falhar tambem, o
-  // cliente nao fica sabendo por nenhum caminho, e quem enviou precisa saber.
-  const noPortal = await avisarNoPortal(db, c.id, t.texto)
-
-  // O motivo vem de enviarEmail e e ESPECIFICO: falta de chave no servidor,
-  // cadastro sem e-mail, ou a recusa do Resend com o texto dele. "Falha no
-  // envio" nao dizia se o sócio tinha de mexer no Vercel ou a equipe na ficha.
-  const r = await enviarEmail(c.email, t.assunto,
-    emailComMarca({ lang, nome: c.name, corpoHtml: `<p>${t.texto.replace(/^[🧾⏰] /, '')}</p>`,
-      botao: { texto: t.botao, url: `${APP_URL}/portal/payments` } }))
+/**
+ * "Criar e enviar" num passo, para o POST e para a conversão do orçamento.
+ * O documento continua NASCENDO rascunho; quem pode enviar faz os dois
+ * passos num clique. Quem não pode recebe o aviso e o rascunho fica salvo.
+ */
+async function enviarJa(
+  db: any, invId: string, userId: string, perms: Awaited<ReturnType<typeof permissoesFinanceiro>>,
+): Promise<{ envio: string; aviso: string | null }> {
+  if (!perms.enviar) return { envio: '', aviso: RECUSA.enviar }
+  const { data: cheia } = await db.from('invoices').select('*').eq('id', invId).single()
+  await db.from('invoices')
+    .update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', invId)
+  await db.from('invoice_audit').insert({
+    invoice_id: invId, action: 'sent', performed_by: userId, staff_level: perms.nivel,
+  }).then(() => null, () => null)
+  const r = await avisarClienteDaFatura(db, cheia)
   return {
-    email: r.ok,
-    motivo: noPortal.ok ? r.motivo
-      : `${r.motivo ? r.motivo + ' · ' : ''}e o aviso no portal também falhou: ${noPortal.motivo}`,
+    envio: r.email
+      ? ' e enviado ao cliente (e-mail e portal)'
+      : r.motivo
+        ? ` e enviado (portal; e-mail não saiu: ${r.motivo})`
+        : ' e enviado ao cliente (portal)',
+    aviso: null,
   }
 }
 

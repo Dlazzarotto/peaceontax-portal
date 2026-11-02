@@ -12,9 +12,11 @@
 //                                mensalidade: baixa na fatura do mês (cria se
 //                                o finalized não tiver chegado)
 //   invoice.payment_failed     → fatura fica em aberto com o motivo (NSF etc.);
-//                                parcela marcada 'failed'; alerta à equipe
-//                                (lê a assinatura nos dois formatos da API — lib/stripe-invoice)
-//   invoice.payment_failed     → alerta a equipe (cobrança manual)
+//                                parcela marcada 'failed'; alerta à equipe e aviso
+//                                ao cliente com a próxima tentativa que o STRIPE
+//                                marcou — ou dizendo que não haverá nenhuma
+//                                (lib/aviso-de-falha; a assinatura é lida nos dois
+//                                formatos da API — lib/stripe-invoice)
 //   checkout.session.expired   → débito em conta começado e não concluído: a
 //                                fatura sai de "dinheiro a caminho"
 //   invoice.voided             → cobrança anulada no painel: cancela a fatura
@@ -39,13 +41,18 @@ import Stripe from 'stripe'
 import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
-import { agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, metodoDoTipo } from '@/lib/agendamento-parcelas'
+import {
+  agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, metodoDoTipo,
+  decidirEntradaDoWebhook, ESPERANDO_O_CLIENTE,
+} from '@/lib/agendamento-parcelas'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
 import { marcarAchEmTransito, limparAchEmTransito, faturaDaSessaoAch } from '@/lib/ach-transito'
 import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
 import { assinaturaDaInvoice, planoDaInvoice, intentDaInvoice, dataDaCompetencia, emissaoDaInvoice, vencimentoDaInvoice, pagaForaDoStripe, motivoDaFalha } from '@/lib/stripe-invoice'
+import { mensagensDaFalha, novaTentativa } from '@/lib/aviso-de-falha'
+import { linhasDaMensalidade, rotuloDoPeriodo } from '@/lib/contrato-unico'
 
 export const runtime = 'nodejs'
 
@@ -87,7 +94,13 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ received: true })
       }
 
-      // ---- Fase 2: cotação à vista ----
+      // ---- Fase 2: cotação à vista (LEGADO) ----
+      // O módulo Quotes saiu: o orçamento mora no Financeiro e quem se paga é
+      // a fatura. Fica o tratamento para um link antigo que ainda seja pago
+      // (a sessão vale 24h; um cliente pode ter guardado a aba aberta) — sem
+      // ele o pagamento cairia nos ramos abaixo e não seria anotado em lugar
+      // nenhum. O que chega aqui fica fora do livro, e a tela do Financeiro
+      // lista ("pagos pelo link antigo").
       if (meta.quoteId) {
         await handleQuotePaid(db, session)
         return NextResponse.json({ received: true })
@@ -509,6 +522,10 @@ export async function POST(req: NextRequest) {
       const clientName = (plan.clients as any)?.name || plan.client_id
       const amount = ((invoice.amount_due ?? 0) / 100).toFixed(2)
       const motivo = motivoDaFalha(await comPagamentos(stripe, invoice))
+      // Se o Stripe vai tentar de novo, e quando, quem diz é a invoice do
+      // evento — nunca esta mensagem. No débito em conta ele NÃO tenta por
+      // padrão (lib/aviso-de-falha.ts).
+      const proxima = novaTentativa((invoice as any).next_payment_attempt)
 
       await db.from('payment_plans').update({
         status: 'payment_failed', updated_at: new Date().toISOString(),
@@ -532,7 +549,7 @@ export async function POST(req: NextRequest) {
             }).eq('invoice_id', plan.invoice_id).eq('seq', alvo.seq)
             await db.from('invoice_audit').insert({
               invoice_id: plan.invoice_id, action: 'charge_failed',
-              next: { parcela: alvo.seq, valor: Number(amount), motivo, stripeInvoice: invoice.id },
+              next: { parcela: alvo.seq, valor: Number(amount), motivo, stripeInvoice: invoice.id, novaTentativa: proxima.data },
             }).then(() => null, () => null)
             parcelaQueFalhou = alvo.seq
           }
@@ -541,16 +558,22 @@ export async function POST(req: NextRequest) {
         const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
         if (inv) await db.from('invoice_audit').insert({
           invoice_id: inv.id, action: 'charge_failed',
-          next: { valor: Number(amount), motivo, stripeInvoice: invoice.id },
+          next: { valor: Number(amount), motivo, stripeInvoice: invoice.id, novaTentativa: proxima.data },
         }).then(() => null, () => null)
       }
 
+      const aviso = mensagensDaFalha({
+        valor: Number(amount), cliente: clientName, motivo,
+        oQue: plan.kind === 'installment' ? `parcela ${parcelaQueFalhou ?? '?'}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`,
+        proximaTentativa: (invoice as any).next_payment_attempt,
+        tentativasFeitas: (invoice as any).attempt_count,
+      })
       await db.from('plan_alerts').insert({
         plan_id: plan.id, client_id: plan.client_id, type: 'payment_failed',
-        message: `⚠️ Débito de $${amount} de ${clientName} FALHOU (${plan.kind === 'installment' ? `parcela ${parcelaQueFalhou ?? '?'}/${plan.installments}` : `mensalidade: ${plan.description || 'bookkeeping'}`}). O Stripe fará novas tentativas automáticas. Se persistir, contatar o cliente para cobrança manual.`,
+        message: aviso.equipe,
       })
 
-      await notifyClient(db, plan.client_id, '⚠️ Não conseguimos processar seu pagamento. Uma nova tentativa será feita automaticamente. Se preferir, entre em contato: (833) 732-2327.')
+      await notifyClient(db, plan.client_id, aviso.cliente)
       return NextResponse.json({ received: true })
     }
 
@@ -907,13 +930,38 @@ async function handleInstallmentEntry(
 ) {
   const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
   if (!plan) return
-  if (plan.status === 'active' && !plan.invoice_id) return  // idempotência (plano antigo, sem fatura)
+
+  const pag = await pagamentoDaSessao(stripe, session)
+  const entryPaidAt = pag.quando || new Date(session.created * 1000)
+  const pago = session.payment_status === 'paid'
+
+  // Esta sessão já está no livro? Só se pergunta com fatura, e só pela
+  // entrada que está com a firma (a devolvida decide antes).
+  let noLivro = false
+  if (plan.invoice_id && pago && !(pag.devolvido > 0) && !pag.contestado) {
+    const filtro = filtroDeRecebimento(session.id, pag.intent)
+    const { data: ja, error: errJa } = filtro
+      ? await db.from('invoice_payments').select('id').or(filtro).limit(1)
+      : { data: [] as any[], error: null }
+    if (errJa) throw new Error(`não deu para conferir a entrada: ${errJa.message}`)
+    noLivro = !!ja?.length
+  }
+
+  // A decisão é pura e tem a tabela inteira em teste
+  // (decidirEntradaDoWebhook, lib/agendamento-parcelas.ts). O evento volta:
+  // o Stripe reenvia, e o painel deixa reenviar à mão. Antes a única guarda
+  // era "já está ativo" — e um evento antigo reativava o plano CANCELADO e
+  // agendava as parcelas de um acordo desfeito.
+  const decisao = decidirEntradaDoWebhook({
+    status: String(plan.status), pago, devolvido: pag.devolvido, contestado: pag.contestado,
+    comFatura: !!plan.invoice_id, noLivro, entradaRegistrada: !!plan.entry_paid_at,
+  })
+  if (decisao.acao === 'nada') return
 
   // Débito em conta (ACH): o 'completed' chega com o dinheiro ainda em trânsito.
   // Ativar aqui criaria o agendamento e lançaria uma entrada que pode ser
   // devolvida dias depois. Esperamos o async_payment_succeeded.
-  if (session.payment_status !== 'paid') {
-    if (plan.status === 'active') return
+  if (decisao.acao === 'aguardar_banco') {
     await db.from('plan_audit').insert({
       plan_id: planId, action: 'entry_processing',
       snapshot: { session: session.id, status: session.payment_status, valor: Number(session.amount_total || 0) / 100 },
@@ -923,26 +971,19 @@ async function handleInstallmentEntry(
     return
   }
 
-  const pag = await pagamentoDaSessao(stripe, session)
-  const entryPaidAt = pag.quando || new Date(session.created * 1000)
-
-  // Esta sessão já está no livro? Reenvio do mesmo evento segue (pode faltar
-  // o agendamento). Uma SEGUNDA entrada paga para o mesmo plano não: enquanto
-  // o agendamento travava, o portal seguia oferecendo "pagar a entrada", e o
-  // cliente podia pagar de novo. Esse dinheiro não é da fatura — é estorno.
-  if (plan.invoice_id) {
-    const filtro = filtroDeRecebimento(session.id, pag.intent)
-    const { data: ja, error: errJa } = filtro
-      ? await db.from('invoice_payments').select('id').or(filtro).limit(1)
-      : { data: [] as any[], error: null }
-    if (errJa) throw new Error(`não deu para conferir a entrada: ${errJa.message}`)
-    if (!ja?.length && (plan.status === 'active' || plan.entry_paid_at)) {
-      await falhaNoParcelamento(db, plan, 'entrada_em_dobro',
-        `o cliente pagou a entrada DE NOVO ($${pag.valor.toFixed(2)}, sessão ${session.id}) e o parcelamento já tinha entrada — estorne este pagamento no painel do Stripe`)
-      return
-    }
+  if (decisao.acao === 'alertar') {
+    const valor = `$${pag.valor.toFixed(2)}`
+    const motivo = decisao.tipo === 'entrada_devolvida'
+      ? `a entrada (${valor}, sessão ${session.id}) foi paga e depois ${pag.contestado ? 'CONTESTADA' : `DEVOLVIDA ($${pag.devolvido.toFixed(2)})`} no Stripe — as parcelas NÃO foram agendadas: não há entrada com a firma`
+      : decisao.tipo === 'entrada_em_plano_encerrado'
+      ? `o cliente pagou ${valor} (sessão ${session.id}) num parcelamento já ${plan.status === 'completed' ? 'CONCLUÍDO' : 'CANCELADO'} — nada foi lançado nem agendado`
+      // Enquanto o agendamento travava, o portal seguia oferecendo "pagar a
+      // entrada", e o cliente podia pagar de novo. Esse dinheiro não é da
+      // fatura — é estorno.
+      : `o cliente pagou a entrada DE NOVO (${valor}, sessão ${session.id}) e o parcelamento já tinha entrada`
+    await falhaNoParcelamento(db, plan, decisao.tipo, motivo)
+    return
   }
-  if (plan.status === 'active') return  // idempotência
 
   // 1. A ENTRADA PRIMEIRO. O dinheiro já entrou: lançá-lo não pode depender
   //    do agendamento dar certo. Era o que acontecia — o agendamento falhava
@@ -1015,6 +1056,14 @@ async function agendarOuAvisar(
   }
 }
 
+/** O que a equipe faz em cada caso. O agendar não serve a todos: na entrada devolvida ele recusa. */
+const O_QUE_FAZER: Record<string, string> = {
+  entrada_em_dobro: 'Estorne o pagamento a mais no painel do Stripe (Refund).',
+  entrada_devolvida: 'Não há entrada com a firma: cancele o parcelamento em Financeiro → Parcelamentos e, se for o caso, faça outro acordo.',
+  entrada_em_plano_encerrado: 'Confira no painel do Stripe: estorne, ou lance o recebimento à mão se o valor é devido.',
+}
+const AGENDAR = 'Abra Financeiro → Parcelamentos → "Conferir pagamento e agendar".'
+
 /**
  * O parcelamento travou: trilha e alerta à equipe, UM por plano por dia — o
  * Stripe reenvia o evento várias vezes, e cada reenvio não pode virar alerta.
@@ -1030,7 +1079,7 @@ async function falhaNoParcelamento(db: ReturnType<typeof adminDb>, plan: any, ti
     .then(() => null, () => null)
   await db.from('plan_alerts').insert({
     plan_id: plan.id, client_id: plan.client_id, type: tipo,
-    message: `🛑 ${plan.description || 'Parcelamento'}: ${motivo}. Abra Financeiro → Parcelamentos → "Conferir pagamento e agendar".`,
+    message: `🛑 ${plan.description || 'Parcelamento'}: ${motivo}. ${O_QUE_FAZER[tipo] || AGENDAR}`,
   }).then(() => null, () => null)
 }
 
@@ -1040,7 +1089,11 @@ async function handleInstallmentSetup(
   session: Stripe.Checkout.Session, planId: string,
 ) {
   const { data: plan } = await db.from('payment_plans').select('*').eq('id', planId).single()
-  if (!plan || plan.status === 'active') return   // idempotência
+  // Só o plano que ESPERA o cliente se põe a cobrar. Ativo é reenvio; o que
+  // já andou (parcela recusada, pausado) ou acabou (cancelado, concluído)
+  // não volta a agendar por um evento antigo — era o que acontecia com a
+  // guarda "só o ativo": o plano cancelado era reativado.
+  if (!plan || !ESPERANDO_O_CLIENTE.includes(String(plan.status))) return
 
   const pag = await pagamentoDaSessao(stripe, session)
   if (!pag.paymentMethod) return
@@ -1287,7 +1340,9 @@ async function garantirFaturaDaMensalidade(
 ): Promise<{ id: string; number: string; total: number; paid_total: number; mesRef: string; recemCriada: boolean } | null> {
   const d = dataDaCompetencia(invoice)
   const competencia = `${d.toISOString().slice(0, 7)}-01`
-  const mesRef = d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  // O período que a cobrança cobre: no trimestral, "out a dez de 2026" — só
+  // o mês fazia o cliente ler o trimestre como mensalidade.
+  const mesRef = rotuloDoPeriodo(competencia, plan.billing_interval)
 
   const { data: porStripe } = await db.from('invoices')
     .select('id, number, total, paid_total').eq('stripe_invoice', invoice.id).maybeSingle()
@@ -1303,6 +1358,16 @@ async function garantirFaturaDaMensalidade(
   const valor = round2(((invoice.amount_due || invoice.amount_paid) ?? 0) / 100)
   if (valor <= 0) return null
 
+  // As linhas do contrato, quando a conta delas bate AO CENTAVO com o que o
+  // Stripe cobrou (linhasDaMensalidade). Não bateu — mudança no meio do
+  // ciclo, ajuste feito no painel do Stripe — vale o cobrado, numa linha só:
+  // a fatura nunca diz um valor que não foi o debitado. Consulta que falha
+  // (ou tabela que ainda não existe) também cai na linha só: a fatura do mês
+  // não pode deixar de nascer por causa do detalhe.
+  const { data: linhasDoPlano } = await db.from('payment_plan_items')
+    .select('service_id, description, quantity, unit_price, sort_order').eq('plan_id', plan.id).order('sort_order')
+  const detalhe = linhasDaMensalidade(linhasDoPlano || [], plan.discount, valor)
+
   const { data: num, error: numErr } = await db.rpc('next_invoice_number', { p_kind: 'invoice' })
   if (numErr || !num) { console.error('Numeração da mensalidade:', numErr); return null }
 
@@ -1314,10 +1379,10 @@ async function garantirFaturaDaMensalidade(
     status: 'sent',
     issue_date: emissaoDaInvoice(invoice),
     due_date: vencimentoDaInvoice(invoice),
-    subtotal: valor, discount: 0, total: valor,
+    subtotal: detalhe ? detalhe.bruto : valor, discount: detalhe ? detalhe.desconto : 0, total: valor,
     payment_plan: 'full',
     expected_method: null,
-    notes: 'Gerada automaticamente pelo contrato recorrente.',
+    notes: detalhe ? `Contrato recorrente — ${mesRef}. Gerada automaticamente.` : 'Gerada automaticamente pelo contrato recorrente.',
     plan_id: plan.id,
     competencia,
     stripe_invoice: invoice.id,
@@ -1325,10 +1390,12 @@ async function garantirFaturaDaMensalidade(
   }).select('id, number, total, paid_total').single()
   if (invErr || !inv) { console.error('Fatura da mensalidade:', invErr); return null }
 
-  const { error: itErr } = await db.from('invoice_items').insert({
-    invoice_id: inv.id, service_id: null, description: descricao,
-    qty: 1, unit_price: valor, amount: valor, sort: 0,
-  })
+  const { error: itErr } = await db.from('invoice_items').insert(detalhe
+    ? detalhe.linhas.map((l, sort) => ({
+        invoice_id: inv.id, service_id: l.service_id, description: l.description,
+        qty: l.qty, unit_price: l.unit_price, amount: l.amount, sort,
+      }))
+    : [{ invoice_id: inv.id, service_id: null, description: descricao, qty: 1, unit_price: valor, amount: valor, sort: 0 }])
   if (itErr) {
     await db.from('invoices').delete().eq('id', inv.id)
     console.error('Item da mensalidade:', itErr)
