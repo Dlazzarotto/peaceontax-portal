@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio, META_RELATORIO } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
 import { dataDeCorteDosParametros, dataPorExtensoEN, rotuloDoPeriodo, anoDe } from '@/lib/periodo-relatorio'
 import { todasAsLinhas } from '@/lib/paginar'
 
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
     voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
     painelPara: isClient ? '/portal' : '/dashboard',
   })
-  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${dataPorExtensoEN(cutoff)} — ${name}</title>
+  const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${dataPorExtensoEN(cutoff)} — ${escaparHtml(name)}</title>
   <style>
     body { font-family: Georgia, "Times New Roman", serif; max-width: 700px; margin: 40px auto; color: #000; padding: 0 20px; }
     .timbre { display:flex; align-items:center; gap:13px; border-bottom:2px solid #000;
@@ -130,22 +130,22 @@ export async function GET(req: NextRequest) {
     </div>
   </div>
 
-  <h1>${name}</h1>
+  <h1>${escaparHtml(name)}</h1>
   <h2>Balance Sheet (simplified) — as of ${dataPorExtensoEN(cutoff)}</h2>
 
   <h3>Assets</h3>
   <table>
-    ${cashAccounts.map(b => `<tr><td>🏦 ${b.name} <span class="muted">(as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
+    ${cashAccounts.map(b => `<tr><td>🏦 ${escaparHtml(b.name)} <span class="muted">(as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
     ${cashAccounts.length === 0 ? '<tr><td class="muted">No bank balances available</td><td></td></tr>' : ''}
-    ${Object.entries(assetMoves).map(([c, v]) => `<tr><td>${c} <span class="muted">(purchases, ${rotuloDoAno})</span></td><td class="r">${money(v)}</td></tr>`).join('')}
+    ${Object.entries(assetMoves).map(([c, v]) => `<tr><td>${escaparHtml(c)} <span class="muted">(purchases, ${rotuloDoAno})</span></td><td class="r">${money(v)}</td></tr>`).join('')}
     <tr class="total"><td>Total Assets</td><td class="r">${money(totalAssets)}</td></tr>
   </table>
 
   <h3>Liabilities</h3>
   <table>
-    ${cardAccounts.map(b => `<tr><td>💳 ${b.name} <span class="muted">(balance as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
+    ${cardAccounts.map(b => `<tr><td>💳 ${escaparHtml(b.name)} <span class="muted">(balance as of ${b.asOf})</span></td><td class="r">${money(b.balance!)}</td></tr>`).join('')}
     ${cardAccounts.length === 0 ? '<tr><td class="muted">No credit card balances available</td><td></td></tr>' : ''}
-    ${Object.entries(liabilityMoves).map(([c, v]) => `<tr><td class="muted">${c} — payments made, ${rotuloDoAno} (informational)</td><td class="r muted">${money(v)}</td></tr>`).join('')}
+    ${Object.entries(liabilityMoves).map(([c, v]) => `<tr><td class="muted">${escaparHtml(c)} — payments made, ${rotuloDoAno} (informational)</td><td class="r muted">${money(v)}</td></tr>`).join('')}
     <tr class="total"><td>Total Liabilities</td><td class="r">${money(totalLiab)}</td></tr>
   </table>
 

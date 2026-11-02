@@ -14,6 +14,7 @@ import { useState } from 'react'
 import SeletorPeriodo from '@/components/SeletorPeriodo'
 import { periodoDoPreset, periodoValido, anoDe, type Periodo } from '@/lib/periodo-relatorio'
 import { dataDaFirma } from '@/lib/dia-da-firma'
+import { limiteDo1099 } from '@/lib/relatorio-1099'
 
 const T: Record<string, any> = {
   en: {
@@ -22,7 +23,7 @@ const T: Record<string, any> = {
     pnl: 'Profit & Loss (P&L)', pnlDesc: 'Income, cost of goods and expenses in the period',
     bs: 'Balance Sheet', bsDesc: 'What the business owns, what it owes and the equity at the end of the period',
     vendors: 'Vendors and customers', vendorsDesc: 'How much was paid to each vendor and received from each customer in the period',
-    f1099: '1099 — contractors', f1099Desc: 'Who was paid $600 or more for services in the calendar year',
+    f1099: '1099 — contractors', f1099Desc: (limite: string) => `Who was paid ${limite} or more in the accounts marked for 1099, in the calendar year`,
     note: 'These reports are for reference and reflect what has already been checked and posted to the books — recent activity still under review may not appear. Found something that needs fixing? Send us a message and our team will correct it.',
     nota1099: (ano: number) => `1099 is by calendar year: ${ano}`,
     seletor: { presets: { este_mes: 'This month', mes_passado: 'Last month', ultimo_trimestre: 'Last quarter', este_ano: 'This year', ano_passado: 'Last year' }, de: 'from', ate: 'to', invalido: 'Invalid period: the start date must come before the end date.' },
@@ -33,7 +34,7 @@ const T: Record<string, any> = {
     pnl: 'Demonstrativo de Resultado (P&L)', pnlDesc: 'Receitas, custos e despesas do período',
     bs: 'Balanço Patrimonial (Balance Sheet)', bsDesc: 'O que a empresa tem, o que deve e o patrimônio no fim do período',
     vendors: 'Fornecedores e clientes', vendorsDesc: 'Quanto foi pago a cada fornecedor e recebido de cada cliente no período',
-    f1099: '1099 — prestadores de serviço', f1099Desc: 'Quem recebeu US$ 600 ou mais em serviços no ano-calendário',
+    f1099: '1099 — prestadores de serviço', f1099Desc: (limite: string) => `Quem recebeu ${limite} ou mais nas contas marcadas para o 1099, no ano-calendário`,
     note: 'Os relatórios são somente para consulta e refletem o que já foi conferido e lançado nos livros — movimentações recentes em revisão podem não aparecer. Encontrou algo que precisa de ajuste? Fale com a gente pelo chat que nossa equipe corrige.',
     nota1099: (ano: number) => `O 1099 é por ano-calendário: ${ano}`,
     seletor: { presets: { este_mes: 'Este mês', mes_passado: 'Mês passado', ultimo_trimestre: 'Último trimestre', este_ano: 'Este ano', ano_passado: 'Ano passado' }, de: 'de', ate: 'até', invalido: 'Período inválido: a data inicial tem de vir antes da final.' },
@@ -44,7 +45,7 @@ const T: Record<string, any> = {
     pnl: 'Estado de Resultados (P&L)', pnlDesc: 'Ingresos, costos y gastos del período',
     bs: 'Balance General', bsDesc: 'Lo que la empresa tiene, lo que debe y el patrimonio al cierre del período',
     vendors: 'Proveedores y clientes', vendorsDesc: 'Cuánto se pagó a cada proveedor y se recibió de cada cliente en el período',
-    f1099: '1099 — contratistas', f1099Desc: 'Quién recibió US$ 600 o más por servicios en el año calendario',
+    f1099: '1099 — contratistas', f1099Desc: (limite: string) => `Quién recibió ${limite} o más en las cuentas marcadas para el 1099, en el año calendario`,
     note: 'Los reportes son solo para consulta y reflejan lo que ya fue verificado y registrado en los libros — los movimientos recientes en revisión pueden no aparecer. ¿Encontró algo que necesita ajuste? Escríbanos por el chat y nuestro equipo lo corrige.',
     nota1099: (ano: number) => `El 1099 es por año calendario: ${ano}`,
     seletor: { presets: { este_mes: 'Este mes', mes_passado: 'Mes pasado', ultimo_trimestre: 'Último trimestre', este_ano: 'Este año', ano_passado: 'Año pasado' }, de: 'desde', ate: 'hasta', invalido: 'Período inválido: la fecha inicial debe ser anterior a la final.' },
@@ -55,7 +56,7 @@ const T: Record<string, any> = {
     pnl: '损益表 (P&L)', pnlDesc: '所选期间的收入、成本与费用',
     bs: '资产负债表', bsDesc: '期末的资产、负债与权益',
     vendors: '供应商与客户', vendorsDesc: '所选期间向每个供应商支付以及从每个客户收取的金额',
-    f1099: '1099 — 承包商', f1099Desc: '日历年度内服务报酬达到 600 美元及以上的收款人',
+    f1099: '1099 — 承包商', f1099Desc: (limite: string) => `日历年度内在标记为 1099 的账户中收款达到 ${limite} 及以上的收款人`,
     note: '报表仅供参考，反映的是已核对并入账的内容 — 仍在复核中的近期交易可能尚未显示。发现需要调整的地方？请通过聊天告诉我们，我们的团队会更正。',
     nota1099: (ano: number) => `1099 按日历年度：${ano}`,
     seletor: { presets: { este_mes: '本月', mes_passado: '上月', ultimo_trimestre: '上季度', este_ano: '今年', ano_passado: '去年' }, de: '从', ate: '至', invalido: '期间无效：开始日期必须早于结束日期。' },
@@ -66,7 +67,7 @@ const T: Record<string, any> = {
     pnl: 'Compte de résultat (P&L)', pnlDesc: 'Produits, coûts et charges de la période',
     bs: 'Bilan', bsDesc: 'Ce que l’entreprise possède, ce qu’elle doit et les capitaux propres en fin de période',
     vendors: 'Fournisseurs et clients', vendorsDesc: 'Montant payé à chaque fournisseur et reçu de chaque client sur la période',
-    f1099: '1099 — prestataires', f1099Desc: 'Qui a reçu 600 $ ou plus pour des services dans l’année civile',
+    f1099: '1099 — prestataires', f1099Desc: (limite: string) => `Qui a reçu ${limite} ou plus dans les comptes marqués pour le 1099, dans l’année civile`,
     note: 'Ces rapports sont fournis à titre de consultation et reflètent ce qui a déjà été vérifié et comptabilisé — les mouvements récents en cours de révision peuvent ne pas apparaître. Un ajustement est nécessaire ? Écrivez-nous par le chat et notre équipe corrigera.',
     nota1099: (ano: number) => `Le 1099 est par année civile : ${ano}`,
     seletor: { presets: { este_mes: 'Ce mois', mes_passado: 'Mois dernier', ultimo_trimestre: 'Dernier trimestre', este_ano: 'Cette année', ano_passado: 'Année dernière' }, de: 'du', ate: 'au', invalido: 'Période invalide : la date de début doit précéder la date de fin.' },
@@ -83,6 +84,9 @@ export default function ClientReports({ clientId, displayName, lang }: {
   const [periodo, setPeriodo] = useState<Periodo>(() => periodoDoPreset('ano_passado', dataDaFirma(new Date())))
   const ok = periodoValido(periodo.de, periodo.ate)
   const ano1099 = anoDe(periodo.ate)
+  // O limite muda com o ano (600 até 2025, 2000 a partir de 2026): a mesma
+  // tabela do relatório, para a tela não prometer um número e o impresso usar outro.
+  const limite1099 = `$${limiteDo1099(ano1099).toLocaleString('en-US')}`
 
   const open = (path: string, params: Record<string, string>) => {
     if (!ok) return
@@ -125,7 +129,7 @@ export default function ClientReports({ clientId, displayName, lang }: {
       {botao('#2D3278', '📈', t.pnl,     t.pnlDesc,     () => open('pnl', { from: periodo.de, to: periodo.ate }))}
       {botao('#1a6b4a', '⚖️', t.bs,      t.bsDesc,      () => open('balance-sheet', { asOf: periodo.ate }))}
       {botao('#5a1a8a', '🏪', t.vendors, t.vendorsDesc, () => open('vendors', { from: periodo.de, to: periodo.ate, report: 'vendors' }))}
-      {botao('#8a4a0a', '📋', `${t.f1099} · ${ano1099}`, `${t.f1099Desc} — ${t.nota1099(ano1099)}`,
+      {botao('#8a4a0a', '📋', `${t.f1099} · ${ano1099}`, `${t.f1099Desc(limite1099)} — ${t.nota1099(ano1099)}`,
         () => open('vendors', { year: String(ano1099), report: '1099' }))}
 
       <p style={{ fontSize:12, color:'#9aaab0', lineHeight:1.6, marginTop:18 }}>

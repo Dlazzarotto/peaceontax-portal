@@ -1057,6 +1057,29 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   A auditoria exige nas quatro rotas a conversão única, o filtro por data e
   a paginação, recusa `.limit(N≥1000)` nelas e exige o seletor nas três
   telas. 48 casos em `testes/periodo-relatorio.mts`.
+- **O 1099 sai das contas de DESPESA marcadas no plano de contas, com o
+  limite do ANO** (`lib/relatorio-1099.ts`, `bookkeeping_categories.form_1099`,
+  tela Plano de contas, migração `sql/plano-de-contas-1099-v1.sql`). A lista
+  fixa no código (Contract Labor e Subcontractors) deixava de fora advogado,
+  aluguel e toda conta nova. Decisão do sócio: um botão em cada conta de
+  despesa (`expense · cogs · other_expense`), NEC ou MISC, e **toda despesa
+  paga numa conta marcada entra na lista**. O plano de contas é um só, então
+  a marca vale para a carteira inteira; conta que muda para outro grupo perde
+  a marca na mesma gravação. Três regras de lei que a lista não tinha:
+  **o limite muda com o ano** (US$ 600 até 2025, US$ 2.000 para pagamentos a
+  partir de 2026 pelo One Big Beautiful Bill Act, corrigido pela inflação a
+  partir de 2027, e o valor novo entra em `LIMITES` quando o IRS publicar);
+  **cartão de crédito e PayPal, Venmo e Cash App ficam fora** (vão no 1099-K,
+  aparecem à parte), Zelle continua dentro; e **o mesmo prestador com grafia
+  diferente soma junto** (`chaveDoNome`), senão cada metade fica abaixo do
+  limite e o 1099 não sai. Reembolso do prestador abate, sem deixar negativo.
+  A conta é em centavos. A migração marca as duas contas da lista antiga só se
+  ninguém marcou nada, e a tela esconde o botão até ela rodar. De passagem:
+  os quatro impressos passaram a escapar o nome do cliente (digitado por ele
+  no convite), o payee e o nome da conta bancária, e a contagem de uso do plano
+  de contas lia só os primeiros mil lançamentos. A auditoria exige o módulo,
+  recusa a lista fixa e o limite no código da rota, e recusa texto do banco
+  cru nos quatro impressos. 45 casos em `testes/relatorio-1099.mts`.
 - **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
   sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
   saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem

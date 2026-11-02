@@ -115,9 +115,9 @@ export async function GET(req: NextRequest) {
         .map(sb => `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
       const directRow = g.direct !== 0
         ? `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
-      return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${g.cat}</td><td></td></tr>`
+      return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${escaparHtml(g.cat)}</td><td></td></tr>`
         + subRows + directRow
-        + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
+        + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${escaparHtml(g.cat)}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
     }).join('')
 
   const income   = group('income')
@@ -163,7 +163,7 @@ export async function GET(req: NextRequest) {
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
-<title>P&L ${period} — ${displayName}</title>
+<title>P&L ${period} — ${escaparHtml(displayName)}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
@@ -199,7 +199,7 @@ export async function GET(req: NextRequest) {
 
 ${barra.html}
 <div class="sheet">
-  <h1>${displayName}</h1>
+  <h1>${escaparHtml(displayName)}</h1>
   <h2>Profit and Loss</h2>
   <h3>${period} &middot; Cash Basis</h3>
 
