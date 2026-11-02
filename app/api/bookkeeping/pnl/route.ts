@@ -1,4 +1,5 @@
-// GET /api/bookkeeping/pnl?clientId=...&year=2020[&month=9]
+// GET /api/bookkeeping/pnl?clientId=...&from=YYYY-MM-DD&to=YYYY-MM-DD
+//   (ou year=YYYY[&month=M], como sempre aceitou — lib/periodo-relatorio.ts converte)
 // Gera o P&L (cash-basis) em HTML pronto para imprimir/salvar PDF.
 // Cada conta é um link para o detalhe (category-detail), na mesma aba.
 // Baseado no registro já aprovado (status approved/reviewed): o que ainda
@@ -8,6 +9,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
 import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { periodoDosParametros, rotuloDoPeriodo } from '@/lib/periodo-relatorio'
+import { todasAsLinhas } from '@/lib/paginar'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -30,9 +33,12 @@ export async function GET(req: NextRequest) {
 
   const sp = req.nextUrl.searchParams
   const clientId = sp.get('clientId')
-  const year = parseInt(sp.get('year') || '')
-  const month = sp.get('month') ? parseInt(sp.get('month')!) : null
-  if (!clientId || !year) return NextResponse.json({ error: 'clientId e year obrigatórios' }, { status: 400 })
+  // O período vem de from/to (datas) ou de year[&month], como sempre; a
+  // conversão é UMA (lib/periodo-relatorio.ts) e período que não faz sentido
+  // é recusa, não "o ano todo".
+  const periodo = periodoDosParametros(k => sp.get(k))
+  if (!clientId || !periodo) return NextResponse.json({ error: 'clientId e período (from/to ou year[&month]) obrigatórios' }, { status: 400 })
+  const { de, ate } = periodo
   // Acesso: equipe (com permissão neste cliente) OU o próprio cliente business, pelo portal
   let isClient = false
   if (auth?.isStaff) {
@@ -51,27 +57,29 @@ export async function GET(req: NextRequest) {
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
-  let q = db.from('bank_transactions')
-    .select('tx_date, category, amount, status')
-    .eq('client_id', clientId)
-    .eq('fiscal_year', year)
-    .in('status', ['approved', 'reviewed'])
-    .limit(10000)
-  const { data: txs } = await q
+  // Filtro por DATA, não por fiscal_year: fiscal_year nasce de tx_date (toda
+  // importação grava o ano da data), então no ano inteiro dá o mesmo — e num
+  // trimestre ou mês só a data serve. Em páginas de 1000: `.limit(10000)` era
+  // truncamento silencioso (teto do PostgREST), e o P&L saía ERRADO para
+  // cliente com mais de mil lançamentos aprovados no período.
+  const { data: txs, error: errTxs } = await todasAsLinhas<{ tx_date: string; category: string | null; amount: number; status: string }>(() =>
+    db.from('bank_transactions')
+      .select('tx_date, category, amount, status')
+      .eq('client_id', clientId)
+      .gte('tx_date', de).lte('tx_date', ate)
+      .in('status', ['approved', 'reviewed']))
+  // Consulta que falha não vira "No income recorded" — isso é uma afirmação.
+  if (errTxs) return NextResponse.json({ error: `P&L não gerado — falhou ao ler os lançamentos: ${errTxs.message}` }, { status: 500 })
 
-  const filtered = (txs || []).filter(t =>
-    month ? new Date(t.tx_date + 'T12:00:00Z').getUTCMonth() + 1 === month : true
-  )
-
-  // Pendentes (aviso de P&L incompleto)
-  let pq = db.from('bank_transactions')
+  // Pendentes (aviso de P&L incompleto), no MESMO período. Contagem que
+  // falha não some: vira aviso, senão o P&L sairia como se estivesse completo.
+  const { count: pendingCount, error: errPend } = await db.from('bank_transactions')
     .select('id', { count: 'exact', head: true })
-    .eq('client_id', clientId).eq('fiscal_year', year).eq('status', 'pending')
-  const { count: pendingCount } = await pq
+    .eq('client_id', clientId).gte('tx_date', de).lte('tx_date', ate).eq('status', 'pending')
 
   // Agrega por categoria
   const byCat: Record<string, number> = {}
-  for (const t of filtered) {
+  for (const t of txs) {
     const cat = t.category || 'Other'
     byCat[cat] = (byCat[cat] || 0) + Number(t.amount)
   }
@@ -107,9 +115,9 @@ export async function GET(req: NextRequest) {
         .map(sb => `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(`${g.cat}: ${sb.cat}`, sb.cat)}</td><td class="r" style="font-weight:500">${money(sb.val)}</td></tr>`).join('')
       const directRow = g.direct !== 0
         ? `<tr><td style="padding:5px 14px 5px 46px; ">\u21B3 ${catLink(g.cat, '(direct)')}</td><td class="r" style="font-weight:500">${money(g.direct)}</td></tr>` : ''
-      return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${g.cat}</td><td></td></tr>`
+      return `<tr><td style="padding:6px 14px 2px 30px; font-weight:700">${escaparHtml(g.cat)}</td><td></td></tr>`
         + subRows + directRow
-        + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${g.cat}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
+        + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${escaparHtml(g.cat)}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
     }).join('')
 
   const income   = group('income')
@@ -131,8 +139,8 @@ export async function GET(req: NextRequest) {
   const totalOtherExp = sum(otherExp)
   const netProfit     = operProfit + totalOtherInc + totalOtherExp
 
-  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
-  const period = month ? `${MONTHS[month-1]} ${year}` : `Year ${year}`
+  // "2025", "October 2026", "Q3 2026" ou as duas datas — lib/periodo-relatorio.ts
+  const period = rotuloDoPeriodo(de, ate)
   const displayName = client?.business_name || client?.name || ''
   // Padrão QuickBooks: despesas aparecem como valor positivo na coluna;
   // o sinal de menos fica só para valores realmente negativos (ex.: prejuízo).
@@ -142,7 +150,7 @@ export async function GET(req: NextRequest) {
   }
 
   const detailUrl = (cat: string) =>
-    `/api/bookkeeping/category-detail?clientId=${clientId}&year=${year}${month ? `&month=${month}` : ''}&category=${encodeURIComponent(cat)}`
+    `/api/bookkeeping/category-detail?clientId=${clientId}&from=${de}&to=${ate}&category=${encodeURIComponent(cat)}`
   const catLink = (cat: string, label?: string) =>
     // Mesma aba: o detalhe volta ao P&L pelo botão "Voltar" ou pelo voltar do navegador
     `<a href="${escaparHtml(detailUrl(cat))}" style="color:inherit; text-decoration:none; border-bottom:1px dotted #8a9ab0" title="Abrir os lançamentos desta conta">${escaparHtml(label ?? cat)}</a>`
@@ -155,7 +163,7 @@ export async function GET(req: NextRequest) {
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
-<title>P&L ${period} — ${displayName}</title>
+<title>P&L ${period} — ${escaparHtml(displayName)}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: Georgia, "Times New Roman", serif; color:#000; background:#fff; padding:24px; font-size:14px; }
@@ -191,7 +199,7 @@ export async function GET(req: NextRequest) {
 
 ${barra.html}
 <div class="sheet">
-  <h1>${displayName}</h1>
+  <h1>${escaparHtml(displayName)}</h1>
   <h2>Profit and Loss</h2>
   <h3>${period} &middot; Cash Basis</h3>
 
@@ -224,7 +232,8 @@ ${barra.html}
     ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val, true, n.cat).slice(4)}`).join('')}` : ''}
   </table>
 
-  ${(pendingCount ?? 0) > 0 ? `<div class="warn">⚠️ ${pendingCount} transactions are still uncategorized for ${year} — this P&amp;L is preliminary.</div>` : ''}
+  ${errPend ? `<div class="warn">⚠️ Could not count the uncategorized transactions (${escaparHtml(errPend.message)}) — treat this P&amp;L as preliminary.</div>`
+    : (pendingCount ?? 0) > 0 ? `<div class="warn">⚠️ ${pendingCount} transactions are still uncategorized in this period — this P&amp;L is preliminary.</div>` : ''}
 
   <div class="foot">
     ${FIRM.name} &middot; ${FIRM.address} &middot; ${FIRM.phone}<br>

@@ -1032,6 +1032,86 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   instante fica de fora nem conta duas vezes na emenda de um mês com o outro.
   Os dois domingos de horário de verão estão nos testes (dia de 23 e de 25
   horas).
+- **Relatório contábil escolhe o período por UM seletor, filtra por DATA e lê
+  TUDO** (`lib/periodo-relatorio.ts`, `components/SeletorPeriodo.tsx`,
+  `lib/paginar.ts`; rotas `pnl`, `balance-sheet`, `vendors`,
+  `category-detail`). Cada rota lia o período do seu jeito (`year`,
+  `year+month`, 31/12 fixo), a tela da equipe só oferecia ano e mês, o portal
+  só o ano, e o Financeiro tinha três atalhos próprios por `toISOString()` —
+  UTC: às 21h de Malden "este mês" já era o mês seguinte. Agora as três telas
+  usam o mesmo componente: este mês · mês passado · último trimestre (o último
+  COMPLETO) · este ano · ano passado · datas livres, com "hoje" pelo dia do
+  escritório. As rotas recebem `from`/`to` (o Balanço, `asOf`) e continuam
+  aceitando `year[&month]`; a conversão é UMA (`periodoDosParametros` e
+  `dataDeCorteDosParametros`), e período que não faz sentido é 400, não "o
+  ano todo". **O filtro é por `tx_date`, não por `fiscal_year`**:
+  `fiscal_year` nasce de `tx_date.slice(0, 4)` em toda importação, então no
+  ano inteiro dá o mesmo e num trimestre só a data serve — lançamento sem
+  `fiscal_year` (que ficava fora) passa a entrar. **O 1099 é por
+  ano-calendário** (lei): período livre vira o ano do FIM, e a tela e o
+  impresso dizem qual; a contagem do contrato idem. **E as quatro rotas liam
+  com `.limit(10000)`/`.limit(20000)`, que o PostgREST corta em 1000 sem
+  avisar** — P&L, Balanço e 1099 saíam TRUNCADOS para cliente com mais de mil
+  lançamentos aprovados no período, sem aviso nenhum; agora leem em páginas
+  (`todasAsLinhas`), e consulta que falha é 500, não "No income recorded".
+  A auditoria exige nas quatro rotas a conversão única, o filtro por data e
+  a paginação, recusa `.limit(N≥1000)` nelas e exige o seletor nas três
+  telas. 48 casos em `testes/periodo-relatorio.mts`.
+- **O 1099 sai das contas de DESPESA marcadas no plano de contas, com o
+  limite do ANO** (`lib/relatorio-1099.ts`, `bookkeeping_categories.form_1099`,
+  tela Plano de contas, migração `sql/plano-de-contas-1099-v1.sql`). A lista
+  fixa no código (Contract Labor e Subcontractors) deixava de fora advogado,
+  aluguel e toda conta nova. Decisão do sócio: um botão em cada conta de
+  despesa (`expense · cogs · other_expense`), NEC ou MISC, e **toda despesa
+  paga numa conta marcada entra na lista**. O plano de contas é um só, então
+  a marca vale para a carteira inteira; conta que muda para outro grupo perde
+  a marca na mesma gravação. Três regras de lei que a lista não tinha:
+  **o limite muda com o ano** (US$ 600 até 2025, US$ 2.000 para pagamentos a
+  partir de 2026 pelo One Big Beautiful Bill Act, corrigido pela inflação a
+  partir de 2027, e o valor novo entra em `LIMITES` quando o IRS publicar);
+  **cartão de crédito e PayPal, Venmo e Cash App ficam fora** (vão no 1099-K,
+  aparecem à parte), Zelle continua dentro; e **o mesmo prestador com grafia
+  diferente soma junto** (`chaveDoNome`), senão cada metade fica abaixo do
+  limite e o 1099 não sai. Reembolso do prestador abate, sem deixar negativo.
+  A conta é em centavos. A migração marca as duas contas da lista antiga só se
+  ninguém marcou nada, e a tela esconde o botão até ela rodar. De passagem:
+  os quatro impressos passaram a escapar o nome do cliente (digitado por ele
+  no convite), o payee e o nome da conta bancária, e a contagem de uso do plano
+  de contas lia só os primeiros mil lançamentos. A auditoria exige o módulo,
+  recusa a lista fixa e o limite no código da rota, e recusa texto do banco
+  cru nos quatro impressos. 45 casos em `testes/relatorio-1099.mts`.
+- **Plano de contas: editar é UMA transação, e a conta que o código grava
+  não muda** (`lib/plano-de-contas.ts`, `/api/bookkeeping/categories`, tela
+  `/dashboard/accounts`, migrações `sql/plano-de-contas-edicao-v1.sql` e
+  `-funcao-v1.sql`). O lançamento guarda o NOME da conta, e o P&L trata nome
+  que o plano não tem como **despesa** (`kindMap[c] || 'expense'`). A rota
+  renomeava a conta e depois, em idas separadas e sem olhar erro, os
+  lançamentos, as regras e as sub-contas: um renomear pela metade mandava a
+  receita da conta antiga para as despesas de **todos** os clientes, com a
+  tela dizendo "conta atualizada". Apagar tinha o mesmo desenho, e a sub-conta
+  era achada por `LIKE`, que lê `_` e `%` do nome como curinga. Agora cada
+  conta tem **Editar** (nome, conta-mãe, grupo e a caixa **Emitir 1099**, com NEC ou MISC), e cada ato é UMA função
+  do banco — `editar_conta_do_plano`, `situacao_da_conta_do_plano`,
+  `apagar_conta_do_plano` —: trava a linha, recusa se a conta mudou desde a
+  leitura (`mudou_no_meio`), leva lançamentos, regras, contas a pagar e
+  sub-contas juntos e grava a trilha (`bookkeeping_category_audit`) na mesma
+  transação. Testado no PG 16 com uma falha forçada no meio (nada fica) e com
+  duas sessões editando a mesma conta (a segunda espera a trava e recusa).
+  **A conta que o código grava pelo nome não muda de nome, de grupo nem sai do
+  plano** (`CONTAS_DO_SISTEMA`: `Transfer` e `Credit Card Payment` do motor,
+  as três do caixa pelas constantes de `deposito-match`) — renomear
+  `Transfer` faria toda transferência nova virar despesa. A auditoria casa
+  todo `category:` com nome fixo dos pontos que gravam com essa lista, e
+  âncora perdida é FALHA. Sub-conta fica no grupo da mãe (o P&L agrupa pelo
+  prefixo), mudar o grupo da mãe leva as filhas, e conta com filhas não vira
+  sub-conta. **Conta em uso** mudando de nome ou de grupo pede motivo; mudando
+  de **grupo** pede também a senha, porque muda o P&L e o Balanço de anos já
+  declarados (princípio 3). Desativar exige zero lançamento E zero regra (a
+  regra seguiria lançando na conta inativa); apagar conta em uso exige
+  destino do mesmo grupo e ATIVO (o Balanço só lê conta ativa). Nome
+  repetido é recusado sem diferença de maiúscula e acento. A tela chama
+  `planoDaEdicao` e `pedidoDoFormulario`, as mesmas da rota, para mostrar
+  antes o que muda. 123 casos em `testes/plano-de-contas.mts`.
 - **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
   sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
   saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem

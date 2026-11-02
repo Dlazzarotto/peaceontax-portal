@@ -125,8 +125,185 @@ checar('A sessao do Stripe nasce pelo valor decidido', 'app/api/billing/stripe-c
 titulo('RELATORIOS: NADA DE FORA ENTRA NO SCRIPT')
 checar('Barra: destino vai em atributo, nao dentro do script', 'lib/relatorio-barra.ts', 'data-destino=', 'parametro com </script> injetaria codigo na sessao da equipe')
 checar('Barra: escapa o que sai em HTML', 'lib/relatorio-barra.ts', 'export function escaparHtml', 'nome de conta da URL viraria HTML')
-checar('Detalhe da conta: mes validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', 'const month = mesBruto &&', 'mes cru voltaria para o link do Voltar')
+// O periodo (from/to ou year/month) e remontado na URL do "Voltar ao P&L":
+// so entra o que periodoDosParametros validou (data que existe), nunca o
+// parametro cru.
+checar('Detalhe da conta: periodo validado antes de virar URL', 'app/api/bookkeeping/category-detail/route.ts', /const periodo = periodoDosParametros\(/, 'from/to crus voltariam para o link do Voltar')
+recusar('Detalhe da conta: o link do Voltar nao leva parametro cru', 'app/api/bookkeeping/category-detail/route.ts', /pnlUrl[\s\S]{0,200}?sp\.get\(/, 'so data validada entra na URL do P&L')
 checar('Detalhe da conta: categoria escapada', 'app/api/bookkeeping/category-detail/route.ts', 'escaparHtml(category)', 'XSS refletido pelo nome da conta')
+
+titulo('RELATORIO CONTABIL: UM PERIODO, FILTRO POR DATA, TODAS AS LINHAS')
+// P&L, Balanco, Fornecedores/1099 e o detalhe por conta liam com
+// .limit(10000)/.limit(20000) -- o PostgREST corta em 1000 e NAO avisa, e o
+// numero de imposto saia truncado em silencio para cliente com mais de mil
+// lancamentos aprovados no ano. E cada rota lia o periodo do seu jeito (year,
+// year+month, 31/12 fixo), enquanto a tela oferecia so ano e mes. Agora a
+// conversao do periodo e UMA (lib/periodo-relatorio.ts: from/to ou year, e
+// asOf no Balanco, que e "em tal data"), o filtro e por tx_date (fiscal_year
+// nasce dela e so sabe o ano) e a leitura e paginada (lib/paginar.ts). As
+// tres telas que abrem relatorio usam o mesmo seletor, senao a tela oferece
+// um periodo que a rota nao entende.
+{
+  const ROTAS = {
+    'app/api/bookkeeping/pnl/route.ts':             /periodoDosParametros\(/,
+    'app/api/bookkeeping/category-detail/route.ts': /periodoDosParametros\(/,
+    'app/api/bookkeeping/vendors/route.ts':         /periodoDosParametros\(/,
+    'app/api/bookkeeping/balance-sheet/route.ts':   /dataDeCorteDosParametros\(/,
+  }
+  for (const [arq, periodo] of Object.entries(ROTAS)) {
+    const nome = arq.split('/').slice(-2)[0]
+    if (!existsSync(join(raiz, arq))) { falta(`${nome}: periodo unico e leitura paginada`, `arquivo inexistente: ${arq}`); continue }
+    // Sem comentarios: o comentario que explica o defeito cita `.limit(10000)`
+    const codigo = readFileSync(join(raiz, arq), 'utf8').split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+    if (!periodo.test(codigo)) falta(`${nome} le o periodo por lib/periodo-relatorio`, 'rota com conta propria de periodo diverge da tela e das irmas')
+    else if (/\.limit\(\s*\d{4,}\s*\)/.test(codigo)) falta(`${nome} le todas as linhas`, '.limit(N) a partir de 1000 e truncamento silencioso: o PostgREST para em 1000')
+    else if (/\.eq\(\s*'fiscal_year'/.test(codigo)) falta(`${nome} filtra por tx_date`, 'fiscal_year so sabe o ano; trimestre e mes precisam da data')
+    // O generico (`todasAsLinhas<T>(`) fica entre o nome e o parentese
+    else if (!/todasAsLinhas(<[\s\S]{0,200}?>)?\s*\(/.test(codigo)) falta(`${nome} le todas as linhas`, 'sem todasAsLinhas a leitura para em 1000')
+    else ok(`${nome}: periodo unico, filtro por data e leitura paginada`)
+  }
+  for (const tela of ['components/BookkeepingTab.tsx', 'components/portal/ClientReports.tsx', 'app/dashboard/billing/page.tsx']) {
+    checar(`${tela.split('/').pop()} usa o seletor de periodo da casa`, tela, /<SeletorPeriodo\b/, 'periodo calculado na tela diverge do que a rota entende')
+  }
+  // "Hoje" dos atalhos e o dia do ESCRITORIO, nao o relogio do navegador em UTC
+  recusar('O seletor nao usa toISOString para "hoje"', 'components/SeletorPeriodo.tsx', /toISOString\(/, 'as 21h de Malden "este mes" ja era o mes seguinte')
+  checar('O seletor usa o dia da firma', 'components/SeletorPeriodo.tsx', /dataDaFirma\(/, 'o atalho tem de nascer no dia do escritorio')
+}
+
+titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
+// A lista fixa no codigo (Contract Labor e Subcontractors) deixava de fora
+// advogado, aluguel e toda conta nova, e ninguem fora do codigo mudava isso.
+// Decisao do socio: um botao em cada conta de despesa do plano de contas
+// (bookkeeping_categories.form_1099), e TODA despesa paga na conta marcada
+// entra. Tres regras de lei que a lista nao tinha: o limite muda com o ano
+// (600 ate 2025, 2000 a partir de 2026), cartao de credito e PayPal, Venmo e
+// Cash App vao no 1099-K e ficam fora, e grafias do mesmo prestador somam
+// juntas. A regra mora em lib/relatorio-1099.ts, testada.
+{
+  const V = 'app/api/bookkeeping/vendors/route.ts'
+  recusar('O 1099 nao usa lista fixa de contas', V, /CATS_1099/, 'a lista fixa ignora a marca que o socio poe no plano de contas')
+  checar('O 1099 apura pelo modulo puro', V, /apurar1099\(\{/, 'conta de 1099 feita na rota diverge da testada')
+  recusar('A rota do 1099 nao fixa o limite', V, />=\s*(600|2000)\b/, 'o limite muda com o ano: 600 ate 2025, 2000 a partir de 2026')
+  checar('O limite do 1099 muda em 2026', 'lib/relatorio-1099.ts', /desde:\s*2026,\s*valor:\s*2000/, 'pagamento a partir de 2026 tem limite de US$ 2.000')
+  checar('O cartao de credito fica fora do 1099', V, /type === 'credit_card'/, 'pagamento no cartao vai no 1099-K, nao no NEC/MISC')
+  // A RECUSA, nao a mencao: a funcao aparece tambem na linha que tira a marca
+  // de quem muda de grupo, e a primeira versao passava com a recusa desligada.
+  // A regra saiu da rota para lib/plano-de-contas.ts (a tela e a rota chamam
+  // a mesma), e o banco recusa de novo na gravacao.
+  checar('A marca do 1099 so vai em conta de despesa', 'lib/plano-de-contas.ts',
+         /if \(f && !ehContaDeDespesa\(kind\)\) return recusa\('Só conta de despesa vai para o 1099\.'\)/,
+         'receita marcada para o 1099 nao faz sentido')
+  checar('O banco tambem recusa 1099 fora de despesa', 'sql/plano-de-contas-edicao-funcao-v1.sql',
+         /p_form_1099 is not null and \(p_form_1099 not in \('NEC', 'MISC'\) or not v_despesa\)/,
+         'a gravacao aceitaria a marca numa conta de receita')
+  checar('A tela marca o 1099 pela rota', 'app/dashboard/accounts/page.tsx', /form1099:/, 'botao do 1099 sem chamada a rota')
+}
+
+titulo('PLANO DE CONTAS: EDITAR E UMA TRANSACAO, E A CONTA DO SISTEMA NAO MUDA')
+// O lancamento guarda o NOME da conta, e o P&L trata nome que o plano nao tem
+// como DESPESA (`kindMap[c] || 'expense'`). A rota renomeava a conta e depois,
+// em idas separadas e sem olhar erro, os lancamentos, as regras e as
+// sub-contas: um renomear pela metade mandava a receita da conta antiga para
+// as despesas de todos os clientes, e a tela dizia "conta atualizada". Apagar
+// tinha o mesmo desenho. E renomear 'Transfer' ou 'Credit Card Payment' fazia
+// o motor seguir gravando o nome antigo: toda transferencia nova virava
+// despesa. Agora a regra e de lib/plano-de-contas.ts (a tela e a rota chamam a
+// mesma) e a gravacao e uma funcao do banco, com trilha, tudo ou nada.
+{
+  const R = 'app/api/bookkeeping/categories/route.ts'
+  const T = 'app/dashboard/accounts/page.tsx'
+  const M = 'lib/plano-de-contas.ts'
+  const F = 'sql/plano-de-contas-edicao-funcao-v1.sql'
+  checar('Editar passa pela regra testada', R, /planoDaEdicao\(\{/, 'regra de edicao feita na rota diverge da que a tela mostra e o teste confere')
+  checar('Editar grava numa transacao do banco', R, /db\.rpc\('editar_conta_do_plano'/, 'renomear em idas separadas deixa o livro pela metade quando uma falha')
+  checar('Apagar passa pela regra e pela transacao', R, /planoDaRemocao\(\{[\s\S]*?db\.rpc\('apagar_conta_do_plano'/, 'apagar com o movimento em idas separadas deixa lancamento com nome de conta que sumiu')
+  checar('Desativar confere lancamento E regra, e grava pela transacao', R,
+         /recusaDaDesativacao\([\s\S]{0,400}?db\.rpc\('situacao_da_conta_do_plano'/,
+         'regra apontando para conta inativa segue lancando nela a cada importacao')
+  // Pela AUSENCIA: a rota nao mexe em lancamento, regra, conta a pagar nem no
+  // proprio plano por fora da funcao (o insert do POST e a unica escrita).
+  recusar('A rota nao reescreve lancamento, regra ou conta a pagar por conta propria', R,
+          /\.from\('(bank_transactions|bookkeeping_rules|firm_bills)'\)\s*\.(update|delete|insert)\(/,
+          'a cascata fora da transacao e o defeito que isto conserta')
+  recusar('A rota nao altera nem apaga conta por fora da transacao', R,
+          /\.from\('bookkeeping_categories'\)\s*\.(update|delete)\(/,
+          'conta alterada sem a cascata e sem a trilha')
+  recusar('Sub-conta nao se acha por LIKE', R, /\.like\(\s*'name'/,
+          'LIKE le "_" e "%" do nome como curinga: renomear Meals_Entertainment levava MealsXEntertainment junto')
+  checar('A funcao acha sub-conta pelo prefixo exato', F, /left\(f\.name, char_length\(v_prefixo\)\) = v_prefixo/,
+         'sem o prefixo exato a cascata pega conta de outro nome')
+  {
+    const sql = existsSync(join(raiz, F)) ? readFileSync(join(raiz, F), 'utf8') : ''
+    const contar = re => (sql.match(re) || []).length
+    contar(/for update;/g) >= 3 && contar(/'mudou_no_meio'/g) >= 3
+      ? ok('As tres funcoes travam a conta e recusam se ela mudou desde a leitura')
+      : falta('As tres funcoes travam a conta e recusam se ela mudou desde a leitura',
+              'duas edicoes ao mesmo tempo deixariam os lancamentos com o nome de uma e a conta com o da outra')
+    contar(/insert into bookkeeping_category_audit/g) >= 3
+      ? ok('As tres funcoes gravam a trilha na mesma transacao')
+      : falta('As tres funcoes gravam a trilha na mesma transacao', 'mudanca no plano de todos os clientes sem rastro (principio 2)')
+    const motivoNasDuas = contar(/'motivo_obrigatorio'/g) >= 2
+    motivoNasDuas
+      ? ok('O banco recusa editar ou apagar conta em uso sem motivo')
+      : falta('O banco recusa editar ou apagar conta em uso sem motivo', 'trilha de mudanca no livro nascendo sem o porque')
+  }
+  checar('Conta em uso mudando pede motivo', R, /if \(plano\.exigeMotivo && motivo\.length < MOTIVO_MINIMO\)/, 'a mudanca alcanca o livro de todos os clientes')
+  checar('Mudar o grupo de conta em uso pede a senha', R, /if \(plano\.exigeSenha\) \{\s*const recusa = await conferirSenha\(/,
+         'o grupo muda o P&L e o Balanco de anos ja declarados (principio 3)')
+  checar('A senha vem do grupo que muda numa conta em uso', M, /const exigeSenha = mudouGrupo && lancamentos > 0/,
+         'pedir senha onde nao precisa ensina a digitar sem ler; nao pedir onde precisa e o principio 3 quebrado')
+  checar('A tela mostra a previa pela mesma regra da rota', T, /planoDaEdicao\(\{/, 'a tela que calcula por conta propria promete o que a rota recusa')
+  checar('Cada conta da lista tem o Editar', T, /lista\.map\(c => \{[\s\S]*?abrirEdicao\(c\)[\s\S]{0,200}?Editar/, 'o botao de editar e por conta, na propria linha')
+  // As contas que o CODIGO grava pelo nome: todo literal que os pontos que
+  // escrevem `category:` usam tem de estar na lista do sistema. Pega o motor
+  // ganhando uma conta nova sem a trava. Nao segue variavel (`cat`, `cat0`):
+  // os literais delas sao os mesmos dois, ja na lista.
+  {
+    const mod = existsSync(join(raiz, M)) ? readFileSync(join(raiz, M), 'utf8') : ''
+    const bloco = (/export const CONTAS_DO_SISTEMA[^{]*\{([\s\S]*?)\n\}/.exec(mod) || [])[1] || ''
+    const literais = new Set([...bloco.matchAll(/^\s*'([^']+)':/gm)].map(m => m[1]))
+    const constantes = new Set([...bloco.matchAll(/^\s*\[(CONTA_[A-Z_]+)\]:/gm)].map(m => m[1]))
+    const usados = [], ids = []
+    for (const arq of ['lib/apply-rules.ts', 'app/api/bookkeeping/categorize/route.ts', 'app/api/bookkeeping/rules/route.ts',
+                       'app/api/bookkeeping/transfer-match/route.ts', 'lib/caixa-recebimentos.ts', 'lib/deposito-match.ts']) {
+      if (!existsSync(join(raiz, arq))) continue
+      const src = readFileSync(join(raiz, arq), 'utf8')
+      for (const m of src.matchAll(/\bcategory:\s*([^,\n}]+)/g)) {
+        for (const l of m[1].matchAll(/'([^']+)'/g)) usados.push({ nome: l[1], arq })
+        for (const k of m[1].matchAll(/\b(CONTA_[A-Z_]+)\b/g)) ids.push({ nome: k[1], arq })
+      }
+    }
+    if (!bloco || usados.length === 0 || ids.length === 0) {
+      falta('Conta que o codigo grava pelo nome e conta do sistema',
+            'ancora perdida: nao achei CONTAS_DO_SISTEMA ou nenhum `category:` com nome fixo -- a conferencia nao estaria conferindo nada')
+    } else {
+      const soltos = [...usados.filter(u => !literais.has(u.nome)), ...ids.filter(u => !constantes.has(u.nome))]
+      soltos.length === 0
+        ? ok(`Conta que o codigo grava pelo nome e conta do sistema (${new Set(usados.map(u => u.nome)).size} literais, ${new Set(ids.map(u => u.nome)).size} constantes)`)
+        : falta('Conta que o codigo grava pelo nome e conta do sistema',
+                `fora de CONTAS_DO_SISTEMA: ${soltos.map(s => `"${s.nome}" (${s.arq})`).join(', ')} -- renomear a conta faria o codigo gravar um nome que o plano nao tem, e o P&L o contaria como despesa`)
+    }
+  }
+  checar('A rota recusa nome repetido sem diferenca de caixa ao criar', R, /chaveDaConta\(c\.name\) === chaveDaConta\(clean\)/,
+         '"office supplies" ao lado de "Office Supplies" divide o P&L de todos os clientes em duas linhas')
+}
+
+titulo('IMPRESSO NAO PUBLICA TEXTO DO BANCO SEM ESCAPAR')
+// O nome do cliente e digitado por ele no aceite do convite, o payee nasce da
+// descricao do extrato e o nome da conta bancaria vem do Plaid. Os quatro
+// impressos interpolavam isso cru no HTML: um nome com <script> rodava na
+// sessao de quem abrisse o relatorio, inclusive a do socio.
+// O padrao olha a POSICAO de texto (depois de `>`, do travessao e dos icones),
+// nao qualquer interpolacao: `${g.cat}` dentro do argumento de catLink, que
+// escapa, nao e saida de HTML.
+{
+  const CRU = /(>|— |🏦 |💳 )\s*\$\{\s*(displayName|name|[a-z]\.payee|[a-z]\.name|g\.cat|c)\s*\}/
+  for (const arq of ['app/api/bookkeeping/pnl/route.ts', 'app/api/bookkeeping/balance-sheet/route.ts',
+                     'app/api/bookkeeping/vendors/route.ts', 'app/api/bookkeeping/category-detail/route.ts']) {
+    recusar(`${arq.split('/').slice(-2)[0]} escapa o que vem do banco`, arq, CRU,
+            'nome de cliente, payee ou conta sem escaparHtml vira HTML na sessao da equipe')
+  }
+}
 
 titulo('IMPRESSOS: VOLTAR E CELULAR')
 checar('Barra tem destino fixo alem do Voltar', 'lib/relatorio-barra.ts', 'data-painel=', 'Voltar depende do historico; sem destino fixo nao ha volta garantida')
