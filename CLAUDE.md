@@ -1361,6 +1361,29 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
 - **Fila do bookkeeping são dois números, não um**: `pending` (sem
   classificação) e `auto` (classificado, aguardando aprovação). Somados,
   o painel não se mexe quando a equipe classifica — foi o que aconteceu.
+- **Conciliação bancária: a diferença é UMA conta, e a rota soma pelo FILTRO,
+  nunca por lista de ids na URL** (`lib/conciliacao-bancaria.ts`,
+  `/api/bookkeeping/reconciliation`, `components/ReconcileTab.tsx`). A tela
+  mostrava "diferença ✓ 0.00" e o Concluir recusava "Ainda há diferença de
+  $3635.15": a rota pedia os marcados ao banco com `.in('id', ids)` — 965
+  uuids, ~36 KB de URL —, o gateway recusava, o erro era ignorado e a soma
+  virava ZERO (a "diferença" era só saldo inicial menos saldo final). O
+  Salvar progresso falhava do mesmo jeito (lote de 500 ids, ~18 KB) e com
+  mensagem VAZIA, gravando a conciliação com a soma zerada. E o GET lia com
+  `.limit(5000)`, que o PostgREST corta em mil — em ordem crescente, então
+  os lançamentos mais RECENTES sumiam da lista. Reproduzido com um PostgREST
+  de mentira que recusa URL grande, nos dois sentidos. Agora: tela e rota
+  chamam `apurarConciliacao` (centavos); a rota lê os elegíveis da conta até
+  a data, em páginas (`todasAsLinhas`), e soma os marcados ali; marcado que
+  não está entre os elegíveis (apagado, devolvido à fila, outra data, já
+  noutra conciliação) é RECUSADO com "carregue de novo", não somado calado;
+  a marcação vai em lotes de 100 (`emLotes`, ~3,8 KB) e só depois a
+  conciliação vira `completed` — falha no meio deixa em andamento, nunca
+  fechada pela metade. Toda consulta confere o erro. **Regra que sai daqui:
+  lista de ids em `.in()` vai na URL — com centenas de uuids, filtre pelo
+  que os ids têm em comum ou mande em lotes pequenos.** 19 casos em
+  `testes/conciliacao-bancaria.mts`; a auditoria tem oito conferências,
+  todas sabotadas.
 - **UTF-8 sem BOM, sempre.** O projeto já sofreu com acentos corrompidos
   (o "ã" virando "A" com til mais "£") por arquivos copiados de ZIP e
   editados no Windows. A

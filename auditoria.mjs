@@ -170,6 +170,34 @@ titulo('RELATORIO CONTABIL: UM PERIODO, FILTRO POR DATA, TODAS AS LINHAS')
   checar('O seletor usa o dia da firma', 'components/SeletorPeriodo.tsx', /dataDaFirma\(/, 'o atalho tem de nascer no dia do escritorio')
 }
 
+titulo('CONCILIACAO BANCARIA: A TELA E A ROTA FAZEM A MESMA CONTA')
+// A tela dizia "diferenca 0.00" e a rota recusava "Ainda ha diferenca de
+// $3635.15": a rota pedia os marcados ao banco pelos ids numa URL so, e com 965
+// lancamentos (um ano de conta corrente) o pedido passava do tamanho aceito, a
+// consulta falhava, o erro era ignorado e a soma virava zero. O "Salvar
+// progresso" tambem falhava (lote de 500 ids na URL) com mensagem vazia. Agora
+// a conta e lib/conciliacao-bancaria.ts, nas duas pontas; a rota le os
+// elegiveis pelo FILTRO, paginado; a marcacao vai em lotes de 100.
+{
+  const R = 'app/api/bookkeeping/reconciliation/route.ts'
+  checar('A rota apura pela funcao da conciliacao', R, /apurarConciliacao\(\{/, 'a rota voltaria a somar do seu jeito e discordar da tela')
+  checar('A tela apura pela mesma funcao', 'components/ReconcileTab.tsx', /apurarConciliacao\(\{/, 'a tela voltaria a somar do seu jeito e discordar da rota')
+  recusar('A soma dos marcados nao vai por lista de ids na URL', R, /\.select\('id, amount'\)[\s\S]{0,200}?\.in\('id'/, 'com centenas de ids o pedido passa do tamanho aceito, falha e a soma vira zero')
+  checar('Os elegiveis sao lidos em paginas', R, /todasAsLinhas<any>\(\(\) => db\s*\.from\('bank_transactions'\)/, '.limit(5000) para em mil e corta os lancamentos mais recentes')
+  {
+    // Sem os comentarios: o cabecalho da rota CONTA a historia do `.limit(5000)`.
+    const codigo = existsSync(join(raiz, R))
+      ? readFileSync(join(raiz, R), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+    if (codigo === null) falta('Sem limite que o PostgREST corta', `arquivo inexistente: ${R}`)
+    else /\.limit\(\s*\d{4,}\s*\)/.test(codigo)
+      ? falta('Sem limite que o PostgREST corta', 'o PostgREST devolve no maximo mil linhas e nao avisa')
+      : ok('Sem limite que o PostgREST corta')
+  }
+  checar('A marcacao vai em lotes pequenos', R, /for \(const lote of emLotes\(ids\)\)/, 'lote de 500 ids passava do tamanho da URL e o Salvar falhava')
+  checar('Marcado fora do registro e recusado, nao somado calado', R, /if \(conta\.naoElegiveis\.length\)/, 'lancamento apagado depois de carregar mudaria a soma sem ninguem saber')
+  checar('Fecha so depois de marcar', R, /for \(const lote of emLotes\(ids\)\)[\s\S]{0,1500}?update\(\{ status: 'completed'/, 'a conciliacao ficaria fechada com metade dos lancamentos se a marcacao falhasse')
+}
+
 titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
 // A lista fixa no codigo (Contract Labor e Subcontractors) deixava de fora
 // advogado, aluguel e toda conta nova, e ninguem fora do codigo mudava isso.

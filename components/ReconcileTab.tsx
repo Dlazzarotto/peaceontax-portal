@@ -4,6 +4,7 @@
 // diferença zero → fechar. Só considera o que está no REGISTRO (aprovado).
 
 import { useState, useEffect } from 'react'
+import { apurarConciliacao } from '@/lib/conciliacao-bancaria'
 
 interface Acc { id: string; name: string }
 interface Props { clientId: string; accounts: Acc[] }
@@ -136,14 +137,10 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
   })
 
-  const marcados = txs.filter(t => cleared.has(t.id))
-  const entradas = marcados.filter(t => Number(t.amount) > 0)
-  const saidas   = marcados.filter(t => Number(t.amount) < 0)
-  const somaEnt  = entradas.reduce((s, t) => s + Number(t.amount), 0)
-  const somaSai  = saidas.reduce((s, t) => s + Number(t.amount), 0)
-  const clearedTotal = somaEnt + somaSai
-  const diferenca = Math.round(((Number(beginning) || 0) + clearedTotal - (Number(ending) || 0)) * 100) / 100
-  const fechado = Math.abs(diferenca) < 0.005 && carregado && ending !== ''
+  // A MESMA conta da rota (lib/conciliacao-bancaria.ts): a tela dizia
+  // "diferença 0.00" e a rota recusava, porque cada uma somava de um jeito.
+  const conta = apurarConciliacao({ saldoInicial: beginning, saldoFinal: ending, elegiveis: txs, marcados: cleared })
+  const fechado = conta.fecha && conta.naoElegiveis.length === 0 && carregado && ending !== ''
 
   const card: React.CSSProperties = { background:'#fff', borderRadius:14, padding:'16px 18px', border:'1px solid #e2e8f4', marginBottom:14 }
   const inp: React.CSSProperties = { padding:'9px 12px', border:'1.5px solid #e2e8f4', borderRadius:9, fontSize:14, outline:'none' }
@@ -204,20 +201,20 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
             <div style={{ display:'flex', gap:22, flexWrap:'wrap', alignItems:'center' }}>
               <div>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Entradas marcadas</div>
-                <div style={{ fontSize:16, fontWeight:800, color:'#1a6b4a' }}>{entradas.length} · {money(somaEnt)}</div>
+                <div style={{ fontSize:16, fontWeight:800, color:'#1a6b4a' }}>{conta.qtdEntradas} · {money(conta.entradas)}</div>
               </div>
               <div>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Saídas marcadas</div>
-                <div style={{ fontSize:16, fontWeight:800, color:'#b02020' }}>{saidas.length} · {money(somaSai)}</div>
+                <div style={{ fontSize:16, fontWeight:800, color:'#b02020' }}>{conta.qtdSaidas} · {money(conta.saidas)}</div>
               </div>
               <div>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Saldo calculado</div>
-                <div style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{money((Number(beginning) || 0) + clearedTotal)}</div>
+                <div style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{money(conta.saldoCalculado)}</div>
               </div>
               <div style={{ marginLeft:'auto', textAlign:'right' as const }}>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Diferença</div>
                 <div style={{ fontSize:22, fontWeight:800, color: fechado ? '#1a6b4a' : '#b02020' }}>
-                  {fechado ? '✓ 0.00' : money(diferenca)}
+                  {fechado ? '✓ 0.00' : money(conta.diferenca)}
                 </div>
               </div>
             </div>
