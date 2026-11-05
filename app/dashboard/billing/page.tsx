@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react'
 import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { decidirValorDaCobranca } from '@/lib/cobranca-balcao'
+import { alocarRecebimento, emAberto } from '@/lib/recebimento-parcelado'
 import SeletorPeriodo from '@/components/SeletorPeriodo'
 import { periodoDoPreset } from '@/lib/periodo-relatorio'
 import { dataDaFirma } from '@/lib/dia-da-firma'
@@ -203,11 +204,16 @@ export default function BillingPage() {
   const [cobranca, setCobranca] = useState<{
     automatica: boolean; parcelado?: boolean
     falhas: { seq: number; valor: number; motivo: string | null; tentativas: number }[]
-    // A próxima parcela em aberto — a MESMA que a rota aceita (lib/parcelamento.ts).
     proxima?: { seq: number; valor: number; status: string; noStripe: boolean } | null
     parcelas?: { total: number; pagas: number } | null
+    // O cronograma inteiro: a lista em que se clica na parcela que está sendo
+    // paga, e a prévia pela MESMA função da rota (lib/recebimento-parcelado.ts).
+    cronograma?: { seq: number; amount: number; status: string; due_date: string | null; stripe_invoice: string | null }[]
+    primeiraCobranca?: number | null
     podeCobrarDeNovo: boolean
   } | null>(null)
+  // A parcela clicada no recebimento de uma fatura parcelada.
+  const [rParcela, setRParcela] = useState<number | null>(null)
   const [rValor, setRValor] = useState('')
   const [rForma, setRForma] = useState('zelle')
   const [rRef, setRRef] = useState('')
@@ -773,11 +779,17 @@ export default function BillingPage() {
   }
 
   const abrirRecebimento = async (inv: Inv) => {
-    setReceber(inv); setRValor(String(inv.saldo)); setPagamentos([]); setCobranca(null)
+    setReceber(inv); setRValor(String(inv.saldo)); setPagamentos([]); setCobranca(null); setRParcela(null)
     setEstPass(''); setEstMotivo('')
     const d = await jsonSeguro(await fetch(`/api/billing/payments?invoiceId=${inv.id}`))
     if (d?.payments) setPagamentos(d.payments)
-    if (d?.cobranca) setCobranca(d.cobranca)
+    if (d?.cobranca) {
+      setCobranca(d.cobranca)
+      // Fatura parcelada: já abre com a próxima parcela em aberto escolhida e
+      // o valor dela no campo. Quem recebe clica em outra se for o caso.
+      const primeira = (d.cobranca.cronograma || []).find(emAberto)
+      if (d.cobranca.parcelado && primeira) { setRParcela(primeira.seq); setRValor(String(primeira.amount)) }
+    }
   }
 
   const estornar = async (pg: any) => {
@@ -841,6 +853,7 @@ export default function BillingPage() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         invoiceId: receber.id, amount: Number(rValor), method: rForma, reference: rRef,
+        ...(cobranca?.parcelado && rParcela != null ? { parcela: rParcela } : {}),
         ...(confirmarComAch ? { confirmarComAch: true } : {}),
         ...(exigeAprovacao(rForma)
           ? (apPorSenha
@@ -876,6 +889,12 @@ export default function BillingPage() {
     : null
   const valorStripe = previaStripe?.ok ? previaStripe.valor : null
   const parcialStripe = !!(previaStripe?.ok && previaStripe.parcial)
+  // O que o recebimento faz no parcelamento, ANTES de gravar — a mesma conta
+  // da rota. Recusa aqui é a mesma recusa de lá, com o mesmo texto.
+  const previaParcela = receber && cobranca?.parcelado && cobranca.cronograma
+    ? alocarRecebimento({ parcelas: cobranca.cronograma, valor: rValor, saldo: receber.saldo,
+        escolhida: rParcela, primeiraCobranca: cobranca.primeiraCobranca ?? null })
+    : null
   const faltaAprovacao = exigeAprovacao(rForma) && (apPorSenha
     ? (!apEmail.trim() || !apSenha)
     : !codigoBemFormado(apCodigo))
@@ -2096,17 +2115,41 @@ export default function BillingPage() {
             {cobranca?.automatica ? (
               <div style={{ background: '#FFF7E6', border: '1px solid #E0A860', borderRadius: 10, padding: '10px 13px', marginBottom: 10, fontSize: 12.5, color: '#5A3A00', lineHeight: 1.5 }}>
                 <b>Cobrança automática pelo Stripe.</b>{' '}
-                {cobranca.proxima ? (
-                  // Parcelamento: a parcela que a rota aceita é esta — o botão
-                  // preenche o valor exato, e o Stripe passa a cobrar uma a menos.
+                {cobranca.parcelado && cobranca.cronograma?.length ? (
+                  // Parcelamento: clica-se na parcela que está sendo paga. Ela
+                  // não é debitada no mês dela; o que passar abate do fim.
                   <>
-                    Recebimento manual: a <b>parcela {cobranca.proxima.seq}{cobranca.parcelas ? `/${cobranca.parcelas.total}` : ''}</b>{' '}
-                    ({money(cobranca.proxima.valor)}{cobranca.proxima.status === 'failed' ? ', cujo débito falhou' : ''}) ou o{' '}
-                    <b>saldo inteiro</b> ({money(receber.saldo)}, quitação antecipada). Pagando a parcela, o Stripe cobra uma a menos.
-                    <button type="button" onClick={() => setRValor(String(cobranca.proxima!.valor))}
-                      style={{ display: 'block', marginTop: 8, background: '#fff', color: '#1a6b4a', border: '1.5px solid #1a6b4a', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
-                      Receber a parcela {cobranca.proxima.seq} — {money(cobranca.proxima.valor)}
-                    </button>
+                    Clique na parcela que está sendo paga. Ela não é debitada; o que passar dela abate da
+                    última parcela para trás, e o que faltar fica nela — o Stripe debita só o que falta.
+                    <div style={{ marginTop: 8, maxHeight: 190, overflowY: 'auto' as const, border: '1px solid #EAD3A8', borderRadius: 8, background: '#fff' }}>
+                      {cobranca.cronograma.map(pc => {
+                        const aberta = emAberto(pc)
+                        const escolhida = aberta && rParcela === pc.seq
+                        return (
+                          <button key={pc.seq} type="button" disabled={!aberta}
+                            onClick={() => { setRParcela(pc.seq); setRValor(String(pc.amount)) }}
+                            style={{ display: 'flex', width: '100%', gap: 8, alignItems: 'center', padding: '7px 10px',
+                              border: 'none', borderBottom: '1px solid #F3E6CC', textAlign: 'left' as const,
+                              background: escolhida ? '#E8F5EE' : '#fff', cursor: aberta ? 'pointer' : 'default',
+                              color: aberta ? '#3A2A00' : '#9AAAB0', fontSize: 12.5, fontWeight: escolhida ? 800 : 500 }}>
+                            <span style={{ width: 16 }}>{escolhida ? '●' : aberta ? '○' : '✓'}</span>
+                            <span style={{ flex: 1 }}>Parcela {pc.seq}{cobranca.parcelas ? `/${cobranca.parcelas.total}` : ''} · {dataUS(pc.due_date)}</span>
+                            <span>{money(pc.amount)}</span>
+                            <span style={{ width: 92, textAlign: 'right' as const, fontSize: 11.5 }}>
+                              {pc.status === 'paid' ? 'paga' : pc.status === 'failed' ? 'débito falhou' : pc.stripe_invoice ? 'no Stripe' : 'em aberto'}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {previaParcela && (
+                      <div style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.5,
+                        color: previaParcela.tipo === 'recusa' ? '#B02020' : '#1A4A30', fontWeight: previaParcela.tipo === 'recusa' ? 700 : 500 }}>
+                        {previaParcela.tipo === 'quitacao' && <>Quita a fatura inteira: o débito automático é encerrado.</>}
+                        {previaParcela.tipo === 'recusa' && <>⚠️ {previaParcela.motivo}</>}
+                        {previaParcela.tipo === 'alocacao' && previaParcela.resumo.map(l => <div key={l}>• {l}</div>)}
+                      </div>
+                    )}
                   </>
                 ) : cobranca.falhas.length > 0
                   ? <>Débito da parcela {cobranca.falhas[0].seq} falhou ({cobranca.falhas[0].motivo || 'recusado'}, {cobranca.falhas[0].tentativas} tentativa(s)). Receba por fora o valor exato da parcela ({money(cobranca.falhas[0].valor)}) ou o saldo inteiro — a fatura sai da linha de cobrança.</>
@@ -2249,9 +2292,10 @@ export default function BillingPage() {
                 {receber.saldo > 0 ? 'Cancelar' : 'Fechar'}
               </button>
               {receber.saldo > 0 && (
-                <button onClick={() => salvarRecebimento()} disabled={busy || faltaAprovacao}
-                  style={btn('#1A6B4A', busy || faltaAprovacao)}
-                  title={faltaAprovacao ? 'Preencha o e-mail e a senha de quem autoriza' : ''}>
+                <button onClick={() => salvarRecebimento()} disabled={busy || faltaAprovacao || previaParcela?.tipo === 'recusa'}
+                  style={btn('#1A6B4A', busy || faltaAprovacao || previaParcela?.tipo === 'recusa')}
+                  title={faltaAprovacao ? 'Preencha o e-mail e a senha de quem autoriza'
+                    : previaParcela?.tipo === 'recusa' ? previaParcela.motivo : ''}>
                   {rForma === 'card' ? 'Já cobrei — registrar'
                     : faltaAprovacao ? 'Aguardando aprovação' : 'Registrar'}
                 </button>

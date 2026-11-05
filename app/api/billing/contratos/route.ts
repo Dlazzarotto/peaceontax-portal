@@ -394,7 +394,11 @@ export async function PATCH(req: NextRequest) {
       try {
         // Encerrar aqui e o Stripe seguir debitando é o pior dos mundos — a
         // rota antiga engolia este erro. Já cancelada no Stripe, segue.
-        if (plano.stripe_schedule_id) await stripe.subscriptionSchedules.cancel(plano.stripe_schedule_id)
+        // Sem crédito proporcional: o padrão do cancelamento de agendamento
+        // credita a parte não usada do período no saldo do cliente no Stripe,
+        // que abate sozinho a próxima cobrança dele (lib/parcelamento.ts).
+        // Devolver parte do mês, se for o caso, é um ato da equipe, com rastro.
+        if (plano.stripe_schedule_id) await stripe.subscriptionSchedules.cancel(plano.stripe_schedule_id, { invoice_now: false, prorate: false })
         else if (plano.stripe_subscription_id) await stripe.subscriptions.cancel(plano.stripe_subscription_id)
       } catch (e) {
         const m = (e as Error).message || ''

@@ -14,7 +14,7 @@
 // reembolso — quem diz é a cobrança).
 
 import {
-  fasesDoParcelamento, agendarParcelas, pagamentoDaSessao, metodoDoTipo, type ContaDasFases,
+  fasesDoParcelamento, fasesDosValores, agendarParcelas, pagamentoDaSessao, metodoDoTipo, type ContaDasFases,
   entradaIntegra, entradaQueVoltou, decidirEntradaDoWebhook, ESPERANDO_O_CLIENTE, ENCERRADOS,
 } from '../lib/agendamento-parcelas.ts'
 import { montarCronograma } from '../lib/cronograma-parcelas.ts'
@@ -246,6 +246,26 @@ eq('forma para o livro', [metodoDoTipo('us_bank_account'), metodoDoTipo('klarna'
         if (r.acao === 'aguardar_banco' && (pago || !ESPERANDO_O_CLIENTE.includes(status))) maus++
       }
   eq('varredura: so o plano que espera, com a entrada paga e inteira, segue', maus, 0)
+}
+
+// ── Fases pelo valor de CADA parcela (o cronograma desigual do recebimento
+//    por fora): a paga vale zero e o período continua existindo; a abatida
+//    vale o que falta. Iguais e seguidas viram uma fase só.
+{
+  const resumo = (c: any) => 'erro' in c ? c.erro : c.fases.map((f: any) => `${f.parcelas}x${f.centavos}/${f.duration.interval_count}${f.duration.interval}:${f.rotulo}`)
+  eq('todas iguais: uma fase', resumo(fasesDosValores({ frequencia: 'monthly', valores: [350, 350, 350] })), ['3x35000/3month:unica'])
+  eq('paga por fora no meio vira um período de zero', resumo(fasesDosValores({ frequencia: 'monthly', valores: [350, 0, 350, 200] })),
+     ['1x35000/1month:trecho', '1x0/1month:trecho', '1x35000/1month:trecho', '1x20000/1month:trecho'])
+  eq('a última abatida para $10', resumo(fasesDosValores({ frequencia: 'monthly', valores: [350, 350, 10] })), ['2x35000/2month:trecho', '1x1000/1month:trecho'])
+  eq('o total é a soma do que falta', (fasesDosValores({ frequencia: 'monthly', valores: ['350.00', 0, '200.50'] }) as any).totalCentavos, 55050)
+  eq('semanal multiplica o intervalo', resumo(fasesDosValores({ frequencia: 'biweekly', valores: [100, 100] })), ['2x10000/4week:unica'])
+  eq('abaixo do mínimo do Stripe: recusa', /abaixo de US\$ 0,50/.test(resumo(fasesDosValores({ frequencia: 'monthly', valores: [350, 0.3] }))), true)
+  eq('tudo pago: não há o que agendar', resumo(fasesDosValores({ frequencia: 'monthly', valores: [0, 0] })), 'não há saldo a parcelar')
+  eq('frequência desconhecida', /frequência desconhecida/.test(resumo(fasesDosValores({ frequencia: 'xyz', valores: [100] }))), true)
+  eq('negativo: recusa', resumo(fasesDosValores({ frequencia: 'monthly', valores: [100, -1] })), 'há parcela com valor negativo')
+  eq('cronograma igual dá as mesmas fases de fasesDoParcelamento',
+     (fasesDosValores({ frequencia: 'monthly', valores: [333.33, 333.33, 333.34] }) as any).fases.map((f: any) => [f.parcelas, f.centavos]),
+     (fasesDoParcelamento({ frequencia: 'monthly', parcelas: 3, valorParcela: 333.33, restante: 1000 }) as any).fases.map((f: any) => [f.parcelas, f.centavos]))
 }
 
 console.log(`agendamento-parcelas: ${passou} passaram, ${falhou} falharam`)

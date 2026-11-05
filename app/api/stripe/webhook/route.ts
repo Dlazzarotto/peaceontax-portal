@@ -42,9 +42,10 @@ import { createClient } from '@supabase/supabase-js'
 import { getQueueDate } from '@/lib/pricing'
 import { firstInstallmentDate, round2, type Frequency } from '@/lib/plans'
 import {
-  agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, metodoDoTipo,
+  agendarParcelas, fasesDoParcelamento, fasesDosValores, pagamentoDaSessao, metodoDoTipo,
   decidirEntradaDoWebhook, ESPERANDO_O_CLIENTE,
 } from '@/lib/agendamento-parcelas'
+import { abatimentoDaCobranca, abaterDoFim, debitoNaParcela, emAberto, emitida } from '@/lib/recebimento-parcelado'
 import { parcelamentoVivo, encerrarParcelamento } from '@/lib/parcelamento'
 import { recebimentoDoObjeto, desfazerRecebimento, avisoDeEstorno } from '@/lib/estorno-stripe'
 import { amarrarCobrancaAParcela, parcelaDaInvoice, recontarParcelas } from '@/lib/parcela-stripe'
@@ -331,6 +332,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ received: true })
     }
 
+    // ============ COBRANÇA CRIADA (rascunho, antes do débito) ============
+    // A renovação do agendamento nasce em RASCUNHO e o Stripe a finaliza cerca
+    // de uma hora depois: é a hora de cobrar só o que FALTA da parcela do
+    // período (lib/recebimento-parcelado.ts). Parcela paga por fora → a
+    // cobrança vai a zero, sem débito; parcela abatida → cai para o que falta.
+    // Depende do evento `invoice.created` assinado no endpoint do Stripe. A
+    // PRIMEIRA cobrança de um agendamento não passa por rascunho — por isso a
+    // tela não deixa abater dela, e o finalized é a rede de segurança.
+    if (event.type === 'invoice.created') {
+      const invoice = event.data.object as Stripe.Invoice
+      const subId = assinaturaDaInvoice(invoice)
+      if (!subId) return NextResponse.json({ received: true, ignorado: 'invoice sem assinatura' })
+      const plan = await planoDaCobranca(db, invoice, subId)
+      if (!plan || plan.kind !== 'installment' || !plan.invoice_id) return NextResponse.json({ received: true })
+      // Amarra em QUALQUER situação — inclusive a primeira cobrança, que já
+      // nasce finalizada, e a de $0 (período de parcela paga antes do
+      // agendamento): cobrança que fica sem amarrar faz a do período seguinte
+      // pegar a parcela dela, e o cronograma inteiro escorrega uma posição.
+      const destino = await amarrarCobrancaAParcela(db, plan.invoice_id, invoice.id as string)
+      // Sem parcela: a cobrança sobrou — quem anula é o finalized. O abatimento
+      // confere no Stripe se ela ainda é rascunho (o evento é uma foto).
+      if (destino.acao !== 'sem_parcela') await abaterCobrancaDaParcela(db, stripe, plan, invoice, destino.seq)
+      return NextResponse.json({ received: true })
+    }
+
     // ============ PARCELA / MENSALIDADE PAGA ============
     // ============ FATURA EMITIDA (antes do débito) ============
     if (event.type === 'invoice.finalized') {
@@ -339,7 +365,6 @@ export async function POST(req: NextRequest) {
       if (!subId) return NextResponse.json({ received: true, ignorado: 'invoice sem assinatura' })
       const plan = await planoDaCobranca(db, invoice, subId)
       if (!plan) return NextResponse.json({ received: true, ignorado: 'plano não encontrado' })
-      if ((invoice.amount_due ?? 0) <= 0) return NextResponse.json({ received: true })   // trial de $0
 
       if (plan.kind === 'installment') {
         if (plan.invoice_id) {
@@ -350,16 +375,25 @@ export async function POST(req: NextRequest) {
           // evento repetido, ou o invoice.paid chegando antes, encontram a
           // parcela já amarrada — nunca viram "sem parcela" (lib/parcela-stripe.ts).
           const destino = await amarrarCobrancaAParcela(db, plan.invoice_id, invoice.id as string)
+          // Cobrança de $0: período de parcela já paga (agendada como zero, ou
+          // abatida a zero no rascunho). AMARRAR é o que importa — antes ela
+          // saía daqui sem amarrar, e a do período seguinte pegava a parcela
+          // dela. Não há nada a anular nem a conferir.
+          if ((invoice.amount_due ?? 0) <= 0) return NextResponse.json({ received: true })
           if (destino.acao === 'sem_parcela') {
-            // NENHUMA parcela em aberto para esta invoice: o cronograma já foi
-            // todo liquidado (parcela paga por fora — Zelle, dinheiro — faz a
-            // régua sobrar uma cobrança no fim). Esta invoice não representa
-            // parcela nenhuma: anular ANTES do débito é o que faz "o Stripe
-            // cobra uma a menos" valer (lib/parcelamento.ts).
+            // TODAS as parcelas já têm cobrança: esta sobrou (agendamento
+            // antigo, de antes da amarração por período). Não representa
+            // parcela nenhuma — anula ANTES do débito.
             await anularCobrancaSemParcela(db, stripe, plan, invoice)
+          } else {
+            // Rede de segurança do abatimento do rascunho: se a cobrança saiu
+            // maior que o que falta da parcela do período, o invoice.created
+            // não chegou (ou é a primeira cobrança, que não tem rascunho).
+            await conferirCobrancaFinalizada(db, stripe, plan, invoice, destino.seq)
           }
         }
       } else {
+        if ((invoice.amount_due ?? 0) <= 0) return NextResponse.json({ received: true })   // trial de $0
         const inv = await garantirFaturaDaMensalidade(db, plan, invoice)
         if (inv?.recemCriada) {
           await notifyClient(db, plan.client_id,
@@ -427,8 +461,15 @@ export async function POST(req: NextRequest) {
       const plan = await planoDaCobranca(db, invoice, subId)
       if (!plan) return NextResponse.json({ received: true, ignorado: 'plano não encontrado' })
 
-      // Ignora invoices de $0 (trial do bookkeeping)
-      if ((invoice.amount_paid ?? 0) <= 0) return NextResponse.json({ received: true })
+      // Ignora invoices de $0 (trial do bookkeeping). No parcelamento, a de $0
+      // é o período de uma parcela já paga: só AMARRA (idempotente), para a
+      // cobrança seguinte não pegar a parcela dela — nada se lança.
+      if ((invoice.amount_paid ?? 0) <= 0) {
+        if (plan.kind === 'installment' && plan.invoice_id) {
+          await amarrarCobrancaAParcela(db, plan.invoice_id, invoice.id as string)
+        }
+        return NextResponse.json({ received: true })
+      }
 
       // Idempotência pelo ESTADO, não pelo evento: esta cobrança já entrou?
       // O Stripe reenvia eventos, e a equipe reenvia à mão para recuperar
@@ -453,14 +494,40 @@ export async function POST(req: NextRequest) {
       let paid = Number(plan.paid_installments || 0)
       if (isInstallment && plan.invoice_id && !foraDoStripe) {
         const parcela = await parcelaDaInvoice(db, plan, invoice)
-        if (parcela && parcela.status !== 'paid') {
-          await sincronizarParcela(db, stripe, plan, invoice, parcela.seq)
-        } else if (!parcela) {
-          // Dinheiro DEBITADO sem parcela para receber: o cronograma já estava
-          // todo liquidado (parcela paga por fora) e a cobrança sobrou — o void
-          // do `finalized` não chegou a tempo, ou falhou. Não se lança
-          // recebimento (seria acima do saldo, e o gatilho recusa): isto é
-          // DEVOLUÇÃO, no painel do Stripe. A equipe fica sabendo agora.
+        const pagoC = Math.round(Number(invoice.amount_paid ?? 0))
+        // ESTE débito já mexeu na parcela? sincronizarParcela e
+        // debitoAbaixoDaParcela gravam a invoice e o pagamento juntos; a
+        // amarração e a falha de débito não gravam pagamento. Então é a entrega
+        // repetida de um débito cujo lançamento não chegou a ser gravado (a
+        // função caiu entre as duas escritas): lança agora e para. Refazer a
+        // conta leria a parcela JÁ mexida — a abaixo do devido viraria excesso,
+        // a quitada viraria cobrança a mais e a equipe reembolsaria parcela
+        // legítima.
+        const jaAplicado = !!parcela && parcela.stripeInvoice === invoice.id && !!parcela.stripeIntent
+          && parcela.stripeIntent === intentDaInvoice(await comPagamentos(stripe, invoice))
+        if (jaAplicado) {
+          await relancarDebitoDaParcela(db, stripe, plan, invoice, pagoC)
+        } else if (parcela && parcela.status !== 'paid') {
+          // O débito contra o que FALTA da parcela (lib/recebimento-parcelado.ts):
+          // maior — o abatimento do rascunho não aconteceu — e o excedente abate
+          // do fim, como o pagamento a mais por fora; menor — um estorno devolveu
+          // à parcela o que esta cobrança já tinha abatido — e a parcela fica em
+          // aberto com o resto, que se recebe por fora.
+          const debito = debitoNaParcela({ faltaCentavos: Math.round(Number(parcela.amount) * 100), pagoCentavos: pagoC })
+          if (debito.tipo === 'falta') {
+            await debitoAbaixoDaParcela(db, stripe, plan, invoice, parcela.seq, debito.resto)
+          } else {
+            const naoCabe = debito.tipo === 'excesso' ? await excedenteDoDebito(db, plan, invoice, parcela.seq, debito.excesso) : 0
+            await sincronizarParcela(db, stripe, plan, invoice, parcela.seq, (pagoC - naoCabe) / 100)
+            if (naoCabe > 0) await cobradoAMais(db, plan, invoice, naoCabe / 100)
+          }
+        } else {
+          // Dinheiro DEBITADO para uma parcela que já estava paga (por fora) —
+          // ou sem parcela nenhuma. O abatimento do rascunho e a anulação do
+          // finalized não chegaram a tempo. Não se lança recebimento (seria
+          // acima do saldo): isto é DEVOLUÇÃO, no painel do Stripe.
+          if (parcela) await db.from('invoice_installments').update({ stripe_invoice: invoice.id })
+            .eq('invoice_id', plan.invoice_id).eq('seq', parcela.seq).is('stripe_invoice', null)
           await cobradoAMais(db, plan, invoice)
         }
         paid = await recontarParcelas(db, plan)
@@ -537,7 +604,14 @@ export async function POST(req: NextRequest) {
           // Qual parcela falhou vem da invoice do Stripe, não de um contador:
           // se a 2ª falhou e a 3ª passou, o contador marcaria a errada.
           const alvo = await parcelaDaInvoice(db, plan, invoice)
-          if (alvo) {
+          if (alvo && alvo.status === 'paid') {
+            // A parcela do período já está paga por fora: a cobrança não devia
+            // existir (o abatimento e a anulação não chegaram). Não se marca
+            // falha numa parcela paga — anula-se a cobrança, que o Stripe ainda
+            // tentaria de novo.
+            await anularCobrancaSemParcela(db, stripe, plan, invoice,
+              `a parcela ${alvo.seq} já está paga por fora e esta cobrança falhou`)
+          } else if (alvo) {
             const { data: parcela } = await db.from('invoice_installments')
               .select('attempts').eq('invoice_id', plan.invoice_id).eq('seq', alvo.seq).maybeSingle()
             await db.from('invoice_installments').update({
@@ -1041,10 +1115,21 @@ async function agendarOuAvisar(
   db: ReturnType<typeof adminDb>, stripe: Stripe, plan: any, paymentMethod: string | null, desejada: Date,
 ) {
   try {
-    const conta = fasesDoParcelamento({
-      frequencia: plan.frequency, parcelas: plan.installments, valorParcela: plan.installment_amount,
-      restante: Number(plan.total) - Number(plan.entry_amount || 0),
-    })
+    // Com fatura, as fases saem do CRONOGRAMA, parcela por parcela: a paga
+    // por fora vira um período de zero e a abatida, o que falta. Cada período
+    // continua sendo o da sua parcela (lib/parcela-stripe.ts).
+    let conta: ReturnType<typeof fasesDosValores>
+    if (plan.invoice_id) {
+      const { data: linhas, error: errLinhas } = await db.from('invoice_installments')
+        .select('seq, amount, status').eq('invoice_id', plan.invoice_id).order('seq')
+      if (errLinhas) throw new Error(`cronograma: ${errLinhas.message}`)
+      conta = fasesDosValores({ frequencia: plan.frequency, valores: (linhas || []).map((l: any) => emAberto(l) ? l.amount : 0) })
+    } else {
+      conta = fasesDoParcelamento({
+        frequencia: plan.frequency, parcelas: plan.installments, valorParcela: plan.installment_amount,
+        restante: Number(plan.total) - Number(plan.entry_amount || 0),
+      })
+    }
     if ('erro' in conta) throw new Error(conta.erro)
     return await agendarParcelas(stripe, plan, conta, paymentMethod || '', desejada)
   } catch (e) {
@@ -1182,9 +1267,9 @@ async function cancelarAssinaturaDuplicada(
 
 async function sincronizarParcela(
   db: ReturnType<typeof adminDb>, stripe: Stripe,
-  plan: any, invoice: Stripe.Invoice, seq: number,
+  plan: any, invoice: Stripe.Invoice, seq: number, valorLancado?: number,
 ) {
-  const valor = round2((invoice.amount_paid ?? 0) / 100)
+  const valor = round2(valorLancado ?? (invoice.amount_paid ?? 0) / 100)
   const metodo = await metodoDoPagamento(stripe, invoice)
 
   const intent = intentDaInvoice(await comPagamentos(stripe, invoice))
@@ -1208,7 +1293,8 @@ async function sincronizarParcela(
  * menos" (lib/parcelamento.ts). Se não der para anular, a equipe é avisada
  * para fazê-lo no painel antes do débito.
  */
-async function anularCobrancaSemParcela(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice) {
+async function anularCobrancaSemParcela(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice,
+  porque = 'o cronograma não tem parcela para esta cobrança') {
   const valor = round2((invoice.amount_due ?? 0) / 100)
   let anulada = false
   try { await stripe.invoices.voidInvoice(invoice.id as string); anulada = true }
@@ -1226,13 +1312,13 @@ async function anularCobrancaSemParcela(db: any, stripe: Stripe, plan: any, invo
   await db.from('invoice_audit').insert({
     invoice_id: plan.invoice_id, action: 'stripe_invoice_voided',
     reason: anulada
-      ? `Cobrança ${invoice.id} ($${valor.toFixed(2)}) anulada: o cronograma não tem parcela em aberto (parcela liquidada por fora).`
-      : `Cobrança ${invoice.id} ($${valor.toFixed(2)}) SEM parcela em aberto e NÃO consegui anular — anule no painel do Stripe antes do débito.`,
+      ? `Cobrança ${invoice.id} ($${valor.toFixed(2)}) anulada antes do débito: ${porque}.`
+      : `Cobrança ${invoice.id} ($${valor.toFixed(2)}): ${porque}, e NÃO consegui anular — anule no painel do Stripe antes do débito.`,
     next: { stripeInvoice: invoice.id, anulada, valor },
   }).then(() => null, () => null)
   if (!anulada) await db.from('plan_alerts').insert({
     plan_id: plan.id, client_id: plan.client_id, type: 'cobranca_a_mais',
-    message: `🛑 O Stripe gerou a cobrança ${invoice.id} de $${valor.toFixed(2)} sem parcela em aberto no cronograma (parcela paga por fora) e NÃO consegui anular. Anule no painel do Stripe antes do débito, senão o cliente paga duas vezes.`,
+    message: `🛑 O Stripe gerou a cobrança ${invoice.id} de $${valor.toFixed(2)}: ${porque}, e NÃO consegui anular. Anule no painel do Stripe antes do débito, senão o cliente paga duas vezes.`,
   }).then(() => null, () => null)
 }
 
@@ -1241,17 +1327,166 @@ async function anularCobrancaSemParcela(db: any, stripe: Stripe, plan: any, invo
  * Nada se lança (seria recebimento acima do saldo); a equipe reembolsa no
  * painel do Stripe, e a trilha da fatura guarda o porquê.
  */
-async function cobradoAMais(db: any, plan: any, invoice: Stripe.Invoice) {
-  const valor = round2((invoice.amount_paid ?? 0) / 100)
+async function cobradoAMais(db: any, plan: any, invoice: Stripe.Invoice, aDevolver?: number) {
+  const valor = round2(aDevolver ?? (invoice.amount_paid ?? 0) / 100)
   await db.from('invoice_audit').insert({
     invoice_id: plan.invoice_id, action: 'stripe_paid',
-    reason: `COBRADO A MAIS: ${invoice.id} ($${valor.toFixed(2)}) debitado sem parcela em aberto no cronograma — parcela paga por fora. Reembolse no painel do Stripe.`,
+    reason: `COBRADO A MAIS: $${valor.toFixed(2)} de ${invoice.id} sem parcela a receber no cronograma — a parcela já estava paga por fora. Reembolse no painel do Stripe.`,
     next: { stripeInvoice: invoice.id, valor, cobradoAMais: true },
   }).then(() => null, () => null)
   await db.from('plan_alerts').insert({
     plan_id: plan.id, client_id: plan.client_id, type: 'cobranca_a_mais',
-    message: `🛑 O Stripe DEBITOU $${valor.toFixed(2)} (${invoice.id}) sem parcela em aberto no cronograma: alguma parcela foi paga por fora e a cobrança sobrou. O cliente pagou duas vezes — reembolse no painel do Stripe (Refund).`,
+    message: `🛑 O Stripe DEBITOU $${valor.toFixed(2)} a mais (${invoice.id}): não havia parcela a receber — já estava paga por fora. O cliente pagou duas vezes — reembolse esse valor no painel do Stripe (Refund).`,
   }).then(() => null, () => null)
+}
+
+/**
+ * Abate, no RASCUNHO da cobrança do período, o que já foi pago por fora da
+ * parcela dela: a cobrança cai para o que falta (zero, se a parcela está
+ * paga). Um item negativo na própria invoice — o cliente vê no recibo do
+ * Stripe a parcela e o abatimento. Idempotente: o mesmo evento reenviado usa a
+ * mesma chave e o Stripe não cria o item duas vezes.
+ */
+async function abaterCobrancaDaParcela(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice, seq: number) {
+  const { data: parcela, error } = await db.from('invoice_installments').select('seq, amount, status')
+    .eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
+  if (error) throw new Error(`parcela ${seq}: ${error.message}`)
+  if (!parcela) return
+  // O evento é uma FOTO do momento em que a cobrança nasceu. Reenviado depois
+  // (o Stripe reenvia por dias), traria o total de ANTES do primeiro abatimento
+  // — e um segundo item sairia com o valor errado — ou um rascunho que já foi
+  // finalizado. Quem diz o total e se ainda dá para mexer é a cobrança de agora.
+  const atual = await stripe.invoices.retrieve(invoice.id as string)
+  if (atual.status !== 'draft') return   // finalizada: a rede de segurança é o invoice.finalized
+  const cobranca = Number(atual.total ?? atual.amount_due ?? 0)
+  const abatimento = abatimentoDaCobranca({ cobrancaCentavos: cobranca, parcela })
+  if (abatimento <= 0) return
+  const cliente = typeof atual.customer === 'string' ? atual.customer : (atual.customer?.id ?? String(invoice.customer))
+  await stripe.invoiceItems.create({
+    customer: cliente, invoice: invoice.id as string, currency: atual.currency || invoice.currency || 'usd',
+    amount: -abatimento,
+    description: parcela.status === 'paid'
+      ? `Parcela ${seq} paga por fora`
+      : `Parcela ${seq}: abatimento do que foi pago por fora`,
+    metadata: { planId: String(plan.id), parcela: String(seq) },
+  }, { idempotencyKey: `abatimento-${invoice.id}-${cobranca}-${abatimento}` })
+  await db.from('invoice_audit').insert({
+    invoice_id: plan.invoice_id, action: 'stripe_charge_reduced',
+    reason: `Cobrança ${invoice.id} da parcela ${seq}: abatidos $${(abatimento / 100).toFixed(2)} — cobra $${((cobranca - abatimento) / 100).toFixed(2)}.`,
+    next: { stripeInvoice: invoice.id, parcela: seq, cobranca: cobranca / 100, abatido: abatimento / 100 },
+  }).then(() => null, () => null)
+}
+
+/**
+ * A cobrança finalizada saiu MAIOR que o que falta da parcela do período —
+ * o abatimento do rascunho não aconteceu (evento invoice.created desligado,
+ * ou a primeira cobrança do agendamento, que não tem rascunho).
+ *   · parcela PAGA por fora → anula antes do débito: ela não é debitada;
+ *   · parcela ABATIDA → não dá para reduzir uma cobrança finalizada: ela sai
+ *     inteira, o excedente abate do fim no invoice.paid, e a equipe é avisada.
+ */
+async function conferirCobrancaFinalizada(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice, seq: number) {
+  const { data: parcela, error } = await db.from('invoice_installments').select('seq, amount, status')
+    .eq('invoice_id', plan.invoice_id).eq('seq', seq).maybeSingle()
+  if (error) throw new Error(`parcela ${seq}: ${error.message}`)
+  if (!parcela) return
+  const cobranca = Number(invoice.amount_due ?? 0)
+  const abatimento = abatimentoDaCobranca({ cobrancaCentavos: cobranca, parcela })
+  if (abatimento <= 0) return
+  if (parcela.status === 'paid') {
+    await anularCobrancaSemParcela(db, stripe, plan, invoice, `a parcela ${seq} já está paga por fora`)
+    return
+  }
+  const deve = Number(parcela.amount)
+  await db.from('plan_alerts').insert({
+    plan_id: plan.id, client_id: plan.client_id, type: 'abatimento_nao_aplicado',
+    message: `⚠️ A cobrança ${invoice.id} da parcela ${seq} saiu por $${(cobranca / 100).toFixed(2)}, mas a parcela deve $${deve.toFixed(2)}: o abatimento não foi feito antes do débito (confira se o evento invoice.created está ativo no webhook do Stripe). Quando o débito cair, os $${(abatimento / 100).toFixed(2)} a mais abatem do fim do parcelamento.`,
+  }).then(() => null, () => null)
+}
+
+/**
+ * Débito maior que o que faltava da parcela: o excedente abate do FIM do
+ * cronograma, a mesma regra do pagamento a mais por fora. Devolve, em
+ * centavos, o que não coube — esse é cobrado a mais, e vai para reembolso.
+ */
+async function excedenteDoDebito(db: any, plan: any, invoice: Stripe.Invoice, seq: number, excesso: number): Promise<number> {
+  const { data: linhas, error } = await db.from('invoice_installments').select('id, seq, amount, status, stripe_invoice')
+    .eq('invoice_id', plan.invoice_id).order('seq')
+  if (error) throw new Error(`cronograma: ${error.message}`)
+  // Parcela com cobrança JÁ emitida no Stripe fica de fora: quitá-la aqui
+  // pediria tirar a cobrança dela da linha (paga fora do Stripe), e um webhook
+  // não deve somar efeitos no Stripe para cobrir outro defeito. O que não
+  // couber nas demais vai para reembolso.
+  const abertas = (linhas || []).filter((l: any) => emAberto(l) && !emitida(l))
+  const falta = new Map<number, number>(abertas.map((l: any) => [Number(l.seq), Math.round(Number(l.amount) * 100)]))
+  const antes = new Map(falta)
+  const naoCabe = abaterDoFim(abertas, falta, excesso, seq)
+  const mudou: any[] = []
+  for (const l of abertas) {
+    const de = antes.get(Number(l.seq)) || 0
+    const para = falta.get(Number(l.seq)) || 0
+    if (de === para) continue
+    // Quitada guarda o valor que tinha (a impressão e o portal mostram a
+    // parcela paga pelo que valia); abatida passa a valer o que falta.
+    const { error: e } = await db.from('invoice_installments')
+      .update(para === 0 ? { status: 'paid', paid_at: new Date().toISOString() } : { amount: para / 100 })
+      .eq('id', l.id)
+    if (e) throw new Error(`parcela ${l.seq}: ${e.message}`)
+    mudou.push({ seq: l.seq, de: de / 100, para: para / 100 })
+  }
+  await db.from('invoice_audit').insert({
+    invoice_id: plan.invoice_id, action: 'installment_overcharge_applied',
+    reason: `Débito ${invoice.id} da parcela ${seq} veio $${(excesso / 100).toFixed(2)} acima do que ela devia: abatido do fim do parcelamento.`,
+    next: { stripeInvoice: invoice.id, parcela: seq, excesso: excesso / 100, mudancas: mudou, naoCoube: naoCabe / 100 },
+  }).then(() => null, () => null)
+  return naoCabe
+}
+
+/**
+ * Débito MENOR que o que falta da parcela do período. Acontece quando um
+ * estorno devolveu à parcela um valor que esta cobrança já tinha abatido no
+ * rascunho (o Stripe só diminui cobrança), ou quando o saldo de crédito do
+ * cliente no Stripe pagou parte. Marcar a parcela paga sumiria com o resto: a
+ * fatura ficaria com saldo e nenhuma parcela para recebê-lo. Então o débito
+ * entra, a parcela fica EM ABERTO com o resto — amarrada a esta cobrança, que
+ * já foi paga, então o Stripe não debita mais nada por ela — e a equipe é
+ * avisada de que o resto se recebe por fora.
+ */
+async function debitoAbaixoDaParcela(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice, seq: number, resto: number) {
+  const pago = round2((invoice.amount_paid ?? 0) / 100)
+  const metodo = await metodoDoPagamento(stripe, invoice)
+  const intent = intentDaInvoice(await comPagamentos(stripe, invoice))
+  const { error } = await db.from('invoice_installments').update({
+    amount: resto / 100, status: 'scheduled', stripe_invoice: invoice.id, stripe_intent: intent,
+  }).eq('invoice_id', plan.invoice_id).eq('seq', seq).neq('status', 'paid')
+  if (error) throw new Error(`parcela ${seq}: ${error.message}`)
+  await lancarRecebimento(db, plan.invoice_id, plan.client_id, pago, metodo, intent, invoice.id as string)
+  const msg = `A cobrança ${invoice.id} da parcela ${seq} debitou $${pago.toFixed(2)}, e faltam $${(resto / 100).toFixed(2)} dela — o Stripe não debita mais nada por esta parcela. Receba o resto por fora. (Acontece quando um recebimento foi estornado depois que a cobrança já tinha sido abatida, ou quando o cliente tinha crédito no Stripe.)`
+  await db.from('invoice_audit').insert({
+    invoice_id: plan.invoice_id, action: 'installment_underpaid',
+    reason: msg, next: { stripeInvoice: invoice.id, parcela: seq, pago, resto: resto / 100 },
+  }).then(() => null, () => null)
+  await db.from('plan_alerts').insert({
+    plan_id: plan.id, client_id: plan.client_id, type: 'parcela_incompleta', message: `⚠️ ${msg}`,
+  }).then(() => null, () => null)
+}
+
+/**
+ * Entrega repetida de um débito que JÁ quitou a parcela, mas cujo lançamento
+ * não chegou a ser gravado (a função caiu entre as duas escritas). Lança agora
+ * — a regra de chaves (lib/recebimento-stripe.ts) não duplica — pelo mesmo
+ * valor da primeira entrega: o débito menos o que foi apontado como cobrado a
+ * mais, que a trilha do excedente guardou.
+ */
+async function relancarDebitoDaParcela(db: any, stripe: Stripe, plan: any, invoice: Stripe.Invoice, pagoC: number) {
+  const { data: trilha, error } = await db.from('invoice_audit').select('next')
+    .eq('invoice_id', plan.invoice_id).eq('action', 'installment_overcharge_applied')
+    .eq('next->>stripeInvoice', String(invoice.id)).limit(1)
+  if (error) throw new Error(`trilha do excedente: ${error.message}`)
+  const naoCoube = Math.round(Number(trilha?.[0]?.next?.naoCoube || 0) * 100)
+  const metodo = await metodoDoPagamento(stripe, invoice)
+  const intent = intentDaInvoice(await comPagamentos(stripe, invoice))
+  await lancarRecebimento(db, plan.invoice_id, plan.client_id, (pagoC - naoCoube) / 100, metodo, intent, invoice.id as string)
 }
 
 /**
