@@ -8,6 +8,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth';
 import { getStaffLevel, validateManagerPin } from '@/lib/staff-perms'
+import { botaoDeEmail } from '@/lib/email-botao'
+import { escaparHtml } from '@/lib/relatorio-barra'
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FROM    = process.env.RESEND_FROM_EMAIL || 'noreply@peaceontax.com'
@@ -90,9 +92,9 @@ export async function POST(req: NextRequest) {
     'Seu acesso ao portal Peace on Tax',
     `<div style="font-family:sans-serif;max-width:520px">
       <h2 style="color:#2D3278">Peace on Tax Corp</h2>
-      <p>Olá, ${client.name}!</p>
+      <p>Olá, ${escaparHtml(client.name)}!</p>
       <p>Aqui está o link para ${loginUpdated ? 'acessar sua conta com o novo e-mail' : 'recuperar seu acesso ao portal'}:</p>
-      <p><a href="${accessLink}" style="background:#2D3278;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold">Acessar o Portal</a></p>
+      ${botaoDeEmail({ url: accessLink, texto: 'Acessar o Portal', lang: 'pt', alinhar: 'left' })}
       <p style="color:#6a7a9a;font-size:13px">Se você não solicitou este acesso, ignore este e-mail ou ligue (833) 732-2327.</p>
       <p style="color:#6a7a9a;font-size:12px">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148</p>
     </div>`
@@ -105,7 +107,7 @@ export async function POST(req: NextRequest) {
       'Alteração de e-mail na sua conta Peace on Tax',
       `<div style="font-family:sans-serif;max-width:520px">
         <h2 style="color:#2D3278">Peace on Tax Corp</h2>
-        <p>O e-mail de acesso da sua conta foi alterado para <strong>${targetEmail}</strong> a seu pedido.</p>
+        <p>O e-mail de acesso da sua conta foi alterado para <strong>${escaparHtml(targetEmail)}</strong> a seu pedido.</p>
         <p style="color:#b02020;font-weight:bold">Se você NÃO solicitou essa alteração, ligue imediatamente: (833) 732-2327.</p>
         <p style="color:#6a7a9a;font-size:12px">Peace on Tax Corp · 75 Pleasant St Suite 119, Malden, MA 02148</p>
       </div>`
