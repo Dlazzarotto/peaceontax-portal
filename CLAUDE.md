@@ -1344,6 +1344,23 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   fechar a aba.
 - **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
   aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
+- **Botão de e-mail é UM: `botaoDeEmail` (`lib/email-botao.ts`).** O convite
+  de cadastro chegava com o botão e o título da marca em BRANCO: texto branco
+  sobre `linear-gradient`, que o Gmail e o Outlook descartam — branco sobre
+  branco, e o cliente não achava o link para se cadastrar. O aviso padrão
+  (`emailComMarca`) punha a cor sólida no próprio `<a>`, que o Outlook do
+  Windows ignora: o mesmo defeito, em outro leitor. Leitor de e-mail não é
+  navegador. Agora a cor vai na CÉLULA da tabela (`bgcolor` + `background-color`;
+  o recuo do Outlook por `mso-padding-alt`) e o endereço vai por extenso
+  embaixo, escuro sobre branco — se o botão ainda assim sumir, o link
+  aparece. E-mail não usa gradiente nem `rgba`, não põe fundo em `<a>`, e os
+  quatro pontos com link (convite do cliente, convite da equipe,
+  `emailComMarca` — que leva "Cadastrar débito automático", "Assinar
+  contrato" e a fatura — e o acesso ao portal) chamam o botão; a auditoria
+  confere, sabotada nos cinco jeitos de voltar. O que vem do formulário no
+  convite vai escapado. 27 casos em `testes/email-botao.mts`, com o contraste
+  calculado pela fórmula da WCAG. Conferido renderizando o convite real com o
+  que cada leitor descarta: antes, o botão é um espaço vazio.
 - **Número que a tela mostra tem definição num módulo puro**, não na página:
   o painel (`/dashboard`) conta em `lib/painel.ts` e reaproveita o aging e a
   receita recorrente de `lib/relatorios-financeiro.ts`. Duas telas nunca

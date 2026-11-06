@@ -7,6 +7,7 @@
 
 import { FIRM } from '@/lib/contract-html'
 import { porqueNaoTenta, remetenteDoEmail } from '@/lib/email-motivo'
+import { botaoDeEmail } from '@/lib/email-botao'
 
 export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 
@@ -74,9 +75,11 @@ export function emailComMarca(opts: { lang?: string | null; nome?: string | null
   const ola = opts.nome
     ? (lang === 'pt' ? `Olá, ${opts.nome}.` : lang === 'es' ? `Hola, ${opts.nome}.` : `Hello, ${opts.nome}.`)
     : ''
+  // O botão leva o link que o cliente precisa (cadastrar o cartão, assinar,
+  // pagar): cor SÓLIDA na célula da tabela, por lib/email-botao.ts. A cor no
+  // próprio <a> some no Outlook do Windows — texto branco sobre branco.
   const botao = opts.botao
-    ? `<p style="margin:22px 0"><a href="${opts.botao.url}" style="background:#2D3278;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700;display:inline-block">${opts.botao.texto}</a></p>
-       <p style="font-size:12px;color:#6a7a9a">${lang === 'pt' ? 'Se o botão não abrir, copie este endereço:' : lang === 'es' ? 'Si el botón no abre, copie esta dirección:' : 'If the button does not open, copy this address:'} ${opts.botao.url}</p>`
+    ? botaoDeEmail({ url: opts.botao.url, texto: opts.botao.texto, lang, alinhar: 'left' })
     : ''
   return `<div style="font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#0f2340;line-height:1.6;max-width:600px">
     ${ola ? `<p>${ola}</p>` : ''}

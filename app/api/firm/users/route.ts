@@ -26,6 +26,7 @@ import { decidirConvite, montarListaDaEquipe, ROTULO_DO_NIVEL } from '@/lib/equi
 import { todosOsLogins, lerMembros, AVISO_MIGRACAO } from '@/lib/equipe-servidor'
 import { buscaLiteral } from '@/lib/clientes-grupos'
 import { escaparHtml } from '@/lib/relatorio-barra'
+import { botaoDeEmail, celulaDoCabecalho } from '@/lib/email-botao'
 
 const PORTAL_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://peaceontax-portal.vercel.app'
 const FIRM_NAME  = 'Peace on Tax'
@@ -53,17 +54,21 @@ function buildInviteEmail(nomeCru: string, emailCru: string, setupUrl: string, n
   // O nome e o e-mail vêm do formulário: escapados, como todo impresso.
   const name = escaparHtml(nomeCru)
   const email = escaparHtml(emailCru)
+  // Botão e cabeçalho em cor SÓLIDA na célula (lib/email-botao.ts): o
+  // gradiente de antes some no Gmail e no Outlook e deixava o botão e o
+  // título em branco sobre branco.
   return `<!DOCTYPE html>
-<html><body style="margin:0;padding:0;background:#f0f4fa;font-family:Georgia,serif;">
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"></head>
+<body style="margin:0;padding:0;background:#f0f4fa;font-family:Georgia,serif;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f4fa;padding:40px 20px;">
 <tr><td align="center">
 <table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
-  <tr><td style="background:linear-gradient(135deg,#2D3278,#1a1f5e);border-radius:16px 16px 0 0;padding:28px;text-align:center;">
+  <tr><td ${celulaDoCabecalho()}>
     <div style="font-size:28px;margin-bottom:8px;">📒</div>
-    <h1 style="color:#fff;font-size:20px;margin:0;font-family:Georgia,serif;">${FIRM_NAME}</h1>
-    <p style="color:rgba(255,255,255,0.5);font-size:12px;margin:4px 0 0;">Team Portal Access</p>
+    <h1 style="color:#ffffff;font-size:20px;margin:0;font-family:Georgia,serif;">${FIRM_NAME}</h1>
+    <p style="color:#c9cdea;font-size:12px;margin:4px 0 0;">Team Portal Access</p>
   </td></tr>
-  <tr><td style="background:#fff;padding:32px 36px;">
+  <tr><td bgcolor="#ffffff" style="background-color:#ffffff;padding:32px 36px;">
     <h2 style="color:#2D3278;font-size:20px;margin:0 0 12px;font-family:Georgia,serif;">Welcome to the team, ${name}!</h2>
     <p style="color:#3a4a5a;font-size:15px;line-height:1.7;margin:0 0 16px;">
       You have been added to the <strong>${FIRM_NAME}</strong> portal as <strong>${roleLabel}</strong>.
@@ -71,15 +76,13 @@ function buildInviteEmail(nomeCru: string, emailCru: string, setupUrl: string, n
     <p style="color:#3a4a5a;font-size:14px;line-height:1.6;margin:0 0 24px;">
       Click the button below to create your password and access the portal. This link expires in <strong>7 days</strong>.
     </p>
-    <div style="text-align:center;margin:24px 0;">
-      <a href="${setupUrl}" style="background:linear-gradient(135deg,#2D3278,#1a1f5e);color:#fff;padding:14px 36px;border-radius:12px;text-decoration:none;font-size:15px;font-weight:700;display:inline-block;">Create My Password →</a>
-    </div>
+    ${botaoDeEmail({ url: setupUrl, texto: 'Create My Password →' })}
     <div style="background:#f8faff;border-radius:10px;padding:14px 16px;font-size:13px;color:#6a7a9a;">
       <strong style="color:#0f2340;">Your login email:</strong> ${email}
     </div>
   </td></tr>
-  <tr><td style="background:#f0f4fa;border-radius:0 0 16px 16px;padding:16px;text-align:center;">
-    <p style="color:#9aaab0;font-size:11px;margin:0;">🔒 Secure &amp; encrypted · ${FIRM_NAME} · Massachusetts</p>
+  <tr><td bgcolor="#f0f4fa" style="background-color:#f0f4fa;border-radius:0 0 16px 16px;padding:16px;text-align:center;">
+    <p style="color:#6a7a9a;font-size:11px;margin:0;">🔒 Secure &amp; encrypted · ${FIRM_NAME} · Massachusetts</p>
   </td></tr>
 </table>
 </td></tr>

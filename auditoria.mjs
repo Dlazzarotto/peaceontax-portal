@@ -939,6 +939,38 @@ titulo('E-MAIL AO CLIENTE: O RESULTADO NAO SE DESCARTA')
          /from '@\/lib\/avisos'/, 'diagnostico que calcula por conta propria mente quando o envio muda')
 }
 
+titulo('E-MAIL AO CLIENTE: O BOTAO TEM DE APARECER')
+// O convite de cadastro chegava com o botao em BRANCO: texto branco sobre um
+// fundo em gradiente, que o Gmail e o Outlook descartam -- sobrava branco
+// sobre branco e o cliente nao achava o link. E o aviso padrao punha a cor no
+// proprio <a>, que o Outlook do Windows ignora. O botao e um so
+// (lib/email-botao.ts: cor SOLIDA na celula, bgcolor + background-color, e o
+// endereco por extenso embaixo). Arquivo que monta e-mail nao usa gradiente,
+// nao poe fundo em <a>, e os quatro pontos de envio com link chamam o botao.
+{
+  const rot = 'E-mail sem gradiente e sem fundo no proprio link'
+  const tira = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const montaEmail = /api\.resend\.com|enviarEmail\(|sendEmail\(|emailComMarca\(|botaoDeEmail\(/
+  const fontes = [...arquivos(join(raiz, 'app/api'), ['.ts']), ...arquivos(join(raiz, 'lib'), ['.ts'])]
+  const deEmail = fontes.filter(f => montaEmail.test(tira(readFileSync(f, 'utf8'))))
+  const ruins = []
+  for (const f of deEmail) {
+    const t = tira(readFileSync(f, 'utf8'))
+    if (/gradient\s*\(/i.test(t)) ruins.push(`${rel(f)} (gradiente)`)
+    // O proprio botao poe a cor tambem no <a>, DENTRO da celula com bgcolor:
+    // e quem define, fica de fora (como lib/avisos.ts na conferencia acima).
+    if (rel(f) !== 'lib/email-botao.ts' && /<a\b[^>]*style="[^"]*background/i.test(t)) ruins.push(`${rel(f)} (fundo no <a>)`)
+  }
+  if (deEmail.length < 4) falta(rot, `ancora perdida: so ${deEmail.length} arquivo(s) que montam e-mail encontrado(s)`)
+  else ruins.length ? falta(rot, `o botao some no Gmail/Outlook: ${ruins.join(', ')} -- use botaoDeEmail`) : ok(rot)
+  for (const arq of ['app/api/send-invite/route.ts', 'app/api/firm/users/route.ts', 'lib/avisos.ts', 'app/api/clients/access/route.ts']) {
+    checar(`Link do e-mail pelo botao unico: ${arq}`, arq, /botaoDeEmail\(\{/,
+           'o link para o cliente se cadastrar, pagar ou assinar voltaria a poder sair invisivel')
+  }
+  checar('O botao poe a cor na celula (bgcolor)', 'lib/email-botao.ts', /<td align="center" bgcolor="\$\{COR_DO_BOTAO\}" style="background-color:\$\{COR_DO_BOTAO\}/,
+         'sem bgcolor na celula o Outlook mostra texto branco sobre branco')
+}
+
 titulo('CONSULTA LADO A LADO NAO PODE TER ERRO ENGOLIDO')
 // Num Promise.all, conferir o erro de UMA consulta e ignorar o das outras faz
 // a consulta que falhou virar lista vazia -- e lista vazia, na tela, e uma
