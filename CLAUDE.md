@@ -740,26 +740,73 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   cliente é outro (o link deixou de valer), senão ele procura uma cobrança
   que nunca existiu. E a recusa do POST devolve `planoExistente`, para a tela
   abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
-- **Parcela paga por fora: o Stripe cobra UMA A MENOS** (`decidirRecebimentoManual`
-  e `proximaParcelaAberta` em `lib/parcelamento.ts`, `/api/billing/payments`,
-  webhook). A regra só aceitava a parcela que já tinha FALHADO; o cliente que
-  pagava em cash ANTES do débito ficava sem baixa — e a tela ainda dizia "só
-  o saldo inteiro", porque `cobranca.automatica` olhava a `stripe_invoice` da
-  FATURA, e num parcelamento as invoices ficam nas PARCELAS. Tela e trava
-  discordavam. Agora as duas decidem pelo mesmo `parcelamentoVivo`, o GET
-  manda a `proxima` parcela e a tela tem o botão "Receber a parcela N". A
-  liquidação: invoice da parcela já existe → paga fora do Stripe; não existe
-  → a régua segue e **a cobrança que sobrar no fim não encontra parcela em
-  aberto e é anulada no `invoice.finalized`**; se um débito ainda assim
-  sobrar, `invoice.paid` sem parcela aberta NÃO lança (seria acima do saldo)
-  e alerta `cobranca_a_mais` para reembolso. `paid_installments` é recontado,
-  nunca `+1` (`parcelamentoVivo` não traz `invoice_id`: a fatura vai
-  explícita, senão a recontagem cai no contador velho). `awaiting_*` fica
-  como está: pagar em cash não é cadastrar cartão. 19 casos em
-  `testes/parcelamento.mts`. Limite anotado: parcelas desiguais (a última com
-  os centavos) deslocam as amarras e a última cobrança pode sair pelo
-  valor-base — a fatura mostra os centavos, que é a verdade. Entrada paga
-  por fora: sem caminho ainda.
+- **Parcela recebida por fora: quem recebe ESCOLHE a parcela, ela não é
+  debitada no mês dela, o excedente abate do FIM e cada débito sai com o que
+  FALTA** (decisão do sócio, 11/2026; `lib/recebimento-parcelado.ts`, 71 casos
+  em `testes/recebimento-parcelado.mts`; `/api/billing/payments`, webhook,
+  modal de Receber). Substituiu a regra de 10/2026 — só a parcela exata da
+  vez, e "o Stripe cobra UMA A MENOS" no fim —, que tinha um defeito que
+  ninguém via: o débito do mês da parcela paga em Zelle acontecia MESMO
+  ASSIM (ia para a parcela seguinte) e só a ÚLTIMA deixava de ser cobrada; o
+  cliente pagava por fora e era debitado no cartão no mesmo mês. Agora:
+  **(1)** a tela lista o cronograma e quem recebe clica na parcela;
+  **(2)** pagou a MAIS ($500 numa de $350) → a parcela fica paga e os $150
+  abatem da última para trás; **(3)** pagou a MENOS → abate da própria;
+  **(4)** o `amount` de cada linha de `invoice_installments` é O QUE FALTA
+  cobrar dela — a soma das abertas segue igual ao saldo da fatura;
+  **(5)** o Stripe acompanha sozinho: a cobrança de cada período nasce em
+  RASCUNHO e o `invoice.created` põe nela um item NEGATIVO até sobrar o que
+  falta da parcela — zero, se está paga; $10, se faltam $10 (**o evento
+  `invoice.created` precisa estar assinado no endpoint do Stripe**). O
+  abatimento lê a cobrança de AGORA (`invoices.retrieve`), nunca a foto do
+  evento: reenviado depois de outro recebimento, o evento traria o total
+  velho e um segundo item sairia errado.
+  A tela chama `alocarRecebimento`, a MESMA função da rota, e mostra antes o
+  que vai acontecer. Três recusas, todas por causa do Stripe e todas dizendo
+  o valor que serve: parcela com cobrança JÁ EMITIDA (débito em andamento ou
+  falhado) só sai inteira — o valor de invoice finalizada não muda —; a
+  PRIMEIRA cobrança de um agendamento não tem rascunho (o Stripe a finaliza
+  na hora), então também só sai inteira — **e isso só vale com agendamento
+  no Stripe**: plano esperando a entrada ou o cartão monta as fases do
+  cronograma já abatido, e recusar ali era recusa falsa —; e nenhuma
+  parcela pode ficar com menos de US$ 0,50 a cobrar. Parcela emitida
+  quitada sai da linha como paga fora do Stripe (`tirarDaLinha`, que
+  pergunta ao Stripe antes de alarmar: a já paga ou anulada não é falha).
+  **Rede de segurança no Stripe** (evento desligado, primeira cobrança): no
+  `invoice.finalized`, parcela PAGA → a cobrança é anulada antes do débito;
+  parcela abatida → alerta `abatimento_nao_aplicado`, e no `invoice.paid` o
+  débito MAIOR abate o excedente do fim (`debitoNaParcela`; parcela com
+  cobrança emitida fica de fora — quitá-la ali pediria outro efeito no
+  Stripe) e o que não couber é `cobranca_a_mais`, para reembolso. Débito
+  MENOR que o que falta (estorno depois do abatimento, ou crédito do cliente
+  no Stripe) **não quita a parcela**: ela fica em aberto com o resto e a
+  equipe é avisada (`parcela_incompleta`) — marcar paga sumiria com o resto.
+  **A cobrança de $0 também se AMARRA** (período de parcela paga antes do
+  agendamento, que o webhook agenda como fase de zero): antes ela saía pelo
+  "ignora $0" sem amarrar, e a do período seguinte pegava a parcela dela —
+  o cronograma escorregava, o cliente era cobrado uma a menos e a última
+  ficava aberta. Amarra-se nos três eventos (`created`, `finalized`, `paid`).
+  **Entrega repetida de um débito já aplicado** (a função caiu entre gravar a
+  parcela e lançar o recebimento) é reconhecida pela parcela amarrada a ESTA
+  invoice com ESTE pagamento (`stripe_intent`): lança e para, sem refazer a
+  conta — senão a quitada viraria cobrança a mais e a equipe reembolsaria
+  parcela legítima.
+  **O estorno desfaz pela DIFERENÇA** (`estornoNaParcela`), nunca voltando
+  ao valor antigo: a trilha `installment_allocation` (gravada ANTES, com o id
+  do recebimento) diz o que cada parcela recebeu; em aberto, soma de volta;
+  paga (pelo Stripe ou por outro recebimento depois), reabre com o que este
+  cobria. A soma do em aberto sobe exatamente o estornado — varredura em
+  teste. O Stripe só DIMINUI cobrança: parcela cuja cobrança do período já
+  existe, a que ficou fora do agendamento e qualquer uma de plano encerrado
+  não voltam a ser debitadas, e a mensagem diz quanto receber por fora,
+  parcela a parcela. `paid_installments` é recontado, nunca `+1`.
+  Entrada paga por fora: sem caminho ainda.
+  **Não testado daqui**: as chamadas ao Stripe (item negativo no rascunho,
+  `retrieve`, anulação) — o container não tem chave. Os parâmetros conferem
+  com os tipos do `stripe-node` 23 (`amount` negativo em `invoiceItems.create`
+  "reduz o `amount_due`"). O resto foi exercitado pela rota de verdade contra
+  um PostgREST simulado, inclusive o estorno depois de o Stripe debitar a
+  parcela abatida.
   **Anular é a única saída destrutiva, e só a amarração idempotente a
   autoriza** (`amarrarCobrancaAParcela`, `lib/parcela-stripe.ts`). O Stripe
   entrega cada evento pelo menos uma vez, e o `invoice.paid` pode chegar
@@ -774,9 +821,9 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   leitura que falha LANÇA — 500, o Stripe reenvia. `parcelaDaInvoice` também
   lança: no `invoice.paid`, o null de uma leitura que falhou deixava o
   pagamento sem lançamento e mandava a equipe REEMBOLSAR uma parcela
-  legítima (`cobranca_a_mais`). 42 casos em `testes/parcela-stripe.mts`, com
-  banco falso que injeta falha e corrida; a auditoria exige que a anulação
-  tenha um ponto de chamada só, debaixo de `sem_parcela`.
+  legítima (`cobranca_a_mais`). 48 casos em `testes/parcela-stripe.mts`, com
+  banco falso que injeta falha e corrida; a auditoria exige que toda
+  anulação esteja debaixo de `sem_parcela` ou da parcela PAGA do período.
 - **As parcelas são agendadas por `duration`, NUNCA por `iterations` — e
   até 10/2026 nenhuma foi cobrada** (`lib/agendamento-parcelas.ts`, 44 casos
   em `testes/agendamento-parcelas.mts`). O webhook criava o
@@ -838,17 +885,38 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   entrada devolvida (ele recusa), e a entrada em dobro é estorno.
   **Não testado daqui**: a chamada real ao Stripe (o container não tem chave);
   os parâmetros conferem com os tipos do `stripe-node` 23 (API `2026-09-30`).
-- **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador.**
-  `lib/parcela-stripe.ts`: a parcela é a amarrada a `stripe_invoice` (gravada
-  no `invoice.finalized`) e, na falta, a primeira em aberto do cronograma.
-  `paid_installments` é **recontado** do cronograma, não incrementado.
-  `paid_installments + 1` errava sempre que o Stripe entregava evento fora de
-  ordem, uma parcela falhava e a seguinte passava, ou houve baixa manual.
+- **Qual parcela o Stripe está cobrando vem da invoice, nunca de contador —
+  e cada cobrança é a do SEU período.** `lib/parcela-stripe.ts`: a parcela é
+  a amarrada a `stripe_invoice` (gravada no `invoice.created` ou no
+  `finalized`) e, na falta, a de menor número ainda sem cobrança, EM ABERTO
+  OU PAGA por fora (`STATUS_AMARRAVEIS`) — pular a paga era o que levava o
+  débito do mês dela para a seguinte. A paga ANTES de um agendamento manual
+  ("Conferir pagamento e agendar", que monta as fases só com as abertas)
+  leva a marca `paga-antes-do-agendamento` e fica fora da amarração; a marca
+  não é cobrança (`cobrancaNoStripe`). `paid_installments` é **recontado**
+  do cronograma, não incrementado. `paid_installments + 1` errava sempre que
+  o Stripe entregava evento fora de ordem, uma parcela falhava e a seguinte
+  passava, ou houve baixa manual. O agendamento do webhook nasce do
+  cronograma parcela por parcela (`fasesDosValores`: valores iguais em
+  sequência viram uma fase; a paga vira período de zero).
 - **Encerrar parcelamento é `lib/parcelamento.ts`, em todos os caminhos.**
   Quitação, fatura quitada pelo Stripe e cancelamento da fatura chamam a
   mesma rotina. Ela também FECHA as invoices de parcela já abertas no
   Stripe: cancelar a assinatura não fecha invoice finalizada, e a parcela
   em NSF voltava a cobrar depois da fatura quitada.
+- **Encerrar agendamento no Stripe é SEM crédito proporcional**
+  (`subscriptionSchedules.cancel(id, { invoice_now: false, prorate: false })`,
+  em `lib/parcelamento.ts`, `/api/billing/payments` e `/api/billing/contratos`).
+  O cancelamento de AGENDAMENTO tem `prorate` e `invoice_now` ligados por
+  padrão — conferido nos tipos do `stripe-node` 23; o de ASSINATURA não. Com o
+  padrão, quitar ou cancelar um parcelamento (ou encerrar um contrato por
+  débito) no meio do período fazia o Stripe creditar a parte não usada do
+  mês no SALDO do cliente lá, que abate sozinho a próxima cobrança dele — um
+  desconto que o sistema não vê, e a fatura seguinte ficava "parcial" sem
+  ninguém saber por quê. A parcela cobrada é dívida da fatura, não aluguel
+  por dia; devolver parte do mês, se for o caso, é ato da equipe, com rastro.
+  A auditoria recusa qualquer `subscriptionSchedules.cancel` sem
+  `prorate: false`.
 - **Dinheiro que volta é `lib/estorno-stripe.ts`.** Reembolso integral no
   painel do Stripe, contestação PERDIDA e ACH devolvido depois de confirmado
   desfazem o recebimento: `payment_reversals` antes, recebimento depois,

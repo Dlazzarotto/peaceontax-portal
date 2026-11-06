@@ -443,18 +443,142 @@ checar('Total de parcelas e recontado, nao incrementado', 'lib/parcela-stripe.ts
 {
   const W = 'app/api/stripe/webhook/route.ts'
   checar('Cobranca so e anulada quando a amarracao diz sem parcela', W,
-         /const destino = await amarrarCobrancaAParcela\(db, plan\.invoice_id, invoice\.id as string\)\s*if \(destino\.acao === 'sem_parcela'\) \{[\s\S]{0,700}?await anularCobrancaSemParcela\(db, stripe, plan, invoice\)/,
+         /const destino = await amarrarCobrancaAParcela\(db, plan\.invoice_id, invoice\.id as string\)[\s\S]{0,700}?if \(destino\.acao === 'sem_parcela'\) \{[\s\S]{0,700}?await anularCobrancaSemParcela\(db, stripe, plan, invoice\)/,
          'o evento repetido da ultima parcela, ou uma leitura que falha, anulava a cobranca legitima')
-  const chamadas = existsSync(join(raiz, W))
-    ? (readFileSync(join(raiz, W), 'utf8').match(/await anularCobrancaSemParcela\(/g) || []).length : 0
-  chamadas === 1 ? ok('Anular cobranca tem um ponto de chamada so')
-    : falta('Anular cobranca tem um ponto de chamada so', `achei ${chamadas}: anular por outro caminho pula a amarracao idempotente`)
+  // Desde 11/2026 (amarracao POR PERIODO) a cobranca tambem se anula quando a
+  // parcela do periodo esta PAGA por fora -- e so entao. Cada chamada tem de
+  // estar debaixo de `sem_parcela` ou de `status === 'paid'`: anular a
+  // cobranca de uma parcela que ainda deve e o cliente sem debito, sem aviso.
+  {
+    const texto = existsSync(join(raiz, W)) ? readFileSync(join(raiz, W), 'utf8') : ''
+    const pontos = [...texto.matchAll(/await anularCobrancaSemParcela\(/g)].map(m => m.index)
+    const soltas = pontos.filter(i => !/sem_parcela|status === 'paid'/.test(texto.slice(Math.max(0, i - 700), i)))
+    if (!pontos.length) falta('Anular cobranca so sem parcela ou com a parcela paga', 'ancora perdida: nenhuma chamada de anularCobrancaSemParcela')
+    else soltas.length
+      ? falta('Anular cobranca so sem parcela ou com a parcela paga', `${soltas.length} chamada(s) sem a guarda: anularia a cobranca de parcela que ainda deve`)
+      : ok('Anular cobranca so sem parcela ou com a parcela paga')
+  }
   for (const [rotulo, re] of [
-    ['parcelaDaInvoice lanca quando a leitura falha', /if \(erroAmarrada\) throw[\s\S]{0,400}?if \(erroAberta\) throw/],
+    ['parcelaDaInvoice lanca quando a leitura falha', /if \(erroAmarrada\) throw[\s\S]{0,800}?if \(erroLivre\) throw/],
     ['A amarracao lanca quando a leitura falha', /if \(error\) throw new Error\(`amarrarCobrancaAParcela[\s\S]{0,1600}?if \(erroAberta\) throw[\s\S]{0,1600}?if \(erroUpdate\) throw/],
     ['A amarracao confere de novo antes de dizer sem parcela', /const depois = await jaAmarrada\(\)\s*return depois != null \? \{ acao: 'ja_amarrada', seq: depois \} : \{ acao: 'sem_parcela' \}/],
     ['A amarracao so grava parcela ainda livre', /\.eq\('seq', seq\)\.is\('stripe_invoice', null\)/],
   ]) checar(rotulo, 'lib/parcela-stripe.ts', re, 'consulta que falha ou entrega repetida viraria "sem parcela" e a cobranca seria anulada')
+}
+const tiraComentariosP = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+// Recebimento por fora numa fatura parcelada (decisao do socio, 11/2026):
+// quem recebe ESCOLHE a parcela, ela nao e debitada no mes dela, o excedente
+// abate do fim e cada cobranca do Stripe sai com o que falta da parcela do
+// periodo. A regra e UMA (lib/recebimento-parcelado.ts): a tela mostra antes e
+// a rota grava pela mesma funcao. Os elos com o Stripe: a amarracao por
+// periodo inclui a parcela PAGA (senao a cobranca do mes dela pularia para a
+// seguinte, o defeito da regra antiga), o rascunho e abatido no
+// invoice.created, o agendamento nasce do cronograma parcela por parcela, e o
+// estorno desfaz o que o recebimento mudou.
+{
+  const R = 'app/api/billing/payments/route.ts'
+  const W = 'app/api/stripe/webhook/route.ts'
+  const T = 'app/dashboard/billing/page.tsx'
+  checar('Recebimento parcelado: a rota decide pela alocacao', R, /decisao = alocarRecebimento\(\{/, 'a rota voltaria a aceitar so a parcela exata da vez')
+  checar('Recebimento parcelado: a tela mostra pela mesma funcao', T, /alocarRecebimento\(\{ parcelas: cobranca\.cronograma/, 'a tela mostraria uma coisa e a rota faria outra')
+  checar('Recebimento parcelado: a tela manda a parcela clicada', T, /\{ parcela: rParcela \}/, 'a rota aplicaria o valor na proxima parcela, nao na escolhida')
+  checar('A amarracao por periodo inclui a parcela paga', 'lib/parcela-stripe.ts', /STATUS_AMARRAVEIS = \['scheduled', 'failed', 'paid'\]/,
+         'a cobranca do mes da parcela paga por fora pularia para a seguinte e o cliente seria debitado no mesmo mes')
+  checar('O rascunho da cobranca e abatido no invoice.created', W, /event\.type === 'invoice\.created'[\s\S]{0,1800}?abaterCobrancaDaParcela\(db, stripe, plan, invoice, destino\.seq\)/,
+         'o Stripe debitaria a parcela inteira mesmo com parte paga por fora')
+  checar('O agendamento nasce do cronograma, parcela por parcela', W, /fasesDosValores\(\{ frequencia: plan\.frequency/,
+         'n parcelas iguais cobrariam errado o cronograma desigual')
+  checar('Parcela paga nao vira falha no debito recusado', W, /alvo && alvo\.status === 'paid'/, 'a parcela paga por fora seria marcada como debito falhado')
+  checar('O estorno desfaz o que o recebimento mudou no cronograma', R, /desfazerAlocacao\(dbR, String\(b\.paymentId\)/,
+         'o estorno deixaria a parcela quitada e o Stripe sem cobrar um dinheiro que nao entrou')
+  checar('O agendamento manual marca a parcela paga antes dele', 'app/api/billing/installment-plan/route.ts',
+         /update\(\{ stripe_invoice: PAGA_ANTES_DO_AGENDAMENTO \}\)/, 'a primeira cobrança iria para uma parcela ja paga e a ultima nunca seria cobrada')
+
+  // A cobranca de $0 (periodo de parcela ja paga) tambem se AMARRA, nos tres
+  // eventos -- antes ela saia pelo "ignora $0" sem amarrar, e a cobranca do
+  // periodo seguinte pegava a parcela dela: o cronograma inteiro escorregava,
+  // o cliente era cobrado uma a menos e a ultima ficava aberta para sempre.
+  {
+    const texto = existsSync(join(raiz, W)) ? tiraComentariosP(readFileSync(join(raiz, W), 'utf8')) : ''
+    const bloco = (ev) => {
+      const ini = texto.indexOf(`event.type === '${ev}'`)
+      if (ini < 0) return null
+      const fim = texto.indexOf("event.type === '", ini + 20)
+      return texto.slice(ini, fim < 0 ? undefined : fim)
+    }
+    const rot = 'A cobranca de $0 do parcelamento se amarra antes de sair'
+    const fin = bloco('invoice.finalized'), pago = bloco('invoice.paid'), criado = bloco('invoice.created')
+    if (!fin || !pago || !criado) falta(rot, 'ancora perdida: bloco do invoice.finalized, .paid ou .created nao encontrado')
+    else {
+      const problemas = []
+      const iAm = fin.indexOf('amarrarCobrancaAParcela('), iZero = fin.indexOf('amount_due ?? 0) <= 0) return')
+      if (iAm < 0 || iZero < 0) problemas.push('finalized: ancora perdida')
+      else if (iZero < iAm) problemas.push('finalized sai no $0 antes de amarrar')
+      if (!/if \(\(invoice\.amount_paid \?\? 0\) <= 0\) \{[\s\S]{0,300}?amarrarCobrancaAParcela\(/.test(pago)) problemas.push('paid sai no $0 sem amarrar')
+      const iAmC = criado.indexOf('amarrarCobrancaAParcela(')
+      if (iAmC < 0) problemas.push('created: ancora perdida')
+      else if (/!==\s*'draft'\)\s*return/.test(criado.slice(0, iAmC))) problemas.push('created sai antes de amarrar quando nao e rascunho')
+      problemas.length ? falta(rot, problemas.join('; ')) : ok(rot)
+    }
+  }
+  checar('O abatimento le a cobranca de AGORA, nao a foto do evento', W,
+         /async function abaterCobrancaDaParcela[\s\S]{0,900}?const atual = await stripe\.invoices\.retrieve\(invoice\.id as string\)\s*if \(atual\.status !== 'draft'\) return[\s\S]{0,200}?const cobranca = Number\(atual\.total[\s\S]{0,1200}?idempotencyKey: `abatimento-\$\{invoice\.id\}-\$\{cobranca\}-\$\{abatimento\}`/,
+         'o evento reenviado depois de outro recebimento criaria um segundo abatimento com o valor errado')
+  checar('Debito MENOR que o que falta nao quita a parcela', W,
+         /debitoNaParcela\(\{ faltaCentavos[\s\S]{0,200}?if \(debito\.tipo === 'falta'\) \{\s*await debitoAbaixoDaParcela\(/,
+         'a parcela ficaria paga com menos e o resto sumiria: fatura com saldo e nenhuma parcela para recebe-lo')
+  checar('O debito abaixo deixa a parcela EM ABERTO com o resto', W,
+         /async function debitoAbaixoDaParcela[\s\S]{0,1000}?amount: resto \/ 100, status: 'scheduled'/,
+         'o resto do debito sumiria do cronograma')
+  checar('Entrega repetida do debito que ja quitou a parcela nao vira cobranca a mais', W,
+         /const jaAplicado = !!parcela && parcela\.stripeInvoice === invoice\.id && !!parcela\.stripeIntent[\s\S]{0,200}?if \(jaAplicado\) \{\s*await relancarDebitoDaParcela\([^)]*\)\s*\} else if \(parcela && parcela\.status !== 'paid'\)/,
+         'refazer a conta leria a parcela ja mexida: a abaixo do devido viraria excesso, a quitada viraria cobranca a mais e a equipe reembolsaria parcela legitima')
+  checar('O excedente do debito nao quita parcela com cobranca emitida', W,
+         /async function excedenteDoDebito[\s\S]{0,900}?filter\(\(l: any\) => emAberto\(l\) && !emitida\(l\)\)/,
+         'a parcela ficaria paga com a cobranca dela ainda aberta no Stripe, que tentaria de novo')
+  {
+    const rot = 'O estorno desfaz pela diferenca, nao pelo valor antigo'
+    const texto = existsSync(join(raiz, R)) ? tiraComentariosP(readFileSync(join(raiz, R), 'utf8')) : ''
+    const ini = texto.indexOf('async function desfazerAlocacao')
+    const corpo = ini < 0 ? '' : texto.slice(ini, texto.indexOf('\n}\n', ini))
+    if (!corpo) falta(rot, 'ancora perdida: desfazerAlocacao nao encontrada')
+    else if (!/estornoNaParcela\(\{ linha, mudanca: m \}\)/.test(corpo)) falta(rot, 'desfazerAlocacao nao passa por estornoNaParcela')
+    else if (/amount: Number\(m\.de\)/.test(corpo)) falta(rot, 'volta ao valor antigo: apagaria o debito ou o recebimento feito depois')
+    else ok(rot)
+  }
+  {
+    const rot = 'A primeira cobranca so se protege com agendamento no Stripe'
+    const texto = existsSync(join(raiz, R)) ? readFileSync(join(raiz, R), 'utf8') : ''
+    const chamadas = (texto.match(/primeiraCobrancaDo\(/g) || []).length
+    const certas = (texto.match(/primeiraCobrancaDo\(cronograma, !!\(plano\.stripe_schedule_id \|\| plano\.stripe_subscription_id\)\)/g) || []).length
+    if (!chamadas) falta(rot, 'ancora perdida: nenhuma chamada de primeiraCobrancaDo')
+    else chamadas !== certas
+      ? falta(rot, `${chamadas - certas} chamada(s) sem dizer se ha agendamento: recusaria abater a parcela 1 de quem ainda nao cadastrou o cartao`)
+      : ok(rot)
+  }
+  checar('Tirar da linha nao alarma cobranca ja paga ou anulada', R,
+         /async function tirarDaLinha[\s\S]{0,900}?invoices\.retrieve\(stripeInvoice\)\)\.status\s*return st === 'paid' \|\| st === 'void'/,
+         'a parcela reaberta por estorno, recebida depois, daria aviso falso de que o Stripe nao foi avisado')
+}
+
+// Cancelar um AGENDAMENTO no Stripe tem `prorate` e `invoice_now` ligados por
+// padrao (tipos do stripe-node 23): a parte nao usada do periodo vira credito
+// no saldo do cliente no Stripe, que abate sozinho a proxima cobranca dele --
+// desconto que o sistema nao ve. Toda chamada diz prorate: false.
+{
+  const rot = 'Encerrar agendamento no Stripe sem credito proporcional'
+  const fontes = [...arquivos(join(raiz, 'app'), ['.ts', '.tsx']), ...arquivos(join(raiz, 'lib'), ['.ts', '.tsx'])]
+  const soltas = []
+  let total = 0
+  for (const f of fontes) {
+    const texto = tiraComentariosP(readFileSync(f, 'utf8'))
+    for (const m of texto.matchAll(/subscriptionSchedules\.cancel\(([^)]*)\)/g)) {
+      total++
+      if (!/prorate:\s*false/.test(m[1])) soltas.push(rel(f))
+    }
+  }
+  if (!total) falta(rot, 'ancora perdida: nenhuma chamada de subscriptionSchedules.cancel encontrada')
+  else soltas.length ? falta(rot, `sem prorate: false em ${soltas.join(', ')}`) : ok(rot)
 }
 checar('Webhook usa a lib da parcela', 'app/api/stripe/webhook/route.ts', "from '@/lib/parcela-stripe'", 'webhook voltaria a contar na mao')
 checar('Webhook: cobranca anulada no Stripe cancela a fatura aqui', 'app/api/stripe/webhook/route.ts', "event.type === 'invoice.voided'", 'fatura anulada la seguia no contas a receber aqui')

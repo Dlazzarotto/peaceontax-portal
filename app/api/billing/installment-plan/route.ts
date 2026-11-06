@@ -38,7 +38,7 @@ import { avancarData } from '@/lib/plans'
 import { dataDaFirma } from '@/lib/dia-da-firma'
 import { fmtUS } from '@/lib/format'
 import {
-  agendarParcelas, fasesDoParcelamento, pagamentoDaSessao, sessoesDoPlano, metodoDoTipo,
+  agendarParcelas, fasesDoParcelamento, fasesDosValores, pagamentoDaSessao, sessoesDoPlano, metodoDoTipo,
   entradaIntegra, entradaQueVoltou, type PagamentoDaSessao,
 } from '@/lib/agendamento-parcelas'
 import { filtroDeRecebimento, lancarRecebimentoStripe } from '@/lib/recebimento-stripe'
@@ -52,6 +52,7 @@ import { montarCronograma } from '@/lib/cronograma-parcelas'
 import { criarSessaoDoPlano, stripeClient } from '@/lib/plan-checkout'
 import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL, type ResultadoEmail } from '@/lib/avisos'
 import { encerrarParcelamento } from '@/lib/parcelamento'
+import { PAGA_ANTES_DO_AGENDAMENTO } from '@/lib/parcela-stripe'
 import { entradaDoPedido } from '@/lib/entrada-parcelamento'
 import { createClient } from '@supabase/supabase-js'
 
@@ -750,8 +751,11 @@ async function agendarParcelamentoTravado(auth: { userId: string; isStaff: boole
       }, { status: 409 })
     }
   }
+  // Com fatura, uma fase por trecho de parcelas iguais, pelo que FALTA de
+  // cada uma: o recebimento por fora deixa o cronograma desigual (parcela
+  // abatida), e "n iguais com o centavo na última" cobraria errado.
   const conta = plano.invoice_id
-    ? fasesDoParcelamento({ frequencia: freq, parcelas: abertas.length, valorParcela: abertas[0].amount, restante: abertas.reduce((s: number, p: any) => s + Number(p.amount || 0), 0) })
+    ? fasesDosValores({ frequencia: freq, valores: abertas.map((p: any) => p.amount) })
     : fasesDoParcelamento({ frequencia: freq, parcelas: plano.installments, valorParcela: plano.installment_amount, restante: Number(plano.total) - Number(plano.entry_amount || 0) })
   if ('erro' in conta) return NextResponse.json({ error: `O cronograma não vira agendamento: ${conta.erro}.` }, { status: 409 })
 
@@ -807,7 +811,15 @@ async function agendarParcelamentoTravado(auth: { userId: string; isStaff: boole
   // O status da fatura com o vencimento novo (a definição mora no banco).
   if (inv) await db.rpc('recalcular_status_da_fatura', { fid: inv.id }).then(() => null, () => null)
 
-  // 7. O agendamento.
+  // 7. O agendamento. Ele cobra só as parcelas EM ABERTO, na ordem: a paga
+  //    por fora antes dele não pode receber cobrança de período nenhum, e a
+  //    amarração por período (lib/parcela-stripe.ts) a pularia só sem marca.
+  if (inv) {
+    const { error: errMarca } = await db.from('invoice_installments')
+      .update({ stripe_invoice: PAGA_ANTES_DO_AGENDAMENTO })
+      .eq('invoice_id', inv.id).eq('status', 'paid').is('stripe_invoice', null)
+    if (errMarca) return NextResponse.json({ error: `Não deu para marcar as parcelas já pagas: ${errMarca.message}. Nada foi agendado.` }, { status: 500 })
+  }
   let ag
   try {
     ag = await agendarParcelas(stripeClient(), plano, conta, feito.paymentMethod!, new Date(`${primeira}T12:00:00Z`))

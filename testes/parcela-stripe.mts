@@ -8,7 +8,7 @@
 // antes, a leitura que falha e duas entregas ao mesmo tempo. Banco falso em
 // memória, com falha e corrida injetáveis.
 
-import { amarrarCobrancaAParcela, parcelaDaInvoice, recontarParcelas } from '../lib/parcela-stripe.ts'
+import { amarrarCobrancaAParcela, parcelaDaInvoice, recontarParcelas, PAGA_ANTES_DO_AGENDAMENTO } from '../lib/parcela-stripe.ts'
 
 let passou = 0, falhou = 0
 const eq = (n: string, a: any, b: any) => {
@@ -66,7 +66,7 @@ function bancoFalso(linhas: Linha[], aoExecutar?: (c: Chamada, banco: { linhas: 
 }
 
 const P = (seq: number, status = 'scheduled', stripe_invoice: string | null = null, invoice_id = 'F') =>
-  ({ invoice_id, seq, status, stripe_invoice })
+  ({ invoice_id, seq, status, stripe_invoice, amount: 350 })
 const cronograma = () => [P(1), P(2), P(3), P(1, 'scheduled', null, 'OUTRA')]
 const amarras = (b: { linhas: Linha[] }, fatura = 'F') =>
   b.linhas.filter(l => l.invoice_id === fatura).map(l => `${l.seq}:${l.stripe_invoice ?? '-'}`)
@@ -75,16 +75,16 @@ const lanca = async (f: () => Promise<any>) => { try { await f(); return 'não l
 ;(async () => {
   // ── Casos que já existiam (parcelaDaInvoice e recontarParcelas) ────────
   // O banco falso antigo devolvia a linha inteira; o PostgREST devolve só as
-  // colunas pedidas (`seq, status`), e é isso que este devolve agora.
+  // colunas pedidas (`seq, status, amount`), e é isso que este devolve agora.
   {
     const plan = { id: 'p1', invoice_id: 'inv1', paid_installments: 0 }
     const cron = (over: any[] = []) => {
-      const base = [1, 2, 3, 4].map(seq => ({ invoice_id: 'inv1', seq, status: 'scheduled', stripe_invoice: null as string | null }))
+      const base = [1, 2, 3, 4].map(seq => ({ invoice_id: 'inv1', seq, status: 'scheduled', stripe_invoice: null as string | null, amount: 100 }))
       for (const o of over) Object.assign(base[o.seq - 1], o)
       return base
     }
     // 1. caso simples: nada amarrado, primeira em aberto
-    eq('primeira em aberto', await parcelaDaInvoice(bancoFalso(cron()), plan, { id: 'in_A' }), { seq: 1, status: 'scheduled' })
+    eq('primeira em aberto', await parcelaDaInvoice(bancoFalso(cron()), plan, { id: 'in_A' }), { seq: 1, status: 'scheduled', amount: 100, stripeInvoice: null, stripeIntent: null })
     // 2. A INVOICE MANDA: a 3a foi amarrada no finalized, mesmo com a 1a em aberto
     eq('amarrada vence a ordem', (await parcelaDaInvoice(
       bancoFalso(cron([{ seq: 3, stripe_invoice: 'in_C' }])), plan, { id: 'in_C' }))?.seq, 3)
@@ -96,11 +96,13 @@ const lanca = async (f: () => Promise<any>) => { try { await f(); return 'não l
     // 4. parcela que falhou e foi recobrada: continua sendo a mesma
     eq('recobrança cai na mesma parcela', (await parcelaDaInvoice(
       bancoFalso(cron([{ seq: 2, status: 'failed', stripe_invoice: 'in_B' }])), plan, { id: 'in_B' }))?.seq, 2)
-    // 5. cronograma todo pago e chega evento repetido: não inventa parcela
-    const erroOriginal = console.error; console.error = () => {}
-    eq('sem parcela em aberto devolve null', await parcelaDaInvoice(
-      bancoFalso(cron([{ seq: 1, status: 'paid' }, { seq: 2, status: 'paid' }, { seq: 3, status: 'paid' }, { seq: 4, status: 'paid' }])), plan, { id: 'in_X' }), null)
-    console.error = erroOriginal
+    // 5. Cronograma todo pago POR FORA (nenhuma parcela com cobrança): a
+    //    cobrança é do período da 1ª, que está paga. Antes devolvia null; agora
+    //    devolve a parcela paga e quem chama trata como cobrado a mais (no
+    //    invoice.paid) e não marca falha (no invoice.payment_failed).
+    eq('todo pago por fora: devolve a parcela paga do período', await parcelaDaInvoice(
+      bancoFalso(cron([{ seq: 1, status: 'paid' }, { seq: 2, status: 'paid' }, { seq: 3, status: 'paid' }, { seq: 4, status: 'paid' }])), plan, { id: 'in_X' }),
+      { seq: 1, status: 'paid', amount: 100, stripeInvoice: null, stripeIntent: null })
     // 6. recontagem: o total vem do cronograma, não do contador
     eq('reconta do cronograma', await recontarParcelas(
       bancoFalso(cron([{ seq: 1, status: 'paid' }, { seq: 3, status: 'paid' }])), { ...plan, paid_installments: 99 }), 2)
@@ -142,12 +144,20 @@ const lanca = async (f: () => Promise<any>) => { try { await f(); return 'não l
     eq('a última, paga antes de emitida, também não é anulada', await amarrarCobrancaAParcela(ultima, 'F', 'in_3'), { acao: 'ja_amarrada', seq: 3 })
   }
 
-  // ── Parcela paga por fora: a régua anda e a cobrança que sobra é anulada
+  // ── Parcela paga por fora: a cobrança do período DELA vai para ela (o
+  //    webhook a zera no rascunho ou a anula no finalized). Na regra antiga a
+  //    1ª cobrança pulava para a parcela 2 — o cliente que pagou em Zelle era
+  //    debitado no mesmo mês, e só a última deixava de ser cobrada.
   {
     const b = bancoFalso([P(1, 'paid'), P(2), P(3)])
-    eq('parcela 1 paga por fora: a 1ª cobrança vai para a 2', await amarrarCobrancaAParcela(b, 'F', 'in_1'), { acao: 'amarrada', seq: 2 })
-    eq('a 2ª vai para a 3', await amarrarCobrancaAParcela(b, 'F', 'in_2'), { acao: 'amarrada', seq: 3 })
-    eq('a 3ª sobrou: sem parcela', await amarrarCobrancaAParcela(b, 'F', 'in_3'), { acao: 'sem_parcela' })
+    eq('parcela 1 paga por fora: a 1ª cobrança vai para ELA, não para a 2', await amarrarCobrancaAParcela(b, 'F', 'in_1'), { acao: 'amarrada', seq: 1 })
+    eq('a 2ª vai para a 2', await amarrarCobrancaAParcela(b, 'F', 'in_2'), { acao: 'amarrada', seq: 2 })
+    eq('a 3ª vai para a 3', await amarrarCobrancaAParcela(b, 'F', 'in_3'), { acao: 'amarrada', seq: 3 })
+    eq('uma 4ª sobrou: sem parcela', await amarrarCobrancaAParcela(b, 'F', 'in_4'), { acao: 'sem_parcela' })
+    eq('paga fora de ordem: o período dela continua sendo dela',
+       await amarrarCobrancaAParcela(bancoFalso([P(1, 'paid', 'in_1'), P(2), P(3, 'paid')]), 'F', 'in_2'), { acao: 'amarrada', seq: 2 })
+    eq('paga ANTES do agendamento fica de fora (o agendamento só cobra as em aberto)',
+       await amarrarCobrancaAParcela(bancoFalso([P(1, 'paid', PAGA_ANTES_DO_AGENDAMENTO), P(2)]), 'F', 'in_1'), { acao: 'amarrada', seq: 2 })
     eq('parcela que falhou e não tem cobrança é escolhida',
        await amarrarCobrancaAParcela(bancoFalso([P(1, 'failed'), P(2)]), 'F', 'in_9'), { acao: 'amarrada', seq: 1 })
     eq('parcela amarrada a OUTRA cobrança não é tomada',
@@ -196,8 +206,14 @@ const lanca = async (f: () => Promise<any>) => { try { await f(); return 'não l
   {
     const plano = { id: 'p1', invoice_id: 'F' }
     const b = bancoFalso([P(1, 'paid', 'in_1'), P(2, 'failed', 'in_2'), P(3)])
-    eq('a parcela amarrada a esta cobrança, mesmo paga', await parcelaDaInvoice(b, plano, { id: 'in_1' }), { seq: 1, status: 'paid' })
-    eq('sem amarração: a primeira em aberto', await parcelaDaInvoice(b, plano, { id: 'in_novo' }), { seq: 2, status: 'failed' })
+    eq('a parcela amarrada a esta cobrança, mesmo paga', await parcelaDaInvoice(b, plano, { id: 'in_1' }), { seq: 1, status: 'paid', amount: 350, stripeInvoice: 'in_1', stripeIntent: null })
+    eq('sem amarração: a de menor número ainda sem cobrança', await parcelaDaInvoice(b, plano, { id: 'in_novo' }), { seq: 3, status: 'scheduled', amount: 350, stripeInvoice: null, stripeIntent: null })
+    eq('sem amarração e o período é de uma parcela paga por fora: devolve ela',
+       await parcelaDaInvoice(bancoFalso([P(1, 'paid'), P(2)]), plano, { id: 'in_novo' }), { seq: 1, status: 'paid', amount: 350, stripeInvoice: null, stripeIntent: null })
+    eq('a paga antes do agendamento não recebe cobrança',
+       await parcelaDaInvoice(bancoFalso([P(1, 'paid', PAGA_ANTES_DO_AGENDAMENTO), P(2)]), plano, { id: 'in_novo' }), { seq: 2, status: 'scheduled', amount: 350, stripeInvoice: null, stripeIntent: null })
+    eq('a quitada por ESTA cobrança traz o pagamento (entrega repetida ≠ cobrado a mais)',
+       (await parcelaDaInvoice(bancoFalso([{ ...P(1, 'paid', 'in_1'), stripe_intent: 'pi_1' }, P(2)]), plano, { id: 'in_1' }))?.stripeIntent, 'pi_1')
     const erroOriginal = console.error; console.error = () => {}
     eq('cronograma todo pago: nenhuma', await parcelaDaInvoice(bancoFalso([P(1, 'paid', 'in_1')]), plano, { id: 'in_9' }), null)
     console.error = erroOriginal

@@ -33,7 +33,7 @@ import { FREQ_STRIPE, type Frequency } from './plans.ts'
 const MINIMO_CENTAVOS = 50
 
 export interface FaseDoParcelamento {
-  rotulo: 'unica' | 'base' | 'ultima'
+  rotulo: 'unica' | 'base' | 'ultima' | 'trecho'
   /** Quantas parcelas esta fase cobra. */
   parcelas: number
   /** O valor de CADA parcela da fase, em centavos. */
@@ -96,6 +96,45 @@ export function fasesDoParcelamento(p: {
         { rotulo: 'ultima', parcelas: 1, centavos: ultimaC, duration: dura(1) },
       ]
   return { fases, recorrencia: { ...recorrencia }, totalCentavos: fases.reduce((s, f) => s + f.parcelas * f.centavos, 0) }
+}
+
+/**
+ * As fases do agendamento a partir do valor de CADA parcela, na ordem do
+ * cronograma — o que o agendamento cobra em cada período.
+ *
+ * Existe porque o recebimento por fora (lib/recebimento-parcelado.ts) deixa as
+ * parcelas DESIGUAIS: a paga por fora vale zero, a abatida vale o que falta.
+ * `fasesDoParcelamento` só sabe "n iguais e a última com o centavo"; agendar
+ * por ela um cronograma desigual cobraria a mais nuns períodos e a menos
+ * noutros (o abatimento do webhook só DIMINUI uma cobrança, nunca aumenta).
+ *
+ * Parcelas iguais e seguidas viram uma fase. A parcela paga por fora entra
+ * com ZERO: o período continua existindo — é ele que mantém cada cobrança no
+ * período da sua parcela — e sai de $0, sem débito.
+ */
+export function fasesDosValores(p: { frequencia: unknown; valores: unknown[] }): ContaDasFases | { erro: string } {
+  const freq = String(p.frequencia) as Frequency
+  const recorrencia = FREQ_STRIPE[freq]
+  if (!recorrencia) return { erro: `frequência desconhecida (${String(p.frequencia)})` }
+  const valores = (p.valores || []).map(centavos)
+  if (!valores.length || valores.length > 60) return { erro: `quantidade de parcelas inválida (${valores.length})` }
+  if (valores.some(c => c < 0)) return { erro: 'há parcela com valor negativo' }
+  if (valores.some(c => c > 0 && c < MINIMO_CENTAVOS)) return { erro: 'há parcela abaixo de US$ 0,50, o mínimo que o Stripe cobra' }
+  const total = valores.reduce((s, c) => s + c, 0)
+  if (total <= 0) return { erro: 'não há saldo a parcelar' }
+
+  const dura = (k: number) => ({ interval: recorrencia.interval, interval_count: recorrencia.interval_count * k })
+  const grupos: { centavos: number; parcelas: number }[] = []
+  for (const c of valores) {
+    const ultimo = grupos[grupos.length - 1]
+    if (ultimo && ultimo.centavos === c) ultimo.parcelas++
+    else grupos.push({ centavos: c, parcelas: 1 })
+  }
+  const fases: FaseDoParcelamento[] = grupos.map(g => ({
+    rotulo: grupos.length === 1 ? 'unica' : 'trecho',
+    parcelas: g.parcelas, centavos: g.centavos, duration: dura(g.parcelas),
+  }))
+  return { fases, recorrencia: { ...recorrencia }, totalCentavos: total }
 }
 
 // ─────────────────────────── Stripe ───────────────────────────
