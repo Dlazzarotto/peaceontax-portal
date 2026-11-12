@@ -54,6 +54,7 @@ import { enviarEmail, avisarNoPortal, emailComMarca, APP_URL, type ResultadoEmai
 import { encerrarParcelamento } from '@/lib/parcelamento'
 import { PAGA_ANTES_DO_AGENDAMENTO } from '@/lib/parcela-stripe'
 import { entradaDoPedido } from '@/lib/entrada-parcelamento'
+import { podeReceberNoParcelamento } from '@/lib/recebimento-parcelado'
 import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
@@ -114,7 +115,7 @@ export async function GET() {
       // found", e a aba de Parcelamentos não abria. Aqui a fatura é a de
       // ORIGEM do parcelamento: invoice_id. A chave da resposta continua
       // `invoices` (o hint só desambigua), então o map abaixo não muda.
-      .select('id, client_id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, description, clients(name, business_name), invoices!invoice_id(number, total, paid_total)')
+      .select('id, client_id, invoice_id, status, total, entry_pct, entry_amount, frequency, installments, installment_amount, paid_installments, next_charge_date, stripe_session_id, created_at, description, clients(name, business_name), invoices!invoice_id(number, total, paid_total, status)')
       .eq('kind', 'installment')
       // Os SEM fatura também: são os parcelamentos do módulo antigo de
       // orçamentos (Quotes). Com a aba de Planos fora da ficha do cliente,
@@ -187,6 +188,13 @@ export async function GET() {
       // diz — a ação "agendar" confere antes de fazer qualquer coisa.
       podeAgendar: ['awaiting_entry', 'awaiting_setup'].includes(p.status) && !comCobranca.has(p.id),
       entradaPaga: entradaPaga.has(p.id),
+      // "Receber parcela" na própria linha: a MESMA pergunta que faz o quadro
+      // de recebimento tratar a fatura como parcelada (lib/recebimento-parcelado.ts).
+      saldo: round2(Number(p.invoices?.total) - Number(p.invoices?.paid_total)),
+      podeReceber: podeReceberNoParcelamento({
+        status: p.status, temFatura: !!p.invoice_id, statusDaFatura: p.invoices?.status,
+        saldo: round2(Number(p.invoices?.total) - Number(p.invoices?.paid_total)),
+      }),
     })),
     hoje: dataDaFirma(),
     invoices: (faturas || [])

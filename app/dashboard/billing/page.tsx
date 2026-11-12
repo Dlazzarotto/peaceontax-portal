@@ -210,6 +210,8 @@ export default function BillingPage() {
     // paga, e a prévia pela MESMA função da rota (lib/recebimento-parcelado.ts).
     cronograma?: { seq: number; amount: number; status: string; due_date: string | null; stripe_invoice: string | null }[]
     primeiraCobranca?: number | null
+    /** Parcelamento esperando a entrada: o recebimento daqui vai para as parcelas. */
+    esperandoEntrada?: boolean
     podeCobrarDeNovo: boolean
   } | null>(null)
   // A parcela clicada no recebimento de uma fatura parcelada.
@@ -792,6 +794,16 @@ export default function BillingPage() {
     }
   }
 
+  // Da aba Parcelamentos: o MESMO quadro de recebimento da lista de faturas,
+  // aberto na fatura do parcelamento — com a lista de parcelas para clicar.
+  // Quem diz se pode é o servidor (`podeReceber`); a tela não recalcula.
+  const receberDoParcelamento = (pl: any) => abrirRecebimento({
+    id: pl.invoice_id, number: pl.numero, doc_type: 'invoice', status: pl.invoices?.status || 'sent',
+    cliente: pl.cliente, issue_date: '', due_date: null,
+    total: Number(pl.invoices?.total || 0), paid_total: Number(pl.invoices?.paid_total || 0),
+    saldo: Number(pl.saldo || 0), payment_plan: 'installments', expected_method: null,
+  })
+
   const estornar = async (pg: any) => {
     if (!confirm(`Estornar ${money(pg.amount)} (${pg.method})?\n\nA fatura volta a ficar em aberto.`)) return
     setBusy(true); setMsg('')
@@ -802,7 +814,7 @@ export default function BillingPage() {
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
-    setReceber(null); load()
+    setReceber(null); load(); if (aba === 'parcelamentos') loadParcelamentos()
   }
 
   const cobrarCartao = async (inv: Inv, forma: 'card' | 'klarna' | 'us_bank_account' = 'card',
@@ -843,7 +855,7 @@ export default function BillingPage() {
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}`)
-    setReceber(null); load()
+    setReceber(null); load(); if (aba === 'parcelamentos') loadParcelamentos()
   }
 
   const salvarRecebimento = async (confirmarComAch = false) => {
@@ -878,6 +890,8 @@ export default function BillingPage() {
     }
     setMsg(`✓ ${d.message}`)
     setReceber(null); setRRef(''); setApEmail(''); setApSenha(''); setApCodigo(''); load()
+    // Aberto da aba Parcelamentos: a linha precisa mostrar a parcela paga.
+    if (aba === 'parcelamentos') loadParcelamentos()
   }
 
   // Sem a aprovação preenchida o botão não sai do lugar: melhor travar aqui
@@ -1787,6 +1801,16 @@ export default function BillingPage() {
                         {['awaiting_entry', 'awaiting_setup'].includes(pl.status) && pl.stripe_session_id && (
                           <span style={{ fontSize: 12.5, color: '#6A7A9A', marginRight: 10 }}>aguardando o cliente</span>
                         )}
+                        {/* Receber a parcela paga por fora (Zelle, cheque, dinheiro) ou a
+                            que o débito recusou: o mesmo quadro da lista de faturas. A
+                            chave é a da rota (receber); o "pode" vem pronto do servidor. */}
+                        {pl.podeReceber && pcDados.perms?.receber && (
+                          <button onClick={() => receberDoParcelamento(pl)}
+                            style={{ background: '#1A6B4A', border: 'none', color: '#fff', marginRight: 12, borderRadius: 7,
+                              fontSize: 12.5, fontWeight: 700, cursor: 'pointer', padding: '5px 10px' }}>
+                            Receber parcela
+                          </button>
+                        )}
                         {/* Aguardando o cliente e sem agendamento: pode ser que ele já
                             tenha pago e o agendamento tenha travado. Quem diz é o
                             Stripe — o servidor confere antes de fazer qualquer coisa. */}
@@ -2121,6 +2145,13 @@ export default function BillingPage() {
                   <>
                     Clique na parcela que está sendo paga. Ela não é debitada; o que passar dela abate da
                     última parcela para trás, e o que faltar fica nela — o Stripe debita só o que falta.
+                    {cobranca.esperandoEntrada && (
+                      <div style={{ marginTop: 8, padding: '8px 10px', background: '#FDECEC', border: '1px solid #E8B4B4', borderRadius: 8, color: '#7A1A1A', fontWeight: 700 }}>
+                        A ENTRADA deste parcelamento ainda não foi paga, e ela não se recebe por aqui: o cliente a paga
+                        pelo link do portal, e é esse pagamento que põe as parcelas a cobrar. O que você registrar aqui
+                        vai para as parcelas.
+                      </div>
+                    )}
                     <div style={{ marginTop: 8, maxHeight: 190, overflowY: 'auto' as const, border: '1px solid #EAD3A8', borderRadius: 8, background: '#fff' }}>
                       {cobranca.cronograma.map(pc => {
                         const aberta = emAberto(pc)

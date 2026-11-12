@@ -556,6 +556,22 @@ const tiraComentariosP = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:
       ? falta(rot, `${chamadas - certas} chamada(s) sem dizer se ha agendamento: recusaria abater a parcela 1 de quem ainda nao cadastrou o cartao`)
       : ok(rot)
   }
+  // "Receber parcela" na aba Parcelamentos (o sócio não achava onde dar
+  // baixa: o recebimento só existia na lista de faturas). Os três elos: a rota
+  // decide pela regra pura, a tela pede a chave da rota de pagamentos e abre o
+  // MESMO quadro (não uma segunda implementação), e a lista se atualiza.
+  checar('Aba Parcelamentos: o servidor decide quem pode receber', 'app/api/billing/installment-plan/route.ts',
+         /podeReceber: podeReceberNoParcelamento\(\{/,
+         'a tela voltaria a decidir sozinha, e o botao e a trava podem divergir')
+  checar('Aba Parcelamentos: o botao pede receber e obedece ao servidor', T,
+         /pl\.podeReceber && pcDados\.perms\?\.receber && \([\s\S]{0,160}?receberDoParcelamento\(pl\)/,
+         'quem nao pode receber veria o botao e levaria 403, ou quem pode nao o veria')
+  checar('Aba Parcelamentos: abre o MESMO quadro de recebimento', T,
+         /const receberDoParcelamento = \(pl: any\) => abrirRecebimento\(\{/,
+         'um segundo quadro decidiria a parcela de outro jeito')
+  checar('Aba Parcelamentos: a lista se atualiza depois do recebimento', T,
+         /setApCodigo\(''\); load\(\)[\s\S]{0,140}?if \(aba === 'parcelamentos'\) loadParcelamentos\(\)/,
+         'a linha continuaria mostrando a parcela como nao paga')
   checar('Tirar da linha nao alarma cobranca ja paga ou anulada', R,
          /async function tirarDaLinha[\s\S]{0,900}?invoices\.retrieve\(stripeInvoice\)\)\.status\s*return st === 'paid' \|\| st === 'void'/,
          'a parcela reaberta por estorno, recebida depois, daria aviso falso de que o Stripe nao foi avisado')

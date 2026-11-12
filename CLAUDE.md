@@ -742,7 +742,7 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   abrir o cancelamento ali mesmo em vez de mandar procurar em outra aba.
 - **Parcela recebida por fora: quem recebe ESCOLHE a parcela, ela não é
   debitada no mês dela, o excedente abate do FIM e cada débito sai com o que
-  FALTA** (decisão do sócio, 11/2026; `lib/recebimento-parcelado.ts`, 71 casos
+  FALTA** (decisão do sócio, 11/2026; `lib/recebimento-parcelado.ts`, 87 casos
   em `testes/recebimento-parcelado.mts`; `/api/billing/payments`, webhook,
   modal de Receber). Substituiu a regra de 10/2026 — só a parcela exata da
   vez, e "o Stripe cobra UMA A MENOS" no fim —, que tinha um defeito que
@@ -762,7 +762,18 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   evento: reenviado depois de outro recebimento, o evento traria o total
   velho e um segundo item sairia errado.
   A tela chama `alocarRecebimento`, a MESMA função da rota, e mostra antes o
-  que vai acontecer. Três recusas, todas por causa do Stripe e todas dizendo
+  que vai acontecer. **O quadro abre também da aba Parcelamentos** ("Receber
+  parcela" na linha): o MESMO quadro, aberto na fatura do parcelamento —
+  antes o recebimento só existia na lista de faturas, que nasce no dia e do
+  emissor, e quem cuidava do parcelamento não achava onde dar baixa na
+  parcela. Quem pode vem pronto do servidor (`podeReceber`, pela
+  `podeReceberNoParcelamento`: plano vivo pela MESMA lista de
+  `parcelamentoVivo`, fatura emitida e com saldo; o cancelado não oferece) e
+  a tela pede a chave `receber` da rota de pagamentos; depois de receber,
+  estornar ou cobrar de novo, a lista se atualiza. Parcelamento esperando a
+  ENTRADA avisa no quadro que o valor vai para as PARCELAS (a entrada por
+  fora ainda não tem caminho). A auditoria confere os elos, sabotada nos
+  cinco. Três recusas, todas por causa do Stripe e todas dizendo
   o valor que serve: parcela com cobrança JÁ EMITIDA (débito em andamento ou
   falhado) só sai inteira — o valor de invoice finalizada não muda —; a
   PRIMEIRA cobrança de um agendamento não tem rascunho (o Stripe a finaliza
