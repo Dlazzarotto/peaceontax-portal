@@ -6,7 +6,7 @@
 // dobro ou parcela que ninguém cobra.
 
 import { alocarRecebimento, abatimentoDaCobranca, abaterDoFim, primeiraCobrancaDo, MINIMO_CENTAVOS,
-         debitoNaParcela, estornoNaParcela, emitida, cobrancaNoStripe,
+         debitoNaParcela, estornoNaParcela, emitida, cobrancaNoStripe, podeReceberNoParcelamento,
          type ParcelaDoCronograma, type DecisaoDoRecebimento } from '../lib/recebimento-parcelado.ts'
 import { PAGA_ANTES_DO_AGENDAMENTO } from '../lib/parcela-stripe.ts'
 
@@ -194,6 +194,29 @@ eq('centavos: $349.50 → $0.50 devolve $349.00',
   eq('varredura: houve casos de alocação', casos > 20, true)
   eq('varredura: receber e estornar volta o cronograma ao que era, em todos', voltou, casos)
   eq('varredura: com débito no meio, o em aberto sobe exatamente o estornado, em todos', somaCerta, casos)
+}
+
+// ── "Receber parcela" na aba Parcelamentos: quem oferece ────────────────
+// A mesma pergunta do quadro de recebimento (parcelamentoVivo): plano vivo,
+// com fatura emitida e saldo. Antes o recebimento só existia na lista de faturas.
+{
+  const R = (o: any) => podeReceberNoParcelamento({ status: 'active', temFatura: true, statusDaFatura: 'partial', saldo: 1050, ...o })
+  eq('ativo, com fatura e saldo: oferece', R({}), true)
+  eq('débito recusado: oferece (é o caso mais comum de receber por fora)', R({ status: 'payment_failed' }), true)
+  eq('esperando o cartão: oferece (a parcela 1 pode ser paga no balcão)', R({ status: 'awaiting_setup' }), true)
+  eq('esperando a entrada: oferece (o quadro avisa que vai para as parcelas)', R({ status: 'awaiting_entry' }), true)
+  eq('pausado: oferece', R({ status: 'paused' }), true)
+  eq('cancelado: não (o saldo se recebe como fatura comum)', R({ status: 'cancelled' }), false)
+  eq('concluído: não', R({ status: 'completed' }), false)
+  eq('status desconhecido: não (lista fechada)', R({ status: 'qualquer' }), false)
+  eq('sem fatura (módulo antigo): não — não há onde lançar', R({ temFatura: false }), false)
+  eq('fatura quitada: não', R({ statusDaFatura: 'paid', saldo: 0 }), false)
+  eq('fatura cancelada: não', R({ statusDaFatura: 'void' }), false)
+  eq('fatura rascunho: não', R({ statusDaFatura: 'draft' }), false)
+  eq('saldo zero: não', R({ saldo: 0 }), false)
+  eq('saldo ilegível (consulta da fatura falhou): não', R({ saldo: NaN }), false)
+  eq('fatura vencida com saldo: oferece', R({ statusDaFatura: 'overdue' }), true)
+  eq('um centavo de saldo: oferece', R({ saldo: 0.01 }), true)
 }
 
 console.log(`recebimento-parcelado: ${passou} passaram, ${falhou} falharam`)

@@ -133,6 +133,11 @@ export async function GET(req: NextRequest) {
       stripe_invoice: cobrancaNoStripe(l) ? 'emitida' : null,
     })),
     primeiraCobranca,
+    // A entrada ainda não entrou: ela não se recebe por aqui (o cliente a paga
+    // pelo link do portal, e é esse pagamento que põe as parcelas a cobrar). O
+    // que se registrar aqui vai para as PARCELAS — a tela avisa, para ninguém
+    // lançar a entrada como se fosse a parcela 1.
+    esperandoEntrada: plano?.status === 'awaiting_entry',
     podeCobrarDeNovo: aberta && (!!inv?.stripe_invoice || (falhas || []).length > 0),
   }
   return NextResponse.json({ payments: data || [], perms, cobranca })

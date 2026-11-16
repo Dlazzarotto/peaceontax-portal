@@ -33,6 +33,7 @@
 // mostrar antes o que vai acontecer. Em CENTAVOS. testes/recebimento-parcelado.mts.
 
 import { PAGA_ANTES_DO_AGENDAMENTO, STATUS_AMARRAVEIS } from './parcela-stripe.ts'
+import { STATUS_VIVOS } from './parcelamento.ts'
 
 /** Mínimo que o Stripe cobra, em centavos (lib/cronograma-parcelas.ts). */
 export const MINIMO_CENTAVOS = 50
@@ -244,6 +245,28 @@ export function primeiraCobrancaDo(parcelas: ParcelaDoCronograma[], agendado: bo
 export function abatimentoDaCobranca(p: { cobrancaCentavos: number; parcela: { amount: unknown; status: string } }): number {
   const falta = p.parcela.status === 'paid' ? 0 : centavos(p.parcela.amount)
   return Math.max(0, Math.round(p.cobrancaCentavos) - falta)
+}
+
+/**
+ * A linha da aba Parcelamentos oferece "Receber parcela"? É a MESMA pergunta
+ * que faz o quadro de recebimento tratar a fatura como parcelada
+ * (`parcelamentoVivo`, lib/parcelamento.ts): plano vivo, com fatura emitida e
+ * com saldo. Antes o recebimento só existia na lista de faturas, e quem
+ * cuidava do parcelamento não achava onde dar baixa na parcela. Decidido no
+ * servidor e mandado pronto (`podeReceber`) — a tela não recalcula. Plano
+ * encerrado não oferece: o saldo de uma fatura cujo parcelamento acabou se
+ * recebe como fatura comum.
+ */
+export function podeReceberNoParcelamento(p: {
+  status: string
+  temFatura: boolean
+  statusDaFatura?: string | null
+  saldo: unknown
+}): boolean {
+  if (!p.temFatura) return false
+  if (!(STATUS_VIVOS as readonly string[]).includes(String(p.status))) return false
+  if (['draft', 'void', 'paid'].includes(String(p.statusDaFatura ?? ''))) return false
+  return centavos(p.saldo) > 0
 }
 
 /**
