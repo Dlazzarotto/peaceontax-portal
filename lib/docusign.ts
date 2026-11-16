@@ -18,18 +18,54 @@ const OAUTH_BASE = process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com'
 
 const PADRAO_DEMO = /(^|\/\/|\.)(account-d\.docusign\.com|demo\.docusign\.net)/
 
-/** 'demo' (sandbox, sem valor legal) ou 'producao'. */
-export function ambienteDocusign(): 'demo' | 'producao' {
-  return PADRAO_DEMO.test(BASE_PATH) || PADRAO_DEMO.test(OAUTH_BASE) ? 'demo' : 'producao'
+/** O endereço é do sandbox do DocuSign? */
+export const ehEnderecoDemo = (s: string) => PADRAO_DEMO.test(String(s || ''))
+
+/**
+ * 'demo' (sandbox, sem valor legal) ou 'producao' — UMA regra, usada pelo envio
+ * (exigirProducao) e pelo diagnóstico (/api/signatures/diag). Basta um dos dois
+ * endereços ser do sandbox para ser demo: meio caminho andado não assina.
+ */
+export function ambienteDe(p: { basePath: string; oauthBase: string }): 'demo' | 'producao' {
+  return ehEnderecoDemo(p.basePath) || ehEnderecoDemo(p.oauthBase) ? 'demo' : 'producao'
 }
+
+/** Os endereços em uso, com os padrões aplicados — para o diagnóstico ler daqui, não copiar. */
+export function enderecosDocusign() {
+  return {
+    basePath: BASE_PATH, oauthBase: OAUTH_BASE,
+    basePathDefinido: !!process.env.DOCUSIGN_BASE_PATH, oauthDefinido: !!process.env.DOCUSIGN_OAUTH_BASE,
+  }
+}
+
+export function ambienteDocusign(): 'demo' | 'producao' {
+  return ambienteDe({ basePath: BASE_PATH, oauthBase: OAUTH_BASE })
+}
+
+/**
+ * Sair do sandbox NÃO é trocar dois endereços. A primeira versão do aviso
+ * dizia só isso — e ainda sugeria um servidor (`na3`) que pode não ser o da
+ * conta: quem seguisse trocava os endereços, mantinha a chave, a conta e o
+ * usuário do TESTE, e caía em erro de autenticação sem saber por quê.
+ * Exemplo que parece colável é colado: aqui não vai servidor de exemplo — o
+ * diagnóstico diz o valor exato da conta.
+ */
+export const PASSOS_PARA_PRODUCAO = [
+  'Go-Live: no DocuSign de desenvolvedor (Apps and Keys), peça o Go-Live da chave de integração usada hoje. O DocuSign exige chamadas bem-sucedidas no teste e uma revisão; aprovada, escolha a conta de PRODUÇÃO para onde a chave vai.',
+  'Na conta de PRODUÇÃO (Settings → Apps and Keys), na chave promovida: gere uma RSA Keypair NOVA (a do teste não vai junto) e cole a chave privada em DOCUSIGN_PRIVATE_KEY; confira que a Redirect URI https://www.docusign.com está cadastrada.',
+  'Na mesma tela, em My Account Information: User ID → DOCUSIGN_USER_ID e API Account ID → DOCUSIGN_ACCOUNT_ID (os de produção são outros números).',
+  'No Vercel (Production): DOCUSIGN_OAUTH_BASE = account.docusign.com; DOCUSIGN_BASE_PATH = o "Account Base URI" dessa tela seguido de /restapi; apague DOCUSIGN_PERMITIR_DEMO. Refaça o deploy.',
+  'Abra /api/signatures/diag (sócio ou gerente): na primeira vez ele devolve o link de consentimento — abra logado no DocuSign de produção e clique em Allow. Repita até todos os passos passarem; se o servidor estiver errado, ele diz o valor exato.',
+  'Form 8879: o envio usa o ID Check do DocuSign (verificação de identidade por perguntas), que em produção é contratado à parte e cobrado por uso. Confirme com o DocuSign que está ligado na conta, senão o 8879 é recusado. O contrato não depende disso.',
+] as const
 
 export const MOTIVO_DEMO =
   'O DocuSign está no ambiente de TESTE (sandbox): o que for assinado sai com a tarja ' +
   '"for demonstration purposes only" e não tem validade legal — nem o contrato, nem o ' +
-  'Form 8879 perante o IRS. No Vercel, defina DOCUSIGN_BASE_PATH = https://na3.docusign.net/restapi ' +
-  '(o servidor da sua conta, veja em Settings → Apps and Keys) e ' +
-  'DOCUSIGN_OAUTH_BASE = account.docusign.com, e refaça o deploy. ' +
-  'Para testar de propósito, defina DOCUSIGN_PERMITIR_DEMO=1.'
+  'Form 8879 perante o IRS. Sair do teste não é só trocar endereços: a chave de integração ' +
+  'passa pelo Go-Live do DocuSign e ganha chave RSA, conta e usuário de PRODUÇÃO. Abra ' +
+  '/api/signatures/diag (sócio ou gerente): ele lista os passos e diz o valor exato de cada ' +
+  'variável. Para testar de propósito, defina DOCUSIGN_PERMITIR_DEMO=1.'
 
 /**
  * Recusa o envio quando o DocuSign está no sandbox.

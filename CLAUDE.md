@@ -1076,6 +1076,24 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   (`DOCUSIGN_PERMITIR_DEMO=1` libera para teste, de propósito) — coletar
   assinatura sem valor é pior que não coletar, porque parece que a
   autorização existe. `app/api/signatures/diag` diz em qual ambiente está.
+  **Sair do sandbox não é trocar dois endereços** (`PASSOS_PARA_PRODUCAO` em
+  `lib/docusign.ts`, 20 casos em `testes/docusign-ambiente.mts`): a chave de
+  integração passa pelo **Go-Live** do DocuSign; na conta de produção ela
+  ganha **RSA nova** (a do teste não vai junto), e **User ID** e **API
+  Account ID** são outros números; o consentimento se dá de novo, em
+  produção; e o **Form 8879** usa o **ID Check** (KBA), contratado à parte e
+  cobrado por uso — sem ele ligado na conta, o DocuSign recusa o 8879. A
+  primeira versão do aviso falava só dos dois endereços e ainda sugeria um
+  servidor (`na3`): quem seguisse trocava os endereços com as credenciais do
+  teste e caía em erro de autenticação. Agora o aviso não traz servidor de
+  exemplo (cada conta mora num; a auditoria recusa `naN/eu/au.docusign.net`
+  no aviso e no `.env.example`) e aponta o diagnóstico. **O diagnóstico e o
+  envio decidem "teste ou produção" pela MESMA regra** (`ambienteDe`): ele
+  tinha uma cópia própria e, no sandbox, terminava em "todas as checagens
+  passaram" com o envio recusado. No sandbox inteiro ele para no passo 0 e
+  devolve a lista; no MEIO da migração (OAuth já em produção, API ainda no
+  teste) ele não para — autentica, acha a conta e diz o `DOCUSIGN_BASE_PATH`
+  EXATO dela. A auditoria confere os seis pontos, sabotada nos seis.
   O contrato vai como **HTML** (`fileExtension: 'html'`) e o DocuSign
   converte; a 8879 vai como PDF. O nome `.html` aparece ao cliente e o
   conversor não garante o CSS — trocar o contrato por PDF é dívida aberta.

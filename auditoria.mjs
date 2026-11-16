@@ -1494,6 +1494,25 @@ for (const r of ['app/api/signatures/contract/route.ts', 'app/api/signatures/for
 checar('As variaveis do DocuSign estao no .env.example', '.env.example',
        /DOCUSIGN_BASE_PATH/,
        'nao estavam documentadas — foi por isso que ninguem definiu e caiu no sandbox')
+// Sair do sandbox NAO e trocar dois enderecos: o aviso dizia so isso, e ainda
+// sugeria um servidor (na3) que pode nao ser o da conta. E o diagnostico tinha
+// a PROPRIA copia da regra de ambiente e terminava em "todas as checagens
+// passaram" no sandbox, enquanto o envio era recusado.
+for (const arq of ['lib/docusign.ts', '.env.example'])
+  recusar(`Sem servidor de exemplo do DocuSign: ${arq}`, arq, /\b(na\d|eu|au)\.docusign\.net/,
+          'exemplo que parece colavel e colado — cada conta mora num servidor; o diagnostico diz o exato')
+checar('O diagnostico decide o ambiente pela regra da lib', 'app/api/signatures/diag/route.ts',
+       /const enderecos = enderecosDocusign\(\)[\s\S]{0,400}?const ambiente = ambienteDe\(\{ basePath: BASE_PATH, oauthBase: OAUTH \}\)/,
+       'envio e diagnostico voltariam a decidir "teste ou producao" por copias que divergem')
+recusar('O diagnostico nao tem copia da regra de ambiente', 'app/api/signatures/diag/route.ts',
+        /account-d\\\.docusign\\\.com\|demo\\\.docusign\\\.net/,
+        'a copia podia divergir da regra do envio em silencio')
+checar('No sandbox, o diagnostico entrega a lista para producao', 'app/api/signatures/diag/route.ts',
+       /if \(ambiente === 'demo' && ehDemo\(OAUTH\) && ehDemo\(BASE_PATH\) && !demoDeProposito\)[\s\S]{0,700}?return parar\(\{ passosParaProducao: PASSOS_PARA_PRODUCAO \}\)/,
+       'o diagnostico diria "todas as checagens passaram" no sandbox, com o envio recusado')
+checar('No meio da migracao, o diagnostico segue ate achar o servidor exato', 'app/api/signatures/diag/route.ts',
+       /if \(!coerente && oauthDemo\) return parar\(\)[\s\S]{0,9000}?if \(!passoCoerencia\.ok\) passoCoerencia\.acao = acaoServidor/,
+       'com o OAuth ja em producao, parar no passo 2 esconderia o valor exato de DOCUSIGN_BASE_PATH')
 
 
 titulo('ASSISTENTE FICA EM PESSOA FISICA, SEM BAIXAR ARQUIVO')
