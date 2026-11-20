@@ -1480,6 +1480,38 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   que os ids têm em comum ou mande em lotes pequenos.** 19 casos em
   `testes/conciliacao-bancaria.mts`; a auditoria tem oito conferências,
   todas sabotadas.
+  **E a tela parou de CARREGAR depois disso — duas causas, nenhuma visível
+  de fora.** `bank_reconciliations` nasceu no PAINEL: o histórico pedia
+  `completed_at` por nome e a versão antiga ignorava o erro (histórico vazio,
+  lançamentos aparecendo); conferir o erro ANTES de ler os lançamentos fez
+  uma coluna que o painel não criou derrubar a tela inteira. E, lendo tudo,
+  a resposta podia passar dos 4,5 MB da Vercel, que devolve uma PÁGINA de
+  erro (`r.json()` estourava). Agora: leitura de `bank_reconciliations` só
+  com `select('*')` (ou `id`/`client_id`), normalizada por
+  `normalizarConciliacao` (data cortada em `YYYY-MM-DD`: em `timestamptz` o
+  campo de data da tela ficava em branco e a rota recusava a data); a
+  conciliação em andamento é UMA consulta (`conciliacaoEmAndamento`) no GET
+  e no POST; o filtro "ainda não conciliado" vai NA CONSULTA (livres + os da
+  em andamento, `juntarElegiveis`) — antes vinham também todos os já
+  conciliados, para serem jogados fora —, só com as colunas da tela e a
+  descrição cortada em 100 (`linhaParaATela`; a tela mostra 70). A rota
+  CONTA antes de ler (acima de 15 mil, `422` com `mensagemDeExcesso`:
+  conciliar por extrato) e confere os BYTES antes de responder — a contagem
+  sozinha não basta: 15 mil linhas típicas dão 2,7 MB, 15 mil de pior caso
+  4,8 MB. `maxDuration = 60`. Toda escrita passa por
+  `gravarSemColunasAusentes`: coluna OPCIONAL que o painel não criou sai da
+  gravação e vira AVISO na tela (rodar `sql/conciliacao-bancaria-v1.sql`);
+  essencial ausente é erro. A tela lê texto antes de JSON (`pedir`) e a
+  linha é `memo` com `toggle` estável — 12 mil linhas: ~350 ms → ~50 ms por
+  clique, medido no build de produção. De passagem, `colunaAusente` passou a
+  reconhecer o erro de GRAVAÇÃO do PostgREST (PGRST204, "Could not find the
+  'x' column of 'y' in the schema cache"): só entendia o de leitura (42703),
+  então o recuo da sincronização do Plaid quando faltam as colunas de saldo
+  não teria disparado. **Não conferido daqui: o banco de produção** — sem
+  acesso, não dá para dizer qual das duas causas derrubou a tela; o conserto
+  cobre as duas, e a migração (testada no PG 16, com a tabela inexistente e
+  com a do painel faltando colunas) deixa o schema escrito. 59 casos em
+  `testes/conciliacao-bancaria.mts`; 14 conferências novas, todas sabotadas.
 - **UTF-8 sem BOM, sempre.** O projeto já sofreu com acentos corrompidos
   (o "ã" virando "A" com til mais "£") por arquivos copiados de ZIP e
   editados no Windows. A
