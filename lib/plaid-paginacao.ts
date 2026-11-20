@@ -141,18 +141,101 @@ export function linhasNovasDaPagina(pagina: PaginaDoSync, ctx: { clientId: strin
 }
 
 /**
+ * A trava de duplicidade do livro (`bank_tx_dedupe_idx`, nascida no painel):
+ * a mesma DATA, DESCRIÇÃO e VALOR no mesmo cliente só entram uma vez. É o que o
+ * CSV, o PDF e o QuickBooks usam para não importar o mesmo extrato duas vezes
+ * (`onConflict: 'client_id,tx_date,description,amount'`). O Plaid tem id
+ * próprio por transação, então duas compras iguais no mesmo dia são DUAS — e a
+ * trava recusa a segunda. Esta é a chave dela, para EXPLICAR a recusa; quem
+ * decide o que entra continua sendo o banco.
+ */
+export const chaveDeDuplicidade = (l: { tx_date?: unknown; description?: unknown; amount?: unknown }) =>
+  `${String(l.tx_date ?? '').slice(0, 10)}|${String(l.description ?? '')}|${Math.round(Number(l.amount) * 100)}`
+
+export interface LinhaDoLivro {
+  tx_date: string; description: string | null; amount: number | string; source: string | null; plaid_tx_id?: string | null
+}
+
+/** A recusa veio de uma trava de unicidade que não é a do id do Plaid (essa o `onConflict` já trata)? */
+export function ehTravaDeDuplicidade(e: any): boolean {
+  return e?.code === '23505' && !/plaid_tx_id/i.test(String(e?.message || '') + String(e?.details || ''))
+}
+
+/**
+ * O lote bateu na trava. Gravar as 500 uma a uma comia o prazo da rodada (foi o
+ * que deixou o Capital One sem vez). Aqui se separam as SUSPEITAS — as que têm
+ * gêmea no livro ou dentro da própria página — e o resto vai de uma vez. As
+ * suspeitas se tentam uma a uma depois: se a trava real for outra, a que o
+ * banco aceitar entra; esta conta só evita desperdiçar o lote.
+ * A MESMA transação do Plaid já gravada (mesmo `plaid_tx_id`) não é suspeita:
+ * o `onConflict` a pula sem inserir, e a trava nem chega a olhar. Sem isso,
+ * sincronizar do começo de novo marcava quase tudo como suspeita e voltava às
+ * gravações uma a uma (1.512 idas para 1.500 transações).
+ * `origemDaGemea` diz de onde veio a gêmea: de outra origem (já estava no
+ * livro) ou do próprio Plaid (outra transação igual no mesmo dia).
+ */
+export function separarSuspeitas<T extends { tx_date?: unknown; description?: unknown; amount?: unknown; plaid_tx_id?: unknown }>(
+  linhas: T[], doLivro: LinhaDoLivro[] | null | undefined,
+) {
+  const noLivro = new Map<string, string | null>()
+  const jaGravadas = new Set<string>()
+  for (const e of doLivro || []) {
+    const k = chaveDeDuplicidade(e)
+    if (!noLivro.has(k)) noLivro.set(k, e.source ?? null)
+    if (e.plaid_tx_id) jaGravadas.add(String(e.plaid_tx_id))
+  }
+  const vistas = new Set<string>()
+  const livres: T[] = [], suspeitas: T[] = []
+  for (const l of linhas) {
+    if (l.plaid_tx_id && jaGravadas.has(String(l.plaid_tx_id))) { livres.push(l); continue }
+    const k = chaveDeDuplicidade(l)
+    if (noLivro.has(k) || vistas.has(k)) suspeitas.push(l)
+    else { vistas.add(k); livres.push(l) }
+  }
+  const origemDaGemea = (l: T): string | null => {
+    const k = chaveDeDuplicidade(l)
+    return noLivro.has(k) ? (noLivro.get(k) ?? null) : 'plaid'
+  }
+  return { livres, suspeitas, origemDaGemea }
+}
+
+/**
+ * A gêmea veio de OUTRA origem (extrato em CSV/PDF, QuickBooks, lançamento à
+ * mão…): a transação JÁ ESTAVA no livro. Do próprio Plaid é outra transação
+ * igual no mesmo dia — essa pede conferência.
+ */
+export const gemeaDeOutraOrigem = (origem: string | null) => !!origem && origem !== 'plaid'
+
+/** Uma transação recusada, como a pessoa confere no extrato do banco. */
+export function exemploDaLinha(l: { tx_date?: unknown; description?: unknown; amount?: unknown }): string {
+  const [y, m, d] = String(l.tx_date ?? '').slice(0, 10).split('-')
+  const v = Number(l.amount)
+  const valor = `${v < 0 ? '−' : ''}$${Math.abs(v).toFixed(2)}`
+  return `${m}/${d}/${y} · ${String(l.description ?? '')} · ${valor}`
+}
+
+/**
  * A frase da sincronização para a tela (Banking e Caixa da firma usam a
  * mesma). Diz o que entrou, o que ainda falta baixar e o que o banco recusou —
  * "✓ 0 lançamentos novos" sozinho escondia as três coisas.
  */
 export function mensagemDaSincronizacao(r: {
   ok?: boolean; error?: string; added?: number; ruled?: number; incompleto?: boolean; falhas?: number; details?: string[]
+  jaNoLivro?: number; iguais?: number; exemplos?: string[]
 }): string {
   if (!r?.ok) return `Erro: ${r?.error || 'a sincronização não respondeu'}`
   const partes = [`✓ Plaid: ${r.added ?? 0} transações novas`]
+  // "Reconhecidas" é quem SAIU de não reconhecida agora — não a fila inteira
+  // reaplicada (era assim que 3.471 novas viravam "10574 reconhecidas").
   if (r.ruled) partes.push(`${r.ruled} reconhecidas pelas regras`)
+  if (r.jaNoLivro) partes.push(`${r.jaNoLivro} já estavam no livro (lançadas antes por extrato ou à mão: mesma data, descrição e valor)`)
   let texto = partes.join(' · ')
   if (r.details?.length) texto += ` (${r.details.join(' · ')})`
+  if (r.iguais) {
+    texto += ` ⚠️ ${r.iguais} transação(ões) igual(is) a outra do mesmo dia (mesma data, descrição e valor) não entrou(aram):`
+      + ' a trava de duplicidade do livro não aceita duas iguais. Confira no extrato do banco — se forem compras repetidas, faltam no livro.'
+      + (r.exemplos?.length ? ` Ex.: ${r.exemplos.join('; ')}.` : '')
+  }
   if (r.falhas) texto += ` ⚠️ ${r.falhas} transação(ões) o banco recusou — veja o motivo acima e avise a equipe técnica.`
   if (r.incompleto) texto += ' ⏳ Ainda há transações para baixar: clique em Sincronizar de novo (cada rodada continua de onde a anterior parou).'
   return texto

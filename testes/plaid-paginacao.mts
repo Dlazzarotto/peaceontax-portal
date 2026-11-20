@@ -9,6 +9,7 @@
 import {
   percorrerSync, linhaDoPlaid, linhasNovasDaPagina, mensagemDaSincronizacao, mensagemDaConexao, ehErroDeMutacao,
   ERRO_DE_MUTACAO, POR_PAGINA, type PaginaDoSync,
+  chaveDeDuplicidade, ehTravaDeDuplicidade, separarSuspeitas, gemeaDeOutraOrigem, exemploDaLinha,
 } from '../lib/plaid-paginacao.ts'
 
 let passou = 0, falhou = 0
@@ -177,6 +178,76 @@ eq('conexão recusada', mensagemDaConexao({ ok: false, error: 'INVALID_PUBLIC_TO
   const c = mensagemDaConexao({ ok: true, sync: { added: 0, completo: true } }, false)
   eq('no portal do cliente não manda clicar em botão que ele não tem', /clique em Sincronizar/.test(c), false)
   eq('…e não promete o que não existe (não há sincronização automática)', [/automaticamente/.test(c), /próxima sincronização/.test(c)], [false, true])
+}
+
+// ── A trava de duplicidade do livro (mesma data, descrição e valor) ─────────
+// A sincronização real trouxe 3.471 transações e 29 recusas por
+// "bank_tx_dedupe_idx"; cada recusa derrubava o lote de 500, que caía na
+// gravação uma a uma e comia o prazo da rodada.
+eq('a chave é data, descrição exata e valor em centavos',
+  chaveDeDuplicidade({ tx_date: '2025-03-10T00:00:00Z', description: 'Shell', amount: '-45.5' }), '2025-03-10|Shell|-4550')
+eq('descrição com maiúscula diferente é outra chave (o índice compara o texto exato)',
+  chaveDeDuplicidade({ tx_date: '2025-03-10', description: 'SHELL', amount: -45.5 }) === chaveDeDuplicidade({ tx_date: '2025-03-10', description: 'Shell', amount: -45.5 }), false)
+eq('a trava de duplicidade é reconhecida',
+  ehTravaDeDuplicidade({ code: '23505', message: 'duplicate key value violates unique constraint "bank_tx_dedupe_idx"' }), true)
+eq('a do id do Plaid não é ela (o onConflict já trata)',
+  ehTravaDeDuplicidade({ code: '23505', message: 'duplicate key value violates unique constraint "bank_transactions_plaid_tx_id_key"' }), false)
+eq('outro erro não é trava', [ehTravaDeDuplicidade({ code: '22008', message: 'date out of range' }), ehTravaDeDuplicidade(null)], [false, false])
+{
+  const l = (id: string, tx_date: string, description: string, amount: number) => ({ plaid_tx_id: id, tx_date, description, amount })
+  const pagina = [
+    l('p1', '2025-03-10', 'Shell', -45.5),       // gêmea no livro, vinda de extrato
+    l('p2', '2025-03-10', 'Tolls', -3.5),        // primeira do dia
+    l('p3', '2025-03-10', 'Tolls', -3.5),        // a segunda igual, na mesma página
+    l('p4', '2025-03-11', 'Uber', -12.3),        // gêmea no livro vinda do próprio Plaid
+    l('p5', '2025-03-12', 'Amazon', -20),        // livre
+  ]
+  const doLivro = [
+    { tx_date: '2025-03-10', description: 'Shell', amount: '-45.50', source: 'pdf' },
+    { tx_date: '2025-03-11', description: 'Uber', amount: -12.3, source: 'plaid' },
+    { tx_date: '2025-03-12', description: 'Amazon', amount: -20.01, source: 'csv' },   // um centavo diferente: não é gêmea
+  ]
+  const r = separarSuspeitas(pagina, doLivro)
+  eq('livres vão em lote: a primeira de cada dia e as sem gêmea', r.livres.map(x => x.plaid_tx_id), ['p2', 'p5'])
+  eq('suspeitas: gêmea no livro ou repetida na página', r.suspeitas.map(x => x.plaid_tx_id), ['p1', 'p3', 'p4'])
+  eq('de onde veio a gêmea', r.suspeitas.map(x => r.origemDaGemea(x)), ['pdf', 'plaid', 'plaid'])
+  eq('gêmea de extrato: já estava no livro; do Plaid: igual no mesmo dia',
+    r.suspeitas.map(x => gemeaDeOutraOrigem(r.origemDaGemea(x))), [true, false, false])
+  eq('gêmea de origem desconhecida não vira "já no livro"', gemeaDeOutraOrigem(null), false)
+  eq('sem nada no livro, só as repetidas da página são suspeitas', separarSuspeitas(pagina, null).suspeitas.map(x => x.plaid_tx_id), ['p3'])
+  eq('o exemplo é o que se confere no extrato', exemploDaLinha(l('x', '2025-03-10', 'Tolls', -3.5)), '03/10/2025 · Tolls · −$3.50')
+  eq('entrada sem sinal', exemploDaLinha(l('x', '2025-03-10', 'Zelle', 200)), '03/10/2025 · Zelle · $200.00')
+}
+{
+  // Sincronizar do começo de novo: tudo o que o Plaid manda já está no livro,
+  // com o mesmo id. Marcar essas como suspeitas voltava às gravações uma a uma.
+  const l = (id: string, tx_date: string, description: string, amount: number) => ({ plaid_tx_id: id, tx_date, description, amount })
+  const pagina = [
+    l('p1', '2025-03-10', 'Tolls', -3.5),     // ela mesma, já gravada
+    l('p2', '2025-03-10', 'Tolls', -3.5),     // a segunda igual do dia, nova
+    l('p3', '2025-03-11', 'Uber', -12.3),     // ela mesma, já gravada
+    l('p4', '2025-03-12', 'Shell', -40),      // nova, com gêmea de extrato
+  ]
+  const doLivro = [
+    { tx_date: '2025-03-10', description: 'Tolls', amount: -3.5, source: 'plaid', plaid_tx_id: 'p1' },
+    { tx_date: '2025-03-11', description: 'Uber', amount: '-12.30', source: 'plaid', plaid_tx_id: 'p3' },
+    { tx_date: '2025-03-12', description: 'Shell', amount: -40, source: 'csv', plaid_tx_id: null },
+  ]
+  const r = separarSuspeitas(pagina, doLivro)
+  eq('a mesma transação já gravada vai no lote (o onConflict a pula sem inserir)', r.livres.map(x => x.plaid_tx_id), ['p1', 'p3'])
+  eq('a outra igual do mesmo dia e a com gêmea de extrato seguem suspeitas', r.suspeitas.map(x => x.plaid_tx_id), ['p2', 'p4'])
+  eq('a gêmea da igual do dia é do Plaid; a da outra, de extrato',
+    r.suspeitas.map(x => gemeaDeOutraOrigem(r.origemDaGemea(x))), [false, true])
+  eq('lançamento à mão também é "já no livro"', gemeaDeOutraOrigem('manual'), true)
+}
+{
+  const m = mensagemDaSincronizacao({ ok: true, added: 3471, ruled: 120, jaNoLivro: 11, iguais: 18,
+    exemplos: ['03/10/2025 · Tolls · −$3.50'], details: ['Bank of America: +2489'] })
+  eq('já no livro é informação, não alarme', [/11 já estavam no livro/.test(m), /11[^⚠]*⚠️/.test(m.split('(')[0])], [true, false])
+  eq('igual a outra do mesmo dia vira alerta com o que conferir', [/⚠️ 18 transação\(ões\) igual\(is\) a outra do mesmo dia/.test(m), /Confira no extrato/.test(m)], [true, true])
+  eq('…com o exemplo', m.includes('Ex.: 03/10/2025 · Tolls · −$3.50.'), true)
+  eq('sem recusa técnica, não manda avisar a equipe técnica', /equipe técnica/.test(m), false)
+  eq('reconhecidas é a contagem de agora', /120 reconhecidas pelas regras/.test(m), true)
 }
 
 console.log(`plaid-paginacao: ${passou} passaram, ${falhou} falharam`)

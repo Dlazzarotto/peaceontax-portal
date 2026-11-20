@@ -1527,6 +1527,44 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   com supabase-js contra o PostgREST simulado e um Plaid de mentira (24
   meses, linha com data inválida, mutação no meio). **Não testado daqui**: o
   Plaid de verdade (sem chave no container).
+  **O primeiro clique de verdade depois disso** trouxe 3.471 transações e
+  três defeitos que o simulado não tinha: "10574 reconhecidas pelas regras",
+  29 "recusadas pelo banco" por `bank_tx_dedupe_idx` e o Capital One "sem
+  tempo nesta". **(1) A trava de duplicidade derrubava o lote.**
+  `bank_tx_dedupe_idx` (nasceu no PAINEL, não está em `sql/`) recusa duas
+  linhas do mesmo cliente com a mesma data, descrição e valor; uma recusa
+  derruba o `insert` INTEIRO (`on conflict (plaid_tx_id)` só cobre o próprio
+  índice — conferido no PG 16), e a reserva gravava as 500 uma a uma: o
+  prazo ia embora em poucas páginas e o último banco ficava sem vez. Agora
+  `separarSuspeitas` lê o livro nas datas da página e separa só as que têm
+  gêmea (no livro ou na própria página); o resto vai num lote e as suspeitas
+  vão uma a uma — **quem decide é o banco**, a conta só evita desperdiçar o
+  lote. A MESMA transação do Plaid já gravada (mesmo `plaid_tx_id`) não é
+  suspeita: o `onConflict` a pula sem inserir; sem isso, sincronizar do
+  começo de novo voltava a 1.512 idas para 1.500 transações (agora 25).
+  **(2) A recusa da trava não é "erro técnico".** Gêmea de OUTRA origem
+  (extrato, QuickBooks, à mão — `gemeaDeOutraOrigem`) é transação que JÁ
+  ESTAVA no livro (`jaNoLivro`, informação); gêmea do próprio Plaid é outra
+  transação IGUAL no mesmo dia (`iguais`), que a trava não deixa entrar — a
+  frase avisa com até três exemplos (`MM/DD/YYYY · descrição · valor`) para
+  conferir no extrato, porque se forem compras repetidas elas FALTAM no
+  livro. "Avise a equipe técnica" ficou só para a recusa que não é a trava.
+  **(3) As regras rodavam por banco e contavam a fila inteira.**
+  `applyRulesToClient` reaplica a regra a `pending` E `auto` (o plano de
+  contas pode ter mudado) e devolvia quantas gravou — com três bancos, a
+  fila somada três vezes. Agora a rota aplica UMA vez, depois de todos os
+  bancos (`aplicarRegras: false` por conexão), e conta só quem SAIU de não
+  reconhecida (`pendentes`) — inclusive a ponta de transferência sem
+  espelho, que fica sem `transfer_match_id` e é refeita a cada rodada (o
+  antigo contava 3 · 1 · 1 em três rodadas; o novo, 3 · 0 · 0).
+  **(4) A ordem dos bancos era fixa**: quem está há mais tempo sem
+  sincronizar vai primeiro (`last_synced_at`, nulos antes), então o que
+  ficou sem vez abre a rodada seguinte. Simulado com a trava: +1.490, 5 já
+  no livro, 5 iguais, 0 recusas técnicas, 25 idas ao banco; regras 748 e
+  depois 0 (o antigo: 1.048 e 1.048). 60 casos em
+  `testes/plaid-paginacao.mts`; na auditoria, seis conferências novas e
+  duas refeitas, sabotadas em 15 jeitos. A trava em si é dívida aberta
+  (abaixo).
 - **A escolha da regra do payee é uma só, o caminho até ela é que mudou.**
   `regraDoPayee` era chamada DENTRO do laço dos fornecedores e varria a lista
   inteira de regras a cada volta: com o teto de 5.000 dos dois lados são 25
@@ -1647,6 +1685,23 @@ middleware.ts        controle de acesso por rota
   com a firma: aí a desistência segue — o agendar recusa entrada devolvida, e
   recusar aqui também deixaria o plano sem saída —, mas o aviso ao cliente não
   diz que "nada foi cobrado".
+- **A trava de duplicidade do livro não aceita duas transações iguais no
+  mesmo dia** (`bank_tx_dedupe_idx`: mesmo cliente, data, descrição e valor)
+  — e duas compras iguais no mesmo dia EXISTEM (pedágio, café, duas cobranças
+  do mesmo fornecedor). Nasceu no painel para reimportar o mesmo extrato não
+  duplicar, e os três importadores contam com ela
+  (`onConflict: 'client_id,tx_date,description,amount'`): no CSV, PDF e
+  QuickBooks a segunda linha igual do mesmo extrato some **calada**; no Plaid
+  ela é recusada e a frase avisa com exemplo. A definição exata não está no
+  repositório — conferir com `select indexdef from pg_indexes where indexname
+  = 'bank_tx_dedupe_idx'` antes de mexer. Tornar o índice parcial
+  (`where plaid_tx_id is null`) NÃO serve: `on conflict` não infere índice
+  parcial (o mesmo defeito do `payment_id`) e os três importadores parariam.
+  O caminho que fecha os dois lados é uma coluna de OCORRÊNCIA na chave (a
+  1ª, a 2ª igual do dia): reimportar o mesmo extrato continua idempotente e
+  a segunda compra entra — migração, os três importadores e o Plaid. Decisão
+  do sócio. As recusadas até lá voltam com uma sincronização do começo
+  (cursor apagado): a gravação é idempotente pelo `plaid_tx_id`.
 - Avisos de lint `react-hooks/exhaustive-deps` e `no-img-element`: conhecidos,
   não bloqueiam.
 - **Consulta de faturas além do dia** (`lib/escopo-faturas.ts`,
