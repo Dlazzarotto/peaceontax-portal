@@ -183,7 +183,11 @@ titulo('CONCILIACAO BANCARIA: A TELA E A ROTA FAZEM A MESMA CONTA')
   checar('A rota apura pela funcao da conciliacao', R, /apurarConciliacao\(\{/, 'a rota voltaria a somar do seu jeito e discordar da tela')
   checar('A tela apura pela mesma funcao', 'components/ReconcileTab.tsx', /apurarConciliacao\(\{/, 'a tela voltaria a somar do seu jeito e discordar da rota')
   recusar('A soma dos marcados nao vai por lista de ids na URL', R, /\.select\('id, amount'\)[\s\S]{0,200}?\.in\('id'/, 'com centenas de ids o pedido passa do tamanho aceito, falha e a soma vira zero')
-  checar('Os elegiveis sao lidos em paginas', R, /todasAsLinhas<any>\(\(\) => db\s*\.from\('bank_transactions'\)/, '.limit(5000) para em mil e corta os lancamentos mais recentes')
+  // Paginado E filtrado NA consulta: "ainda nao conciliado" ia para o JS, e
+  // cada carregamento lia tambem todos os ja conciliados para joga-los fora.
+  checar('Os elegiveis sao lidos em paginas, filtrados na consulta', R,
+    /const consulta = \(\) => db\s*\.from\('bank_transactions'\)[\s\S]{0,400}?todasAsLinhas<any>\(\(\) => consulta\(\)\.is\('reconciliation_id', null\)/,
+    '.limit(5000) para em mil e corta os recentes; filtrar no JS le os ja conciliados a toa')
   {
     // Sem os comentarios: o cabecalho da rota CONTA a historia do `.limit(5000)`.
     const codigo = existsSync(join(raiz, R))
@@ -195,7 +199,68 @@ titulo('CONCILIACAO BANCARIA: A TELA E A ROTA FAZEM A MESMA CONTA')
   }
   checar('A marcacao vai em lotes pequenos', R, /for \(const lote of emLotes\(ids\)\)/, 'lote de 500 ids passava do tamanho da URL e o Salvar falhava')
   checar('Marcado fora do registro e recusado, nao somado calado', R, /if \(conta\.naoElegiveis\.length\)/, 'lancamento apagado depois de carregar mudaria a soma sem ninguem saber')
-  checar('Fecha so depois de marcar', R, /for \(const lote of emLotes\(ids\)\)[\s\S]{0,1500}?update\(\{ status: 'completed'/, 'a conciliacao ficaria fechada com metade dos lancamentos se a marcacao falhasse')
+  checar('Fecha so depois de marcar', R, /for \(const lote of emLotes\(ids\)\)[\s\S]{0,1500}?status: 'completed'/, 'a conciliacao ficaria fechada com metade dos lancamentos se a marcacao falhasse')
+}
+
+titulo('CONCILIACAO BANCARIA: A TELA CARREGA (schema do painel, volume, resposta que nao e JSON)')
+// Depois que a rota passou a conferir os erros e a ler TODOS os elegiveis, a
+// tela parou de carregar. bank_reconciliations nasceu no PAINEL: o historico
+// pedia `completed_at` por nome e, faltando a coluna, o erro (agora conferido)
+// derrubava tudo antes dos lancamentos. E, lendo tudo, a resposta podia passar
+// dos 4,5 MB da Vercel, que devolve uma PAGINA de erro -- a tela tentava ler
+// como JSON. Agora: historico por select('*'), filtro na consulta, teto por
+// contagem E por bytes com mensagem que diz o que fazer, gravacao que dispensa
+// coluna OPCIONAL avisando (sql/conciliacao-bancaria-v1.sql), tela que le texto
+// antes de JSON e linha memorizada (12 mil linhas: ~350 ms por clique -> ~50).
+{
+  const R = 'app/api/bookkeeping/reconciliation/route.ts'
+  const T = 'components/ReconcileTab.tsx'
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const rota = semComentarios(R), tela = semComentarios(T)
+  if (rota === null || tela === null) falta('Ancoras da conciliacao', `arquivo inexistente: ${rota === null ? R : T}`)
+  else {
+    // Toda leitura de bank_reconciliations: so `*`, ou colunas que TODA linha
+    // tem (id, client_id). Coluna por nome e aposta no que o painel criou.
+    const leituras = [...rota.matchAll(/\.from\('bank_reconciliations'\)\s*\.select\('([^']*)'\)/g)].map(m => m[1])
+    const apostas = leituras.filter(sel => sel.split(',').map(c => c.trim()).some(c => !['*', 'id', 'client_id'].includes(c)))
+    if (!leituras.length) falta('Leitura da conciliacao sem coluna do painel', 'nenhuma leitura de bank_reconciliations encontrada -- a conferencia nao confere nada')
+    else if (apostas.length) falta('Leitura da conciliacao sem coluna do painel', `select('${apostas[0]}'): faltando uma coluna no painel, a tela nao carrega`)
+    else ok('Leitura da conciliacao sem coluna do painel')
+
+    // Toda escrita passa pela gravacao que dispensa coluna OPCIONAL ausente.
+    const escritas = [...rota.matchAll(/db\.from\('bank_(?:reconciliations|transactions)'\)\.(?:update|insert)\(/g)]
+    const soltas = escritas.filter(m => !/gravarSemColunasAusentes(?:<any>)?\([^]{0,160}$/.test(rota.slice(Math.max(0, m.index - 200), m.index)))
+    if (!escritas.length) falta('Escrita da conciliacao tolera coluna opcional ausente', 'nenhuma escrita encontrada -- a conferencia nao confere nada')
+    else if (soltas.length) falta('Escrita da conciliacao tolera coluna opcional ausente', `${soltas.length} escrita(s) fora de gravarSemColunasAusentes: Concluir falharia por causa de completed_at`)
+    else ok(`Escrita da conciliacao tolera coluna opcional ausente (${escritas.length} pontos)`)
+
+    if (/conciliacaoEmAndamento\(db, clientId, accountId\)[\s\S]*conciliacaoEmAndamento\(db, clientId, accountId\)/.test(rota)) ok('GET e POST acham a conciliacao em andamento pela mesma consulta')
+    else falta('GET e POST acham a conciliacao em andamento pela mesma consulta', 'a tela mostraria os marcados de uma e a rota gravaria em outra')
+
+    const iConta = rota.indexOf('livres.total > TETO_DE_LANCAMENTOS'), iLe = rota.indexOf('await elegiveisDaConta(db, clientId, accountId, statementDate, emAberto')
+    if (iConta >= 0 && iLe > iConta) ok('Volume: conta e recusa ANTES de ler as paginas')
+    else falta('Volume: conta e recusa ANTES de ler as paginas', 'leria dezenas de paginas para devolver uma resposta que a Vercel recusa')
+    const iBytes = rota.indexOf('Buffer.byteLength(corpo) > TETO_DA_RESPOSTA'), iResponde = rota.indexOf('new NextResponse(corpo')
+    if (iBytes >= 0 && iResponde > iBytes) ok('Volume: confere os BYTES antes de responder')
+    else falta('Volume: confere os BYTES antes de responder', 'acima de 4,5 MB a Vercel troca a resposta por uma pagina de erro')
+    if (/export const maxDuration = \d+/.test(rota)) ok('A rota da conciliacao declara o tempo maximo')
+    else falta('A rota da conciliacao declara o tempo maximo', 'o padrao da Vercel (10-15 s) decidiria se a tela carrega')
+    if (/elegiveis: elegiveis\.map\(linhaParaATela\)/.test(rota)) ok('So vai a tela o pedaco da descricao que ela mostra')
+    else falta('So vai a tela o pedaco da descricao que ela mostra', 'descricao de banco de 300 caracteres e o que mais pesa na resposta')
+
+    // A tela: nenhuma resposta lida direto como JSON, e a linha memorizada.
+    if (/\.json\(\)/.test(tela)) falta('A tela da conciliacao le texto antes de JSON', 'pagina de erro da Vercel vira "Unexpected token" e a tela fica parada')
+    else if (/JSON\.parse\(bruto\)/.test(tela)) ok('A tela da conciliacao le texto antes de JSON')
+    else falta('A tela da conciliacao le texto antes de JSON', 'ancora perdida: JSON.parse(bruto) nao encontrado')
+    if (/const Linha = memo\(/.test(tela) && /\{txs\.map\(t => <Linha /.test(tela) && /const toggle = useCallback\(/.test(tela))
+      ok('Linha da conciliacao memorizada (marcar uma nao redesenha todas)')
+    else falta('Linha da conciliacao memorizada (marcar uma nao redesenha todas)', 'com 12 mil lancamentos cada clique levava ~350 ms')
+    if (/if \(d\?\.excesso\)/.test(tela)) ok('A tela mostra a recusa por volume como orientacao')
+    else falta('A tela mostra a recusa por volume como orientacao', 'a pessoa nao saberia que e para conciliar por partes')
+  }
+  checar('A migracao traz o schema da conciliacao para o repositorio', 'sql/conciliacao-bancaria-v1.sql',
+    /add column if not exists completed_at[\s\S]*add column if not exists reconciled_at/, 'o aviso da rota manda rodar um arquivo que nao acrescenta as colunas')
 }
 
 titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')

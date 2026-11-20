@@ -107,6 +107,15 @@ export function esquecerFirma(): void { idGuardado = null }
  * que erro cru: manda consertar o que não está errado.
  */
 export function colunaAusente(e: any): string | null {
+  // Na GRAVAÇÃO o PostgREST confere o corpo contra o cache do schema e recusa
+  // antes do banco, com outro código e outra frase (PGRST204: "Could not find
+  // the 'x' column of 'y' in the schema cache"). Sem isto, o recuo de quem
+  // grava coluna nova — a sincronização do Plaid com o saldo da conta, a
+  // conciliação com `completed_at` — nunca disparava: a gravação inteira
+  // falhava por causa da coluna opcional.
+  const naGravacao = /could not find the '(\w+)' column of '[\w.]+' in the schema cache/i.exec(String(e?.message || ''))
+  if (naGravacao) return naGravacao[1]
+  if (e?.code === 'PGRST204') return '?'
   if (e?.code !== '42703' && !/does not exist/i.test(String(e?.message || ''))) return null
   const m = /column\s+(?:[\w.]*\.)?"?([\w]+)"?\s+does not exist/i.exec(String(e?.message || ''))
   return m ? m[1] : (e?.code === '42703' ? '?' : null)

@@ -109,6 +109,14 @@ eq('erro comum não é coluna ausente',
   colunaAusente({ code: '23505', message: 'duplicate key value' }), null)
 eq('erro de rede não é coluna ausente', colunaAusente({ message: 'fetch failed' }), null)
 eq('nulo não estoura', colunaAusente(null), null)
+// Na GRAVAÇÃO o PostgREST recusa antes do banco, com outro código e outra frase.
+// Sem reconhecer isto, o recuo de quem grava coluna nova nunca disparava.
+eq('gravação com coluna que o banco não tem (PGRST204) diz qual',
+  colunaAusente({ code: 'PGRST204', message: "Could not find the 'completed_at' column of 'bank_reconciliations' in the schema cache" }), 'completed_at')
+eq('…também a do saldo da conta, na sincronização do Plaid',
+  colunaAusente({ code: 'PGRST204', message: "Could not find the 'current_balance' column of 'bank_accounts' in the schema cache" }), 'current_balance')
+eq('PGRST204 sem a frase conhecida ainda é coluna ausente, sem nome', colunaAusente({ code: 'PGRST204', message: 'outra coisa' }), '?')
+eq('outro erro do PostgREST não é coluna ausente', colunaAusente({ code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' }), null)
 
 console.log(`caixa-firma: ${passou} passaram, ${falhou} falharam`)
 if (falhou) process.exit(1)

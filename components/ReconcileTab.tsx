@@ -3,7 +3,7 @@
 // Saldo inicial + saldo final do extrato → marcar os lançamentos batidos →
 // diferença zero → fechar. Só considera o que está no REGISTRO (aprovado).
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 import { apurarConciliacao } from '@/lib/conciliacao-bancaria'
 
 interface Acc { id: string; name: string }
@@ -18,6 +18,48 @@ const fmtDate = (d: string | null | undefined) => {
 
 const money = (v: number) =>
   `${v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/**
+ * Pede e lê a resposta como TEXTO antes de tentar JSON. Quando a Vercel corta
+ * o pedido (tempo esgotado, resposta grande demais) ela devolve uma PÁGINA de
+ * erro, e `r.json()` estourava com "Unexpected token…": a pessoa via uma frase
+ * sem sentido, ou a tela parada. Aqui a falha vira uma frase que diz o que houve.
+ */
+async function pedir(url: string, init?: RequestInit): Promise<any> {
+  let r: Response, bruto: string
+  try { r = await fetch(url, init); bruto = await r.text() }
+  catch (e) { return { error: `Sem resposta do servidor (${(e as Error).message}). Confira a conexão e tente de novo.` } }
+  try { return JSON.parse(bruto) }
+  catch {
+    if (r.status === 504) return { error: 'O servidor demorou demais para responder (HTTP 504). Tente de novo; se repetir, use uma data final mais antiga.' }
+    if (r.status === 413) return { error: 'A resposta ficou grande demais para o servidor entregar (HTTP 413). Use uma data final mais antiga.' }
+    return { error: `O servidor respondeu HTTP ${r.status} sem dados legíveis. Tente de novo em instantes.` }
+  }
+}
+
+/**
+ * Uma linha da lista. `memo`: com milhares de lançamentos, marcar UM refazia a
+ * tabela inteira — medido em 12 mil linhas, ~350 ms por clique. Agora só a
+ * linha que mudou se redesenha.
+ */
+const Linha = memo(function Linha({ t, on, alternar }: { t: any; on: boolean; alternar: (id: string) => void }) {
+  return (
+    <tr onClick={() => alternar(t.id)}
+      style={{ borderBottom:'1px solid #f0f4fa', cursor:'pointer', background: on ? '#f0f9f4' : '#fff' }}>
+      <td style={{ padding:'8px 12px' }}>
+        <input type="checkbox" checked={on} onChange={() => alternar(t.id)}
+          onClick={e => e.stopPropagation()} style={{ width:17, height:17, cursor:'pointer' }} />
+      </td>
+      <td style={{ padding:'8px 12px', whiteSpace:'nowrap' as const, color:'#4a5a70' }}>{fmtDate(t.tx_date)}</td>
+      <td style={{ padding:'8px 12px' }} title={String(t.description ?? '')}>{String(t.description ?? '').slice(0, 70)}</td>
+      <td style={{ padding:'8px 12px', color:'#6a7a9a' }}>{t.payee || '—'}</td>
+      <td style={{ padding:'8px 12px', textAlign:'right' as const, fontWeight:700,
+        color: Number(t.amount) < 0 ? '#b02020' : '#1a6b4a', whiteSpace:'nowrap' as const }}>
+        {money(Number(t.amount))}
+      </td>
+    </tr>
+  )
+})
 
 export default function ReconcileTab({ clientId, accounts }: Props) {
   const [accountId, setAccountId] = useState('')
@@ -37,29 +79,31 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
   const [nValor, setNValor] = useState(''); const [nSentido, setNSentido] = useState('out')
   const [nConta, setNConta] = useState(''); const [nPayee, setNPayee] = useState('')
   const [categorias, setCategorias] = useState<{ name: string; kind: string }[]>([])
+  const [erroCategorias, setErroCategorias] = useState('')
 
   // Ao trocar de conta: histórico e saldo inicial sugerido
   useEffect(() => {
     if (!accountId) return
     setCarregado(false); setTxs([]); setCleared(new Set()); setMsg('')
-    fetch(`/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}`)
-      .then(r => r.json())
+    pedir(`/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}`)
       .then(d => {
         if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
         setHistorico(d.historico || [])
         setBeginning(String(d.saldoInicialSugerido ?? 0))
         if (d.emAberto) {
-          setStatementDate(d.emAberto.statement_date)
-          setEnding(String(d.emAberto.ending_balance))
+          setStatementDate(d.emAberto.statement_date || '')
+          setEnding(d.emAberto.ending_balance == null ? '' : String(d.emAberto.ending_balance))
           setMsg('↻ Existe uma conciliação em andamento nesta conta — carregue os lançamentos para continuar.')
         }
       })
-      .catch(() => setMsg('Não foi possível carregar o histórico.'))
   }, [accountId, clientId])
 
   useEffect(() => {
-    fetch('/api/bookkeeping/categories').then(r => r.json())
-      .then(d => setCategorias(d.categories || [])).catch(() => null)
+    // Lista que falha não é "nenhuma conta": o seletor vazio diria isso.
+    pedir('/api/bookkeeping/categories').then(d => {
+      if (Array.isArray(d?.categories)) setCategorias(d.categories)
+      else setErroCategorias(d?.error || 'resposta sem a lista de contas')
+    })
   }, [])
 
   const incluirLancamento = async () => {
@@ -67,13 +111,13 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
       setMsg('⚠️ Preencha data, descrição, valor e conta contábil.'); return
     }
     setBusy(true); setMsg('')
-    const d = await fetch('/api/bookkeeping/manual-entry', {
+    const d = await pedir('/api/bookkeeping/manual-entry', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         clientId, accountId, date: nData, description: nDesc,
         amount: Number(nValor), direction: nSentido, category: nConta, payee: nPayee,
       }),
-    }).then(r => r.json()).catch(e => ({ error: String(e) }))
+    })
     setBusy(false)
     if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
     setMsg(`✓ ${d.message}${d.aviso ? ` — ${d.aviso}` : ''}`)
@@ -84,58 +128,56 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
   const carregar = async () => {
     if (!accountId || !statementDate) { setMsg('Escolha a conta e a data final do extrato.'); return }
     setBusy(true); setMsg('')
-    try {
-      const d = await fetch(
-        `/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}&statementDate=${statementDate}`
-      ).then(r => r.json())
-      if (!d?.ok) { setMsg(`Erro: ${d?.error}`); setBusy(false); return }
-      setTxs(d.elegiveis || [])
-      setCleared(new Set(d.jaMarcados || []))
-      setPendentes(d.pendentesNaoAprovados || 0)
-      setHistorico(d.historico || [])
-      setCarregado(true)
-    } catch (e) { setMsg((e as Error).message) }
+    const d = await pedir(
+      `/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}&statementDate=${statementDate}`)
     setBusy(false)
+    // Volume acima do teto não é defeito: a rota diz quantos são e o que fazer.
+    if (d?.excesso) { setCarregado(false); setTxs([]); setCleared(new Set()); setMsg(`⚠️ ${d.error}`); return }
+    if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
+    setTxs(d.elegiveis || [])
+    setCleared(new Set(d.jaMarcados || []))
+    setPendentes(d.pendentesNaoAprovados || 0)
+    setHistorico(d.historico || [])
+    setCarregado(true)
   }
 
   const salvar = async (action: 'save' | 'finish') => {
     setBusy(true); setMsg('')
-    try {
-      const d = await fetch('/api/bookkeeping/reconciliation', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          action, clientId, accountId, statementDate,
-          beginningBalance: Number(beginning) || 0,
-          endingBalance: Number(ending) || 0,
-          clearedIds: Array.from(cleared),
-        }),
-      }).then(r => r.json())
-      if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); setBusy(false); return }
-      setMsg(action === 'finish'
-        ? `✅ Conciliação de ${fmtDate(statementDate)} fechada com ${cleared.size} lançamentos — diferença zero.`
-        : `Progresso salvo (${cleared.size} marcados). Você pode continuar depois.`)
-      if (action === 'finish') { setTxs([]); setCleared(new Set()); setCarregado(false) }
-      carregarHistorico()
-    } catch (e) { setMsg((e as Error).message) }
+    const d = await pedir('/api/bookkeeping/reconciliation', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action, clientId, accountId, statementDate,
+        beginningBalance: Number(beginning) || 0,
+        endingBalance: Number(ending) || 0,
+        clearedIds: Array.from(cleared),
+      }),
+    })
     setBusy(false)
+    if (!d?.ok) { setMsg(`⚠️ ${d?.error}`); return }
+    const aviso = d.aviso ? ` — ${d.aviso}` : ''
+    setMsg(action === 'finish'
+      ? `✅ Conciliação de ${fmtDate(statementDate)} fechada com ${cleared.size} lançamentos — diferença zero.${aviso}`
+      : `Progresso salvo (${cleared.size} marcados). Você pode continuar depois.${aviso}`)
+    if (action === 'finish') { setTxs([]); setCleared(new Set()); setCarregado(false) }
+    carregarHistorico()
   }
 
   const carregarHistorico = () => {
-    fetch(`/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}`)
-      .then(r => r.json()).then(d => d?.ok && setHistorico(d.historico || [])).catch(() => null)
+    pedir(`/api/bookkeeping/reconciliation?clientId=${clientId}&accountId=${accountId}`)
+      .then(d => { if (d?.ok) setHistorico(d.historico || []) })
   }
 
   const reabrir = async (id: string) => {
     if (!confirm('Reabrir esta conciliação? Os lançamentos voltam a ficar livres para conciliar.')) return
-    const d = await fetch(`/api/bookkeeping/reconciliation?id=${id}`, { method: 'DELETE' })
-      .then(r => r.json()).catch(e => ({ error: String(e) }))
+    const d = await pedir(`/api/bookkeeping/reconciliation?id=${id}`, { method: 'DELETE' })
     if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
     setMsg('Conciliação reaberta.'); carregarHistorico()
   }
 
-  const toggle = (id: string) => setCleared(prev => {
+  // Estável entre renders: é o que deixa a `Linha` memorizada pular o redesenho.
+  const toggle = useCallback((id: string) => setCleared(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
-  })
+  }), [])
 
   // A MESMA conta da rota (lib/conciliacao-bancaria.ts): a tela dizia
   // "diferença 0.00" e a rota recusava, porque cada uma somava de um jeito.
@@ -263,7 +305,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
                 <input type="number" step="0.01" value={nValor} onChange={e => setNValor(e.target.value)}
                   placeholder="0.00" style={{ ...inp, width:120 }} />
                 <select value={nConta} onChange={e => setNConta(e.target.value)} style={{ ...inp, flex:'1 1 180px', cursor:'pointer' }}>
-                  <option value="">— conta contábil —</option>
+                  <option value="">{erroCategorias ? `⚠️ contas não carregaram: ${erroCategorias}` : '— conta contábil —'}</option>
                   {categorias.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
                 </select>
                 <input value={nPayee} onChange={e => setNPayee(e.target.value)} placeholder="Payee (opcional)"
@@ -285,25 +327,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {txs.map(t => {
-                  const on = cleared.has(t.id)
-                  return (
-                    <tr key={t.id} onClick={() => toggle(t.id)}
-                      style={{ borderBottom:'1px solid #f0f4fa', cursor:'pointer', background: on ? '#f0f9f4' : '#fff' }}>
-                      <td style={{ padding:'8px 12px' }}>
-                        <input type="checkbox" checked={on} onChange={() => toggle(t.id)}
-                          onClick={e => e.stopPropagation()} style={{ width:17, height:17, cursor:'pointer' }} />
-                      </td>
-                      <td style={{ padding:'8px 12px', whiteSpace:'nowrap' as const, color:'#4a5a70' }}>{fmtDate(t.tx_date)}</td>
-                      <td style={{ padding:'8px 12px' }}>{String(t.description).slice(0, 70)}</td>
-                      <td style={{ padding:'8px 12px', color:'#6a7a9a' }}>{t.payee || '—'}</td>
-                      <td style={{ padding:'8px 12px', textAlign:'right' as const, fontWeight:700,
-                        color: Number(t.amount) < 0 ? '#b02020' : '#1a6b4a', whiteSpace:'nowrap' as const }}>
-                        {money(Number(t.amount))}
-                      </td>
-                    </tr>
-                  )
-                })}
+                {txs.map(t => <Linha key={t.id} t={t} on={cleared.has(t.id)} alternar={toggle} />)}
                 {txs.length === 0 && (
                   <tr><td colSpan={5} style={{ padding:'18px 12px', color:'#9aaab0', fontSize:13 }}>
                     Nenhum lançamento aprovado nesta conta até a data informada.
@@ -322,7 +346,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
             <div key={h.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 0', borderBottom:'1px solid #f0f4fa', fontSize:13 }}>
               <span style={{ fontWeight:700, color:'#0f2340', minWidth:96 }}>{fmtDate(h.statement_date)}</span>
               <span style={{ color:'#6a7a9a' }}>
-                {h.status === 'completed' ? '✅ fechada' : '↻ em andamento'} · {h.cleared_count} lançamentos
+                {h.status === 'completed' ? '✅ fechada' : '↻ em andamento'} · {h.cleared_count ?? '—'} lançamentos
               </span>
               <span style={{ marginLeft:'auto', fontWeight:700 }}>{money(Number(h.ending_balance))}</span>
               <button onClick={() => reabrir(h.id)}

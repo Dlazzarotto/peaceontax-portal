@@ -89,3 +89,171 @@ export function emLotes<T>(itens: T[], tamanho = LOTE_DA_MARCACAO): T[][] {
   for (let i = 0; i < itens.length; i += tamanho) lotes.push(itens.slice(i, i + tamanho))
   return lotes
 }
+
+// ── O que a rota devolve à tela ─────────────────────────────────────────────
+//
+// Depois do PR que passou a ler TODOS os elegíveis, a tela parou de carregar.
+// Duas causas, as duas reproduzidas, e nenhuma delas dava para ver de fora:
+//
+// 1. `bank_reconciliations` nasceu no PAINEL do Supabase, não num `.sql`. O
+//    histórico pedia colunas por nome (`completed_at`, `cleared_count`…), e a
+//    versão antiga IGNORAVA o erro — se faltasse uma, o histórico vinha vazio
+//    e os lançamentos apareciam do mesmo jeito. A nova passou a conferir o erro
+//    (certo) ANTES de ler os lançamentos (errado): uma coluna que o painel não
+//    criou derrubava a tela inteira. Agora o histórico é `select('*')`, que não
+//    depende de coluna nenhuma, e `normalizarConciliacao` lê o que vier.
+//
+// 2. O volume. O `.limit(5000)` antigo parava em mil (o teto do PostgREST) e a
+//    resposta era pequena por acidente. Lendo tudo, uma conta com anos de
+//    extrato devolve megabytes — e a Vercel recusa resposta acima de 4,5 MB
+//    com uma PÁGINA de erro, que a tela tentava ler como JSON. Agora: o filtro
+//    "ainda não conciliado" vai na CONSULTA (antes vinha tudo e se filtrava
+//    aqui), só as colunas que a tela mostra, e um teto com mensagem que diz o
+//    que fazer, no lugar de uma falha que ninguém entende.
+
+/** 'YYYY-MM-DD' do que o banco devolveu (`date` ou `timestamptz`), ou null. */
+export function dataISO(v: unknown): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(v ?? ''))
+  return m ? m[1] : null
+}
+
+export interface ConciliacaoDaConta {
+  id: string
+  statement_date: string | null
+  beginning_balance: number | null
+  ending_balance: number | null
+  cleared_count: number | null
+  status: string
+  completed_at: string | null
+}
+
+const numeroOuNulo = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Uma linha de `bank_reconciliations` lida com `select('*')`, no formato da
+ * tela. Coluna que o banco não tem vira null — nunca derruba a leitura. A
+ * data vem cortada em 'YYYY-MM-DD': se o painel criou a coluna como
+ * `timestamptz`, o valor chegava '2026-10-31T00:00:00+00:00', o campo de data
+ * da tela ficava em branco e a rota recusava a data.
+ */
+export function normalizarConciliacao(r: any): ConciliacaoDaConta {
+  return {
+    id: String(r?.id ?? ''),
+    statement_date: dataISO(r?.statement_date),
+    beginning_balance: numeroOuNulo(r?.beginning_balance),
+    ending_balance: numeroOuNulo(r?.ending_balance),
+    cleared_count: numeroOuNulo(r?.cleared_count),
+    status: String(r?.status ?? ''),
+    completed_at: r?.completed_at ? String(r.completed_at) : null,
+  }
+}
+
+/**
+ * Os livres e os da conciliação em andamento, numa lista só: sem repetir id e
+ * na ordem da tela (data, depois id — a mesma do banco, para a lista não mudar
+ * de ordem entre um carregamento e outro).
+ */
+export function juntarElegiveis<T extends { id: unknown; tx_date?: unknown }>(...listas: (T[] | null | undefined)[]): T[] {
+  const porId = new Map<string, T>()
+  for (const lista of listas) for (const t of lista || []) {
+    const id = String(t.id)
+    if (!porId.has(id)) porId.set(id, t)
+  }
+  return Array.from(porId.values()).sort((a, b) => {
+    const da = String(a.tx_date ?? ''), db = String(b.tx_date ?? '')
+    if (da !== db) return da < db ? -1 : 1
+    const ia = String(a.id), ib = String(b.id)
+    return ia < ib ? -1 : ia > ib ? 1 : 0
+  })
+}
+
+/**
+ * Quanto da descrição vai para a tela. Ela mostra 70 caracteres; a descrição
+ * do extrato de banco chega a 300 ("ORIG CO NAME:… TRACE#:… IND ID:…") e era
+ * o que mais pesava na resposta. A descrição inteira continua no Banking.
+ */
+export const DESCRICAO_NA_TELA = 100
+
+/** A linha como vai para a tela: a descrição cortada, o resto como veio. */
+export function linhaParaATela<T extends { description?: unknown }>(t: T): T {
+  const d = t.description == null ? t.description : String(t.description)
+  return typeof d === 'string' && d.length > DESCRICAO_NA_TELA ? { ...t, description: d.slice(0, DESCRICAO_NA_TELA) } : t
+}
+
+/**
+ * Teto do corpo da resposta, em bytes. A Vercel recusa acima de 4,5 MB
+ * (FUNCTION_PAYLOAD_TOO_LARGE); a folga é para o que não é lançamento.
+ */
+export const TETO_DA_RESPOSTA = 4_000_000
+
+/**
+ * Acima disto nem se lê: seriam dezenas de idas ao banco para recusar no fim.
+ * Medido na tela, em produção: 12 mil linhas aparecem em ~3 s; o teto de bytes
+ * acima é quem segura de verdade (descrição comprida pesa mais).
+ */
+export const TETO_DE_LANCAMENTOS = 15_000
+
+const fmtData = (iso: string) => {
+  const [y, m, d] = String(iso).slice(0, 10).split('-')
+  return y && m && d ? `${m}/${d}/${y}` : String(iso)
+}
+
+/**
+ * A recusa por volume diz quantos são e o que fazer. Conciliar é por EXTRATO:
+ * escolher como data final a do primeiro extrato ainda não conciliado traz só
+ * o que vai até ele, e cada conciliação fechada tira os seus da lista.
+ */
+export function mensagemDeExcesso(total: number, statementDate: string): string {
+  const qtd = Number.isFinite(total) && total > 0 ? total.toLocaleString('pt-BR') : 'muitos'
+  return `Esta conta tem ${qtd} lançamentos aprovados e ainda não conciliados até ${fmtData(statementDate)} — `
+    + 'mais do que dá para trazer de uma vez. Concilie por partes: use como data final a do primeiro extrato '
+    + 'que ainda não foi conciliado, feche essa conciliação e siga para o extrato seguinte.'
+}
+
+// ── Gravar sem as colunas que o painel não criou ───────────────────────────
+//
+// A tabela nasceu no painel, e o que a rota grava (`completed_at`, `difference`,
+// `created_by`…) pode não estar lá. Sem isto, "Concluir" falhava por causa de
+// uma coluna informativa. Só se dispensa coluna OPCIONAL: sem as essenciais a
+// conciliação não existe, e aí é erro mesmo. Quem chama recebe a lista do que
+// ficou de fora e AVISA (rodar sql/conciliacao-bancaria-v1.sql) — tolerar não é
+// esconder.
+
+/** Sem estes campos a conciliação não existe: faltar um é erro, não "sem a coluna". */
+export const CAMPOS_ESSENCIAIS = ['client_id', 'account_id', 'statement_date', 'beginning_balance', 'ending_balance', 'status']
+
+export async function gravarSemColunasAusentes<R>(
+  campos: Record<string, unknown>,
+  grava: (c: Record<string, unknown>) => PromiseLike<{ data: R | null; error: any }>,
+  colunaAusente: (e: any) => string | null,
+  essenciais: string[] = CAMPOS_ESSENCIAIS,
+): Promise<{ data: R | null; error: any; semColuna: string[] }> {
+  let atuais: Record<string, unknown> = { ...campos }
+  const semColuna: string[] = []
+  // Cada volta tira UMA coluna; mais voltas do que campos seria laço sem fim.
+  for (let volta = 0; volta <= Object.keys(campos).length; volta++) {
+    // Sobrou nada para gravar (o único campo era opcional e o banco não o
+    // tem): não há escrita a fazer — gravar `{}` seria pedir erro.
+    if (!Object.keys(atuais).length) return { data: null, error: null, semColuna }
+    const { data, error } = await grava(atuais)
+    if (!error) return { data, error: null, semColuna }
+    const col = colunaAusente(error)
+    if (!col || !(col in atuais) || essenciais.includes(col)) return { data: null, error, semColuna }
+    semColuna.push(col)
+    const resto = { ...atuais }
+    delete resto[col]
+    atuais = resto
+  }
+  return { data: null, error: { message: 'colunas demais faltando em bank_reconciliations' }, semColuna }
+}
+
+/** O aviso que acompanha a gravação feita sem alguma coluna. */
+export function avisoDeColunas(semColuna: string[]): string | null {
+  if (!semColuna.length) return null
+  return `Gravado sem ${semColuna.join(', ')}: o banco ainda não tem ${semColuna.length > 1 ? 'essas colunas' : 'essa coluna'}. `
+    + 'Rode a migração sql/conciliacao-bancaria-v1.sql.'
+}
