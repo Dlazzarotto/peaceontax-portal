@@ -15,6 +15,7 @@ import { NextResponse } from 'next/server'
 import { getAuth } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import crypto from 'crypto'
+import { ambienteDe, ehEnderecoDemo, enderecosDocusign, PASSOS_PARA_PRODUCAO } from '@/lib/docusign'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -80,7 +81,9 @@ function diagnosticoChave(r: ReturnType<typeof radiografiaChave>): string {
   return `Cabeçalho ${r.cabecalho_encontrado} presente, mas o miolo não formou uma chave válida. Baixe a chave de novo no DocuSign e recole.`
 }
 
-const ehDemo = (s: string) => /(^|\/\/|\.)(account-d\.docusign\.com|demo\.docusign\.net)/.test(s)
+// O "é demo?" é o da lib (ehEnderecoDemo): o envio e o diagnóstico decidem pela
+// MESMA regra. A cópia que morava aqui podia divergir em silêncio.
+const ehDemo = ehEnderecoDemo
 
 export async function GET() {
   const auth = await getAuth()
@@ -93,18 +96,27 @@ export async function GET() {
   const IK = process.env.DOCUSIGN_INTEGRATION_KEY || ''
   const USER = process.env.DOCUSIGN_USER_ID || ''
   const ACC = process.env.DOCUSIGN_ACCOUNT_ID || ''
-  const BASE_PATH = process.env.DOCUSIGN_BASE_PATH || 'https://demo.docusign.net/restapi'
-  const OAUTH = process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com'
+  const enderecos = enderecosDocusign()
+  const BASE_PATH = enderecos.basePath
+  const OAUTH = enderecos.oauthBase
   const KEY_RAW = process.env.DOCUSIGN_PRIVATE_KEY || ''
+  const ambiente = ambienteDe({ basePath: BASE_PATH, oauthBase: OAUTH })
+  const demoDeProposito = process.env.DOCUSIGN_PERMITIR_DEMO === '1'
 
   const passos: Passo[] = []
   const parar = (extra: Record<string, unknown> = {}) =>
     NextResponse.json({
       ambiente: {
+        // A pergunta que importa vem primeiro: o que for assinado vale?
+        validade: ambiente === 'producao'
+          ? 'PRODUÇÃO — assinatura com validade legal'
+          : demoDeProposito
+            ? 'TESTE de propósito (DOCUSIGN_PERMITIR_DEMO=1) — sem validade legal'
+            : 'TESTE (sandbox) — sem validade legal; o envio é recusado',
         oauth: OAUTH,
-        oauth_definido: !!process.env.DOCUSIGN_OAUTH_BASE,
+        oauth_definido: enderecos.oauthDefinido,
         base_path: BASE_PATH,
-        base_path_definido: !!process.env.DOCUSIGN_BASE_PATH,
+        base_path_definido: enderecos.basePathDefinido,
         integration_key: mascarar(IK),
         user_id: mascarar(USER),
         account_id: mascarar(ACC),
@@ -113,6 +125,19 @@ export async function GET() {
       veredito: passos.find((p) => !p.ok)?.acao || 'Todas as checagens passaram.',
       ...extra,
     })
+
+  // 0 — o ambiente. Sandbox inteiro e não de propósito: conferir as
+  // credenciais do TESTE não leva a lugar nenhum — o envio é recusado de
+  // qualquer jeito, e "todas as checagens passaram" seria mentira.
+  if (ambiente === 'demo' && ehDemo(OAUTH) && ehDemo(BASE_PATH) && !demoDeProposito) {
+    passos.push({
+      passo: '0. Ambiente de produção',
+      ok: false,
+      detalhe: 'O DocuSign está no TESTE (sandbox): o que for assinado não tem validade legal, e o envio é recusado.',
+      acao: 'Sair do teste não é só trocar endereços — siga passosParaProducao, na ordem, e rode este diagnóstico de novo.',
+    })
+    return parar({ passosParaProducao: PASSOS_PARA_PRODUCAO })
+  }
 
   // 1 — variáveis presentes
   const faltando = [
@@ -134,7 +159,7 @@ export async function GET() {
   const oauthDemo = ehDemo(OAUTH)
   const pathDemo = ehDemo(BASE_PATH)
   const coerente = oauthDemo === pathDemo
-  passos.push({
+  const passoCoerencia: Passo = {
     passo: '2. Ambiente coerente (demo x produção)',
     ok: coerente,
     detalhe: coerente
@@ -144,9 +169,13 @@ export async function GET() {
       ? undefined
       : oauthDemo
         ? 'Defina DOCUSIGN_OAUTH_BASE = account.docusign.com no Vercel (a API já está em produção).'
-        : 'Defina DOCUSIGN_OAUTH_BASE = account-d.docusign.com, ou aponte DOCUSIGN_BASE_PATH para produção.',
-  })
-  if (!coerente) return parar()
+        // O passo 6 troca este texto pelo valor EXATO, se a autenticação passar.
+        : 'Defina DOCUSIGN_BASE_PATH com o servidor da conta de produção: o "Account Base URI" de Settings → Apps and Keys, seguido de /restapi.',
+  }
+  passos.push(passoCoerencia)
+  // OAuth no sandbox com a API em produção: autenticar no teste não diz nada
+  // da conta de produção. O contrário (OAuth já em produção) segue adiante.
+  if (!coerente && oauthDemo) return parar()
 
   // 3 — leitura da chave privada
   const pem = normalizarChave(KEY_RAW)
@@ -262,12 +291,15 @@ export async function GET() {
 
     const esperado = `${String(alvo.base_uri).replace(/\/$/, '')}/restapi`
     const bate = BASE_PATH.replace(/\/$/, '').toLowerCase() === esperado.toLowerCase()
+    const acaoServidor = `Defina DOCUSIGN_BASE_PATH = ${esperado} no Vercel e refaça o deploy.`
     passos.push({
       passo: '6. BASE_PATH aponta para o servidor da conta',
       ok: bate,
       detalhe: bate ? `Correto: ${esperado}` : `Configurado ${BASE_PATH}, mas esta conta vive em ${esperado}`,
-      acao: bate ? undefined : `Defina DOCUSIGN_BASE_PATH = ${esperado} no Vercel e refaça o deploy.`,
+      acao: bate ? undefined : acaoServidor,
     })
+    // Meio caminho: o passo 2 acusou a API no sandbox — agora se sabe o valor.
+    if (!passoCoerencia.ok) passoCoerencia.acao = acaoServidor
   } catch (e: any) {
     passos.push({
       passo: '5. Usuário pertence à conta configurada',
@@ -277,5 +309,18 @@ export async function GET() {
     })
   }
 
-  return parar()
+  passos.push({
+    passo: '7. Validade legal',
+    ok: ambiente === 'producao',
+    detalhe: ambiente === 'producao'
+      ? 'Produção: o que for assinado vale, inclusive o 8879 perante o IRS.'
+      : demoDeProposito
+        ? 'TESTE de propósito (DOCUSIGN_PERMITIR_DEMO=1): o que for assinado NÃO tem validade legal.'
+        : 'Ainda no TESTE: o que for assinado não vale, e o envio é recusado.',
+    acao: ambiente === 'producao' ? undefined
+      : demoDeProposito
+        ? 'Terminado o teste, siga passosParaProducao e apague DOCUSIGN_PERMITIR_DEMO.'
+        : 'Falta o que os passos acima apontam — e, se não apontarem nada, siga passosParaProducao.',
+  })
+  return parar(ambiente === 'producao' ? {} : { passosParaProducao: PASSOS_PARA_PRODUCAO })
 }
