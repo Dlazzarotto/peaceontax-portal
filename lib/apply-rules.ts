@@ -273,8 +273,11 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
       updated_at: new Date().toISOString(),
     }
     if (grupo.payee) upd.payee = grupo.payee
-    for (let i = 0; i < grupo.ids.length; i += 400) {
-      const fatia = grupo.ids.slice(i, i + 400)
+    // Lotes de 100: o `in (ids)` vai na URL, e 400 uuids são ~16 KB — o
+    // gateway recusa por volta disso (a conciliação perdia o lote de 500), e
+    // o erro aqui só deixa de contar: a regra não se aplicava, calada.
+    for (let i = 0; i < grupo.ids.length; i += 100) {
+      const fatia = grupo.ids.slice(i, i + 100)
       const { error } = await db.from('bank_transactions').update(upd).in('id', fatia)
       if (!error) applied += fatia.length
     }

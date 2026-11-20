@@ -11,6 +11,8 @@ import ReconcileTab from '@/components/ReconcileTab'
 import SeletorPeriodo from '@/components/SeletorPeriodo'
 import { periodoDoPreset, periodoValido, anoDe, type Periodo } from '@/lib/periodo-relatorio'
 import { dataDaFirma } from '@/lib/dia-da-firma'
+import { avisoDaLista, type Grupo } from '@/lib/lista-de-lancamentos'
+import { mensagemDaSincronizacao } from '@/lib/plaid-paginacao'
 
 // Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
 const fmtDate = (d: string | null | undefined) => {
@@ -157,6 +159,15 @@ export default function BookkeepingTab({ clientId }: Props) {
     aviso: string | null
   }>>({})
   const [summary, setSummary] = useState<any>(null)
+  // Os números da tela vêm do SERVIDOR, contados sobre tudo — não da lista
+  // carregada, que é de UMA aba e tem teto (lib/lista-de-lancamentos.ts).
+  const [contagens, setContagens] = useState<Record<Grupo, number> & { total: number } | null>(null)
+  const [anosDoBanco, setAnosDoBanco] = useState<number[]>([])
+  const [extratosImportados, setExtratosImportados] = useState<string[] | null>(null)
+  const [listaInfo, setListaInfo] = useState<{ mostrando: number; total: number; maisAntiga: string | null } | null>(null)
+  // Falha ao CARREGAR tem faixa própria: some no carregamento seguinte que dá
+  // certo, e não se mistura com a mensagem da última ação.
+  const [erroDeCarga, setErroDeCarga] = useState('')
   const [statements, setStatements] = useState<Doc[]>([])
   const [loading, setLoading] = useState(true)
   const [extracting, setExtracting] = useState<string|null>(null)
@@ -515,26 +526,51 @@ export default function BookkeepingTab({ clientId }: Props) {
     load()
   }
 
+  // A lista carregada é a da ABA (o grupo de status dela): o Registro tem a
+  // sua, e as outras visões (extratos, payees, regras…) ficam com a da aba de
+  // revisão, sem recarregar ao trocar para elas.
+  const grupo: Grupo = view === 'register' ? 'register' : tab
+
+  // Lê como texto antes de JSON: erro do servidor que não é JSON vira frase,
+  // e erro nunca vira lista vazia — "nada nesta aba" seria uma afirmação falsa.
+  const lerJson = async (url: string): Promise<any> => {
+    try {
+      const r = await fetch(url)
+      const bruto = await r.text()
+      try { return JSON.parse(bruto) } catch { return { error: `o servidor respondeu ${r.status} sem dados` } }
+    } catch (e) { return { error: (e as Error).message } }
+  }
+
   const load = async () => {
     setLoading(true)
-    const params = new URLSearchParams({ clientId })
+    const params = new URLSearchParams({ clientId, grupo })
     if (year !== 'all') params.set('year', String(year))
     if (accountFilter !== 'all') params.set('accountId', accountFilter)
 
     const [t, st] = await Promise.all([
-      fetch(`/api/bookkeeping/transactions?${params}`).then(r => r.json()),
+      lerJson(`/api/bookkeeping/transactions?${params}`),
       // rota dedicada: lê os extratos direto da tabela de documentos
-      fetch(`/api/bookkeeping/statements?clientId=${clientId}`)
-        .then(r => r.json()).catch(() => ({ statements: [] })),
+      lerJson(`/api/bookkeeping/statements?clientId=${clientId}`),
     ])
-    setTxs(t.transactions || [])
-    setSummary(t.summary || null)
-    setAccounts(t.accounts || [])
+    const erros: string[] = []
+    if (t?.error || !Array.isArray(t?.transactions)) {
+      erros.push(`as transações: ${t?.error || 'resposta sem a lista'}`)
+    } else {
+      setTxs(t.transactions)
+      setSummary(t.summary || null)
+      setAccounts(t.accounts || [])
+      setContagens(t.contagens || null)
+      setAnosDoBanco(Array.isArray(t.anos) ? t.anos : [])
+      setExtratosImportados(Array.isArray(t.extratosImportados) ? t.extratosImportados : null)
+      setListaInfo(t.lista || null)
+    }
     setSelected(new Set())
-    setStatements(st.statements || [])
+    if (st?.error || !Array.isArray(st?.statements)) erros.push(`os extratos: ${st?.error || 'resposta sem a lista'}`)
+    else setStatements(st.statements)
+    setErroDeCarga(erros.length ? `Não foi possível carregar ${erros.join(' · ')}` : '')
     setLoading(false)
   }
-  useEffect(() => { load() }, [clientId, year, accountFilter])
+  useEffect(() => { load() }, [clientId, year, accountFilter, grupo])
   useEffect(() => {
     fetch(`/api/plaid/items?clientId=${clientId}`).then(r => r.json())
       .then(d => setPlaidItems(d.items || [])).catch(() => null)
@@ -561,9 +597,9 @@ export default function BookkeepingTab({ clientId }: Props) {
         setPlaidBusy(false); load(); return
       }
 
-      setMsg(r.ok
-        ? `✓ Plaid: ${r.added} novas transações${r.ruled ? ` · ${r.ruled} reconhecidas pelas regras` : ''}${(r.details||[]).length ? ` (${(r.details||[]).join(' · ')})` : ''}`
-        : `Erro: ${r.error}`)
+      // A mesma frase do Caixa da firma: diz o que entrou, o que falta baixar
+      // e o que o banco recusou (lib/plaid-paginacao.ts).
+      setMsg(mensagemDaSincronizacao(r))
       if (r.ok) load()
     } catch (e) { setMsg(`Erro de rede: ${(e as Error).message}`) }
     setPlaidBusy(false)
@@ -964,20 +1000,32 @@ export default function BookkeepingTab({ clientId }: Props) {
       else cmp = Number(a.amount) - Number(b.amount)
       return sortDir === 'asc' ? cmp : -cmp
     })
-  const counts = {
+  // Do servidor, contadas sobre tudo: a lista carregada é de UMA aba e tem teto.
+  const counts = contagens ? {
+    recognized: contagens.recognized, unrecognized: contagens.unrecognized,
+    register: contagens.register, excluded: contagens.excluded,
+  } : {
     recognized: txs.filter(TAB_FILTER.recognized).length,
     unrecognized: txs.filter(TAB_FILTER.unrecognized).length,
     register: txs.filter(TAB_FILTER.register).length,
     excluded: txs.filter(TAB_FILTER.excluded).length,
   }
+  const avisoDaAba = listaInfo
+    ? avisoDaLista({ mostrando: listaInfo.mostrando, total: listaInfo.total, maisAntiga: listaInfo.maisAntiga, anoEscolhido: year !== 'all' })
+    : null
 
-  const extractedDocIds = new Set(txs.map(t => t.statement_document_id).filter(Boolean))
+  // Do servidor (todos os anos): da lista carregada, o extrato cujas linhas
+  // ficavam fora dela aparecia como "Importar transações" de novo.
+  const extractedDocIds = new Set(extratosImportados ?? txs.map(t => t.statement_document_id).filter(Boolean))
   // Anos disponíveis: das transações E dos extratos em PDF (cliente sem transações
   // importadas precisa poder escolher o ano dos extratos que enviou)
+  // Os anos que EXISTEM no banco (anosDoBanco): vindos da lista carregada, o
+  // ano que ficava todo depois do corte não aparecia para ser escolhido.
   const years = (Array.from(new Set([
+    ...anosDoBanco,
     ...txs.map(t => t.fiscal_year),
     ...statements.map(st => st.tax_year),
-  ].filter(Boolean))) as number[]).sort((a, b) => b - a)
+  ].filter(Boolean).map(Number))) as number[]).sort((a, b) => b - a)
   const money = (n: number) => `${n < 0 ? '−' : ''}$${Math.abs(n).toFixed(2)}`
 
   const card = { background:'#fff', borderRadius:14, padding:18, border:'1px solid #e2e8f4', marginBottom:14 }
@@ -1017,6 +1065,11 @@ export default function BookkeepingTab({ clientId }: Props) {
         </select>
       </div>
 
+      {erroDeCarga && (
+        <div style={{ marginBottom:14, padding:'11px 16px', borderRadius:10, fontSize:13.5, fontWeight:700, background:'#fee2e2', color:'#b02020' }}>
+          ⚠️ {erroDeCarga} — o que aparece abaixo pode estar incompleto. Recarregue a página; se repetir, avise a equipe técnica.
+        </div>
+      )}
       {msg && (
         <div style={{ marginBottom:14, padding:'11px 16px', borderRadius:10, fontSize:13.5, fontWeight:700,
           background: msg.startsWith('✓') ? '#e8f5ee' : msg.startsWith('🧹') ? '#f0f4ff' : '#fee2e2',
@@ -1329,7 +1382,7 @@ export default function BookkeepingTab({ clientId }: Props) {
             style={{ cursor:'pointer', background: accountFilter==='all' ? '#2D3278' : '#fff', color: accountFilter==='all' ? '#fff' : '#0f2340',
               borderRadius:12, padding:'12px 16px', border:'1.5px solid #2D3278', minWidth:140 }}>
             <div style={{ fontSize:13, fontWeight:800 }}>Todas as contas</div>
-            <div style={{ fontSize:11, opacity:0.8, marginTop:2 }}>{txs.length} transações</div>
+            <div style={{ fontSize:11, opacity:0.8, marginTop:2 }}>{contagens ? contagens.total : txs.length} transações</div>
           </div>
           {accounts.map(a => (
             <div key={a.id} onClick={() => setAccountFilter(a.id)}
@@ -2000,6 +2053,14 @@ export default function BookkeepingTab({ clientId }: Props) {
           {view === 'banking' && tab === 'excluded' && (
             <button onClick={() => bulkAction(Array.from(selected), 'restore')} style={btn('#6a7a9a')}>♻️ Restaurar</button>
           )}
+        </div>
+      )}
+
+      {/* A aba tem mais do que a lista traz: dizer, nunca esconder. */}
+      {!loading && avisoDaAba && (view === 'banking' || view === 'register') && (
+        <div style={{ margin:'10px 0', padding:'10px 14px', borderRadius:10, background:'#fff7e0', border:'1px solid #e0c060',
+          color:'#6a5a10', fontSize:12.5, lineHeight:1.5 }}>
+          ⚠️ {avisoDaAba}
         </div>
       )}
 

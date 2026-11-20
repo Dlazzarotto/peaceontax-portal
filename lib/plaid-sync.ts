@@ -4,8 +4,12 @@
 import { plaidPost } from '@/lib/plaid'
 import { applyRulesToClient } from '@/lib/apply-rules'
 import { colunaAusente } from '@/lib/caixa-firma'
+import { percorrerSync, linhasNovasDaPagina, POR_PAGINA } from '@/lib/plaid-paginacao'
 
-export async function syncPlaidItem(db: any, plaidItemRowId: string) {
+/** Prazo de UMA conexão por rodada, se quem chama não disser outro. */
+export const PRAZO_PADRAO_MS = 40_000
+
+export async function syncPlaidItem(db: any, plaidItemRowId: string, opcoes: { prazoMs?: number } = {}) {
   const { data: item } = await db.from('plaid_items').select('*').eq('id', plaidItemRowId).single()
   if (!item) throw new Error('Conexão não encontrada')
   if (item.status === 'disconnected') throw new Error('Conexão desativada')
@@ -44,62 +48,70 @@ export async function syncPlaidItem(db: any, plaidItemRowId: string) {
     if (row) accountMap[acc.account_id] = row.id
   }
 
-  // transactions/sync com cursor (pagina até acabar)
-  let cursor = item.sync_cursor || undefined
-  let added = 0, modified = 0, removed = 0
-  let hasMore = true
-  let guard = 0
-
-  while (hasMore && guard < 20) {
-    guard++
-    const res = await plaidPost('/transactions/sync', {
-      access_token: item.access_token,
-      ...(cursor ? { cursor } : {}),
-      count: 250,
-    })
-
-    for (const tx of res.added || []) {
-      if (tx.pending) continue
-      const { error } = await db.from('bank_transactions').upsert({
-        client_id: item.client_id,
-        source: 'plaid',
-        plaid_tx_id: tx.transaction_id,
-        account_id: accountMap[tx.account_id] || null,
-        account_hint: item.institution_name || null,
-        tx_date: tx.date,
-        fiscal_year: parseInt(String(tx.date).slice(0, 4)),
-        description: (tx.merchant_name || tx.name || 'Transaction').slice(0, 500),
-        amount: -Math.round(tx.amount * 100) / 100,   // inverte o sinal do Plaid
-        payee: tx.merchant_name ? tx.merchant_name.slice(0, 120) : null,
-        status: 'pending',
-      }, { onConflict: 'plaid_tx_id', ignoreDuplicates: true })
-      if (!error) added++
-    }
-
-    for (const tx of res.modified || []) {
-      if (tx.pending) continue
-      await db.from('bank_transactions').update({
-        tx_date: tx.date,
-        description: (tx.merchant_name || tx.name || 'Transaction').slice(0, 500),
-        amount: -Math.round(tx.amount * 100) / 100,
-        updated_at: new Date().toISOString(),
-      }).eq('plaid_tx_id', tx.transaction_id).neq('status', 'reviewed').neq('status', 'approved')
-      modified++
-    }
-
-    for (const tx of res.removed || []) {
-      await db.from('bank_transactions').delete()
-        .eq('plaid_tx_id', tx.transaction_id)
-        .in('status', ['pending', 'auto'])   // preserva registro aprovado
-      removed++
-    }
-
-    cursor = res.next_cursor
-    hasMore = res.has_more
+  // transactions/sync com cursor — o núcleo (página em lote, cursor salvo a
+  // cada página, prazo, recomeço no erro de mutação) é lib/plaid-paginacao.ts.
+  let added = 0, modified = 0, removed = 0, falhas = 0
+  let primeiraFalha: string | null = null
+  const recusa = (e: any) => { falhas++; primeiraFalha ||= String(e?.message || e) }
+  const ctx = {
+    clientId: item.client_id, instituicao: item.institution_name || null,
+    contaDe: (plaidAccountId: string) => accountMap[plaidAccountId] || null,
   }
 
+  const rodada = await percorrerSync({
+    cursorInicial: item.sync_cursor || undefined,
+    prazoMs: opcoes.prazoMs ?? PRAZO_PADRAO_MS,
+    pedir: cursor => plaidPost('/transactions/sync', {
+      access_token: item.access_token,
+      ...(cursor ? { cursor } : {}),
+      count: POR_PAGINA,
+    }),
+    aplicar: async pagina => {
+      // A página inteira numa gravação só. `ignoreDuplicates` + `select('id')`
+      // devolve só as que ENTRARAM: a contagem é das novas, não das já vistas.
+      const novas = linhasNovasDaPagina(pagina, ctx)
+      if (novas.length) {
+        const lote = await db.from('bank_transactions')
+          .upsert(novas, { onConflict: 'plaid_tx_id', ignoreDuplicates: true }).select('id')
+        if (!lote.error) added += (lote.data || []).length
+        else {
+          // Uma linha ruim derruba o lote: grava uma a uma para isolar e CONTAR
+          // a recusa — o cursor vai passar por ela, e ela não pode sumir calada.
+          for (const linha of novas) {
+            const um = await db.from('bank_transactions')
+              .upsert(linha, { onConflict: 'plaid_tx_id', ignoreDuplicates: true }).select('id')
+            if (um.error) recusa(um.error)
+            else added += (um.data || []).length
+          }
+        }
+      }
+
+      for (const tx of pagina.modified || []) {
+        if (tx.pending) continue
+        const { error } = await db.from('bank_transactions').update({
+          tx_date: tx.date,
+          description: (tx.merchant_name || tx.name || 'Transaction').slice(0, 500),
+          amount: -Math.round(tx.amount * 100) / 100,
+          updated_at: new Date().toISOString(),
+        }).eq('plaid_tx_id', tx.transaction_id).neq('status', 'reviewed').neq('status', 'approved')
+        if (error) recusa(error); else modified++
+      }
+
+      for (const tx of pagina.removed || []) {
+        const { error } = await db.from('bank_transactions').delete()
+          .eq('plaid_tx_id', tx.transaction_id)
+          .in('status', ['pending', 'auto'])   // preserva registro aprovado
+        if (error) recusa(error); else removed++
+      }
+    },
+    // A cada página: a função cortada por tempo não perde o que já andou.
+    salvarCursor: async cursor => {
+      await db.from('plaid_items').update({ sync_cursor: cursor }).eq('id', plaidItemRowId)
+    },
+  })
+
   await db.from('plaid_items').update({
-    sync_cursor: cursor,
+    sync_cursor: rodada.cursor,
     last_synced_at: new Date().toISOString(),
     status: 'active',
   }).eq('id', plaidItemRowId)
@@ -107,5 +119,5 @@ export async function syncPlaidItem(db: any, plaidItemRowId: string) {
   // Regras aplicam AUTOMATICAMENTE às transações recém-chegadas (estilo QuickBooks)
   const ruled = added > 0 ? await applyRulesToClient(db, item.client_id).catch(() => 0) : 0
 
-  return { added, modified, removed, ruled }
+  return { added, modified, removed, ruled, completo: rodada.completo, falhas, primeiraFalha }
 }

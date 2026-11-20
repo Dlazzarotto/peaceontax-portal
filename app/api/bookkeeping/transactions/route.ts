@@ -1,9 +1,27 @@
-// GET    /api/bookkeeping/transactions?clientId=&year=&status=   — lista
+// GET    /api/bookkeeping/transactions?clientId=&year=&accountId=&grupo=
+//        — a lista de UMA aba (grupo: recognized · unrecognized · register ·
+//          excluded), até LIMITE_DA_LISTA, e os números da tela contados
+//          sobre TUDO: abas, resumo, cartões das contas, anos e extratos já
+//          importados (lib/lista-de-lancamentos.ts)
 // PATCH  /api/bookkeeping/transactions { id, category?, status?, notes? } — edita (equipe)
 // DELETE /api/bookkeeping/transactions?documentId=...  — apaga transações de um extrato (reprocessar)
+//
+// A lista pedia `.limit(8000)` e o PostgREST corta em MIL, sem avisar; a tela
+// tirava dela as abas, o total, os cartões, os anos do seletor e os extratos
+// importados. Com 24 meses de Plaid, "não carrega antes de 20/05/2025" era o
+// corte — e o ano anterior nem aparecia para escolher. Agora o teto é
+// declarado, os números saem de uma leitura leve e paginada de tudo, e a
+// resposta diz quantas há (`lista.total`), para a tela avisar.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
+import { todasAsLinhas } from '@/lib/paginar'
+import {
+  STATUS_DO_GRUPO, LIMITE_DA_LISTA, ehGrupo, resumirLancamentos, anosEntre, cartaoVazio, type LinhaLeve,
+} from '@/lib/lista-de-lancamentos'
+
+// A leitura leve de um cliente com anos de extrato são várias páginas de mil.
+export const maxDuration = 60
 
 export async function GET(req: NextRequest) {
   const auth = await getAuth()
@@ -14,55 +32,68 @@ export async function GET(req: NextRequest) {
   if (!clientId) return NextResponse.json({ error: 'clientId obrigatório' }, { status: 400 })
   if (!(await canAccessClient(auth, clientId))) return NextResponse.json({ error: 'Sem acesso' }, { status: 403 })
 
-  let q = serviceDb()
-    .from('bank_transactions')
-    .select('*')
-    .eq('client_id', clientId)
-    .order('tx_date', { ascending: false })
-    .limit(8000)
-
   const accountId = sp.get('accountId')
   const year = sp.get('year')
-  if (accountId) q = q.eq('account_id', accountId)
-  if (year) q = q.eq('fiscal_year', parseInt(year))
+  const ano = year ? parseInt(year, 10) : null
+  if (year && !Number.isFinite(ano)) return NextResponse.json({ error: 'Ano inválido' }, { status: 400 })
+  const grupo = sp.get('grupo')
+  if (grupo && !ehGrupo(grupo)) return NextResponse.json({ error: 'Aba inválida' }, { status: 400 })
   const status = sp.get('status')
-  if (status) q = q.eq('status', status)
 
-  const { data, error } = await q
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  const db = serviceDb()
 
-  // Resumo
-  const txs = data || []
-  const summary = {
-    total: txs.length,
-    pending: txs.filter(t => t.status === 'pending').length,
-    credits: txs.filter(t => Number(t.amount) > 0).reduce((s, t) => s + Number(t.amount), 0),
-    debits: txs.filter(t => Number(t.amount) < 0).reduce((s, t) => s + Number(t.amount), 0),
+  // 1. A lista de UMA aba, até o teto — mais recentes primeiro.
+  let q = db.from('bank_transactions').select('*').eq('client_id', clientId)
+  if (accountId) q = q.eq('account_id', accountId)
+  if (ano) q = q.eq('fiscal_year', ano)
+  if (grupo && ehGrupo(grupo)) q = q.in('status', [...STATUS_DO_GRUPO[grupo]])
+  else if (status) q = q.eq('status', status)
+  q = q.order('tx_date', { ascending: false }).order('id', { ascending: false }).limit(LIMITE_DA_LISTA)
+
+  // 2. Os números da tela, sobre TUDO do ano (todas as contas): leve e paginado.
+  const leve = () => {
+    let x = db.from('bank_transactions').select('account_id, status, amount, tx_date, balance').eq('client_id', clientId)
+    if (ano) x = x.eq('fiscal_year', ano)
+    return x
   }
+  // 3. Os anos que EXISTEM — não os da lista que a tela recebe.
+  const ponta = (ascending: boolean) => db.from('bank_transactions').select('fiscal_year')
+    .eq('client_id', clientId).not('fiscal_year', 'is', null)
+    .order('fiscal_year', { ascending }).limit(1)
+  // 4. Extratos já importados, de todos os anos (o "✓ Importado" da aba Extratos).
+  const extratos = () => db.from('bank_transactions').select('statement_document_id')
+    .eq('client_id', clientId).not('statement_document_id', 'is', null)
 
-  // Resumo por conta (cards estilo QuickBooks)
-  const { data: accounts } = await serviceDb().from('bank_accounts')
-    .select('id, name, type').eq('client_id', clientId).eq('active', true).order('name')
-  let allQ = serviceDb().from('bank_transactions')
-    .select('account_id, status, tx_date, balance, fiscal_year')
-    .eq('client_id', clientId).limit(10000)
-  if (year) allQ = allQ.eq('fiscal_year', parseInt(year))
-  const { data: allTx } = await allQ
-  const accountCards = (accounts || []).map(a => {
-    const list = (allTx || []).filter(t => t.account_id === a.id)
-    const latest = list.filter(t => t.balance != null)
-      .sort((x, y) => (y.tx_date as string).localeCompare(x.tx_date as string))[0]
-    return {
-      id: a.id, name: a.name, type: a.type,
-      total: list.length,
-      forReview: list.filter(t => ['pending','auto'].includes(t.status)).length,
-      inRegister: list.filter(t => ['approved','reviewed'].includes(t.status)).length,
-      lastBalance: latest?.balance ?? null,
-      lastDate: latest?.tx_date ?? null,
-    }
+  const [lista, linhas, primeiro, ultimo, docs, contas] = await Promise.all([
+    q,
+    todasAsLinhas<LinhaLeve>(leve),
+    ponta(true),
+    ponta(false),
+    todasAsLinhas<{ statement_document_id: string }>(extratos),
+    db.from('bank_accounts').select('id, name, type').eq('client_id', clientId).eq('active', true).order('name'),
+  ])
+  // Consulta que falha não vira lista vazia nem contagem zero: é o número que
+  // a tela mostraria como verdade.
+  const falhou = ([['a lista', lista.error], ['as contagens', linhas.error], ['os anos', primeiro.error || ultimo.error],
+    ['os extratos importados', docs.error], ['as contas', contas.error]] as const).find(([, e]) => e)
+  if (falhou) return NextResponse.json({ error: `Falhou ao ler ${falhou[0]}: ${(falhou[1] as any).message}` }, { status: 500 })
+
+  const resumo = resumirLancamentos(linhas.data, accountId)
+  const txs = lista.data || []
+  // O total da aba pedida, com os mesmos filtros da lista.
+  const total = grupo && ehGrupo(grupo) ? resumo.contagens[grupo]
+    : status ? (linhas.data || []).filter(t => (!accountId || t.account_id === accountId) && t.status === status).length
+    : resumo.contagens.total
+
+  return NextResponse.json({
+    transactions: txs,
+    lista: { mostrando: txs.length, total, limite: LIMITE_DA_LISTA, maisAntiga: txs.length ? txs[txs.length - 1].tx_date : null },
+    contagens: resumo.contagens,
+    summary: resumo.summary,
+    accounts: (contas.data || []).map((a: any) => ({ id: a.id, name: a.name, type: a.type, ...(resumo.cartoes[a.id] || cartaoVazio()) })),
+    anos: anosEntre(primeiro.data?.[0]?.fiscal_year, ultimo.data?.[0]?.fiscal_year),
+    extratosImportados: Array.from(new Set((docs.data || []).map(d => d.statement_document_id).filter(Boolean))),
   })
-
-  return NextResponse.json({ transactions: txs, summary, accounts: accountCards })
 }
 
 export async function POST(req: NextRequest) {

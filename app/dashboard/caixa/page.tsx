@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Script from 'next/script'
+import { mensagemDaSincronizacao, mensagemDaConexao } from '@/lib/plaid-paginacao'
 import BookkeepingTab from '@/components/BookkeepingTab'
 import CaixaDepositos from '@/components/CaixaDepositos'
 import CaixaContas from '@/components/CaixaContas'
@@ -68,7 +69,7 @@ function CaixaDaFirmaInterna() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ publicToken, institutionName, clientId: firma.id }),
     }).then(x => x.json())
-    setMsg(ex.ok ? `✓ Banco conectado. ${ex.sync?.added ?? 0} lançamentos importados.` : `Erro: ${ex.error}`)
+    setMsg(mensagemDaConexao(ex, true))
     setBusy(false); carregar()
   }
 
@@ -131,11 +132,18 @@ function CaixaDaFirmaInterna() {
 
   const sincronizar = async () => {
     setBusy(true); setMsg('Buscando no banco…')
-    const r = await fetch('/api/plaid/sync', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ clientId: firma.id }),
-    }).then(x => x.json())
-    setMsg(r.error ? `Erro: ${r.error}` : `✓ ${r.added ?? 0} lançamentos novos.`)
+    // Lida como texto: a página de erro (tempo esgotado) não é JSON, e o
+    // `.json()` estourava com o botão preso em "ocupado".
+    let r: any
+    try {
+      const resp = await fetch('/api/plaid/sync', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ clientId: firma.id }),
+      })
+      const bruto = await resp.text()
+      try { r = JSON.parse(bruto) } catch { r = { error: `o servidor respondeu ${resp.status} sem dados — tente de novo; cada rodada continua de onde a anterior parou` } }
+    } catch (e) { r = { error: (e as Error).message } }
+    setMsg(mensagemDaSincronizacao(r))
     setBusy(false); carregar()
   }
 

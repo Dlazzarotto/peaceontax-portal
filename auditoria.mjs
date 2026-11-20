@@ -263,6 +263,82 @@ titulo('CONCILIACAO BANCARIA: A TELA CARREGA (schema do painel, volume, resposta
     /add column if not exists completed_at[\s\S]*add column if not exists reconciled_at/, 'o aviso da rota manda rodar um arquivo que nao acrescenta as colunas')
 }
 
+titulo('BOOKKEEPING: A LISTA NAO ESCONDE TRANSACOES (o teto de mil do PostgREST)')
+// "O Plaid nao carrega antes de 20/05/2025" era a tela: a rota pedia
+// .limit(8000), o PostgREST devolve MIL, e a tela tirava dessa lista cortada as
+// abas, o total, os cartoes, os ANOS do seletor e os extratos importados. Agora
+// a lista e POR ABA com teto declarado, os numeros saem de uma leitura leve e
+// paginada de tudo, os anos vem do banco, e passar do teto vira aviso.
+{
+  const R = 'app/api/bookkeeping/transactions/route.ts'
+  const T = 'components/BookkeepingTab.tsx'
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const rota = semComentarios(R), tela = semComentarios(T)
+  if (rota === null || tela === null) falta('Ancoras da lista do bookkeeping', `arquivo inexistente: ${rota === null ? R : T}`)
+  else {
+    const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
+    confere('A lista nao pede mais do que o PostgREST entrega', !/\.limit\(\s*\d{4,}\s*\)/.test(rota) && /\.limit\(LIMITE_DA_LISTA\)/.test(rota),
+      '.limit(8000) volta mil linhas caladas, e a tela conclui que o resto nao existe')
+    confere('A lista e da ABA (grupo de status), filtrada no banco', /\.in\('status', \[\.\.\.STATUS_DO_GRUPO\[grupo\]\]\)/.test(rota),
+      'a lista misturada de mil escondia a fila de revisao atras do registro')
+    confere('Os numeros saem de uma leitura PAGINADA de tudo', /todasAsLinhas<LinhaLeve>\(leve\)/.test(rota) && /resumirLancamentos\(linhas\.data/.test(rota),
+      'contagem sobre a lista cortada trava em 1000')
+    confere('A rota devolve contagens, anos, extratos e o tamanho da aba',
+      /contagens: resumo\.contagens/.test(rota) && /anos: anosEntre\(/.test(rota) && /extratosImportados:/.test(rota) && /lista: \{ mostrando: txs\.length, total/.test(rota),
+      'sem isso a tela volta a contar sobre a lista que recebeu')
+    confere('Consulta da lista que falha e erro, nao lista vazia', /const falhou = \(\[\['a lista', lista\.error\]/.test(rota) && /if \(falhou\) return NextResponse\.json/.test(rota),
+      'contagem que falha viraria zero na tela')
+    confere('A tela pede a lista da aba e recarrega ao trocar de aba', /new URLSearchParams\(\{ clientId, grupo \}\)/.test(tela) && /\[clientId, year, accountFilter, grupo\]/.test(tela),
+      'a tela voltaria a carregar a lista misturada')
+    confere('As abas contam pelo servidor', /const counts = contagens \? \{/.test(tela), 'contar sobre a lista carregada trava no teto')
+    confere('Os anos do seletor vem do banco', /\.\.\.anosDoBanco,/.test(tela), 'o ano que fica todo depois do corte nao aparece para ser escolhido')
+    confere('Extrato importado vem do servidor', /new Set\(extratosImportados \?\?/.test(tela), 'o extrato cujas linhas ficaram fora da lista aparece como "Importar" de novo')
+    confere('A tela avisa quando a aba passa do teto', /avisoDaLista\(\{/.test(tela) && /\{!loading && avisoDaAba &&/.test(tela), 'passar do teto em silencio e dizer que nao ha mais nada')
+  }
+}
+
+titulo('PLAID: A SINCRONIZACAO NAO MORRE NO MEIO NEM RECOMECA DO MESMO LUGAR')
+// As conexoes tinham last_synced_at um segundo depois de criadas e nenhum outro:
+// o botao gravava uma linha por ida ao banco (250 por pagina), o cursor so ia no
+// fim, e a funcao cortada pelo tempo recomecava sempre do mesmo ponto -- as mais
+// antigas nunca chegavam. Reproduzido: o codigo antigo, morto em 20 s, parava em
+// ~470 linhas a cada clique; o novo traz as 3.000 num segundo.
+{
+  const S = 'lib/plaid-sync.ts', ROTA = 'app/api/plaid/sync/route.ts'
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const sync = semComentarios(S), rota = semComentarios(ROTA), pl = semComentarios('lib/plaid.ts'), regras = semComentarios('lib/apply-rules.ts')
+  if ([sync, rota, pl, regras].some(x => x === null)) falta('Ancoras da sincronizacao do Plaid', 'arquivo inexistente')
+  else {
+    const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
+    confere('A sincronizacao pagina pelo nucleo (prazo, cursor, mutacao)', /await percorrerSync\(\{/.test(sync), 'o laco proprio parava em 20 paginas e so salvava no fim')
+    confere('O cursor e salvo a cada pagina', /salvarCursor: async cursor =>[\s\S]{0,200}?sync_cursor: cursor/.test(sync), 'funcao cortada pelo tempo recomeca do mesmo lugar para sempre')
+    confere('A pagina vai numa gravacao so', /\.upsert\(novas, \{ onConflict: 'plaid_tx_id', ignoreDuplicates: true \}\)\.select\('id'\)/.test(sync),
+      'uma ida ao banco por transacao estoura o tempo da funcao com 24 meses de historico')
+    confere('Sem gravar transacao uma a uma no caminho normal', !/for \(const tx of (res|pagina)\.added/.test(sync), 'o laco por linha e o que estourava o tempo')
+    confere('Linha recusada pelo banco e contada, nao perdida', /if \(um\.error\) recusa\(um\.error\)/.test(sync), 'o cursor passa por cima dela e ela some calada')
+    confere('Conexao que deu erro uma vez continua sendo sincronizada', /\.in\('status', \['active', 'error'\]\)/.test(rota), 'um tropeco tirava a conexao do botao para sempre')
+    confere('O tempo da rota e dividido entre as conexoes', /prazoMs: Math\.floor\(restante \/ \(items\.length - i\)\)/.test(rota), 'uma conexao lenta mata a funcao com as outras dentro')
+    confere('O erro do Plaid leva o CODIGO junto', /erro\.codigo = data\?\.error_code/.test(pl), 'sem o codigo o erro de mutacao nao e reconhecido e a paginacao nao recomeca')
+    confere('As regras gravam em lotes que cabem na URL', !/i \+= 400/.test(regras) && /i \+= 100\)/.test(regras), '400 uuids na URL passam do que o gateway aceita, e o erro so deixa de contar')
+    for (const tela of ['components/BookkeepingTab.tsx', 'app/dashboard/caixa/page.tsx']) {
+      checar(`${tela.split('/').slice(-2).join('/')} mostra a sincronizacao pela frase da casa`, tela, /mensagemDaSincronizacao\(r\)/,
+        '"0 lancamentos novos" sozinho esconde o que falta baixar e o que o banco recusou')
+    }
+    // Logo depois de CONECTAR o historico quase nunca esta pronto: "0 importados"
+    // soava como "nao ha nada", e a primeira leitura que falhava sumia atras do ✓.
+    for (const tela of ['app/dashboard/caixa/page.tsx', 'app/portal/bank/page.tsx']) {
+      checar(`${tela.split('/').slice(-2).join('/')} diz a verdade logo depois de conectar`, tela, /mensagemDaConexao\(ex, (true|false)\)/,
+        '"0 lancamentos importados" soa como "nao ha nada", e a falha da primeira leitura some atras do ✓')
+      recusar(`${tela.split('/').slice(-2).join('/')} nao monta a frase de conexao na mao`, tela, /\$\{ex\.sync\?\.added \?\? 0\}/,
+        'a frase montada na mao esconde o erro da primeira leitura')
+    }
+    recusar('A frase de conexao nao promete sincronizacao automatica', 'lib/plaid-paginacao.ts', /automaticamente'/,
+      'nao ha sincronizacao automatica: o cliente esperaria algo que nao acontece')
+  }
+}
+
 titulo('1099: A CONTA MARCADA NO PLANO DECIDE, COM O LIMITE DO ANO')
 // A lista fixa no codigo (Contract Labor e Subcontractors) deixava de fora
 // advogado, aluguel e toda conta nova, e ninguem fora do codigo mudava isso.
