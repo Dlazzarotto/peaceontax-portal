@@ -4,6 +4,7 @@
 
 import { useState, useEffect } from 'react'
 import Script from 'next/script'
+import { mensagemDaConexao } from '@/lib/plaid-paginacao'
 
 declare global { interface Window { Plaid: any } }
 
@@ -34,7 +35,7 @@ export default function BankConnectPage() {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ publicToken, institutionName: metadata?.institution?.name || null }),
         }).then(x => x.json())
-        setMsg(ex.ok ? `✓ Banco conectado! ${ex.sync?.added ?? 0} transações importadas.` : `Erro: ${ex.error}`)
+        setMsg(mensagemDaConexao(ex, false))
         try { localStorage.removeItem('plaid_link_token') } catch {}
         window.history.replaceState({}, '', '/portal/bank')
         setBusy(false); load()
@@ -82,7 +83,7 @@ export default function BankConnectPage() {
             }),
           }).then(x => x.json())
           if (ex.ok) {
-            setMsg(`✓ Banco conectado! ${ex.sync?.added ?? 0} transações importadas. Nossa equipe cuida do resto.`)
+            setMsg(mensagemDaConexao(ex, false))
             load()
           } else setMsg(`Erro: ${ex.error}`)
           setBusy(false)

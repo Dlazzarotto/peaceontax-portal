@@ -12,11 +12,17 @@ export async function plaidPost(path: string, body: Record<string, unknown>) {
       ...body,
     }),
   })
-  const data = await res.json()
-  if (!res.ok) {
+  // Resposta que não é JSON (página de erro de um intermediário) vira erro
+  // com o status, não um "Unexpected token" que não diz nada.
+  const data = await res.json().catch(() => null)
+  if (!res.ok || !data) {
     const hasId = !!process.env.PLAID_CLIENT_ID
     const secretLen = (process.env.PLAID_SECRET || '').length
-    throw new Error(`${data?.error_message || data?.error_code || `Plaid ${res.status}`} [env=${ENV}, client_id=${hasId ? 'present' : 'MISSING'}, secret_len=${secretLen}]`)
+    const erro: Error & { codigo?: string | null } = new Error(`${data?.error_message || data?.error_code || `Plaid ${res.status}`} [env=${ENV}, client_id=${hasId ? 'present' : 'MISSING'}, secret_len=${secretLen}]`)
+    // O CÓDIGO viaja junto: quem pagina precisa reconhecer o erro de mutação
+    // (lib/plaid-paginacao.ts), e a mensagem traz a frase, não o código.
+    erro.codigo = data?.error_code || null
+    throw erro
   }
   return data
 }

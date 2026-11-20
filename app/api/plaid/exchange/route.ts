@@ -11,6 +11,9 @@ import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { plaidPost } from '@/lib/plaid'
 import { syncPlaidItem } from '@/lib/plaid-sync'
 
+// A primeira sincronização roda aqui dentro, com prazo próprio (35 s).
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
   const user = await getUser()
   if (!user) return NextResponse.json({ error: 'Login necessário' }, { status: 401 })
@@ -59,8 +62,10 @@ export async function POST(req: NextRequest) {
       details: { institution: institutionName || 'unknown' },
     }).then(() => null, () => null)
 
-    // Primeira sincronização (histórico inicial)
-    const result = await syncPlaidItem(db, item!.id).catch(e => ({ error: (e as Error).message }))
+    // Primeira sincronização (histórico inicial). Logo depois de conectar o
+    // Plaid quase sempre ainda não tem o histórico pronto: o resto vem no
+    // botão Sincronizar, que continua de onde esta parou.
+    const result = await syncPlaidItem(db, item!.id, { prazoMs: 35_000 }).catch(e => ({ error: (e as Error).message }))
 
     return NextResponse.json({ ok: true, sync: result })
   } catch (e) {

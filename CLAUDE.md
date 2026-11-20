@@ -1461,9 +1461,72 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `linhas × opções`, e acima de ~50 mil `<option>` num render a aba congela.
   **Dívida medida e aberta**: `components/BookkeepingTab.tsx` tem a mesma
   forma na linha do lançamento (conta contábil + contas bancárias, ~60-80
-  `<option>` por linha, até 8.000 linhas = ~560 mil, ~12 s). Não foi mexida
-  junto porque é a mesa de trabalho diária e paginar ali mexe no "selecionar
-  tudo" e nas ações em lote — é decisão do sócio, não conserto de passagem.
+  `<option>` por linha). O "até 8.000 linhas" que se supunha aqui nunca
+  aconteceu — o PostgREST devolvia mil — e hoje a lista é POR ABA com teto
+  declarado de mil (entrada "A lista do Banking é por aba", abaixo): o pior
+  caso é ~70 mil `<option>`, ~1,6 s. Paginar de verdade (andar para as
+  anteriores sem filtrar por ano ou conta) mexe no "selecionar tudo" e nas
+  ações em lote — é decisão do sócio, não conserto de passagem.
+- **A lista do Banking é por aba, com teto DECLARADO — e os números da tela
+  são contados sobre tudo** (`lib/lista-de-lancamentos.ts`,
+  `/api/bookkeeping/transactions`, `components/BookkeepingTab.tsx`). "O Plaid
+  não carrega antes de 20/05/2025" era, em parte, a TELA: a rota pedia
+  `.limit(8000)`, o PostgREST devolve MIL, e a tela tirava dessa lista cortada
+  as abas, o quadro "Transações" (travado em 1000), os cartões das contas, os
+  ANOS do seletor e os extratos importados. Com ~1,8 transação/dia a milésima
+  mais recente cai exatamente em 20/05/2025 (reproduzido com 24 meses), e o
+  ano anterior nem aparecia no seletor — vinha da própria lista cortada. Agora:
+  a lista é da ABA (`grupo` → `STATUS_DO_GRUPO`, filtrada no banco), até
+  `LIMITE_DA_LISTA` (mil: a página do PostgREST e o que a tabela aguenta
+  desenhar), e trocar de aba recarrega; contagens, resumo e cartões saem de
+  UMA leitura leve e paginada de tudo (`resumirLancamentos`); os anos vêm do
+  banco (`anosEntre`, mínimo e máximo de `fiscal_year`); o "✓ Importado" dos
+  extratos vem do servidor; e passar do teto vira AVISO com o total e a data
+  da mais antiga na tela (`avisoDaLista`), nunca silêncio. Falha ao carregar
+  tem faixa própria, que some no carregamento seguinte que dá certo — e
+  consulta que falha é 500, não lista vazia. 36 casos em
+  `testes/lista-de-lancamentos.mts`; dez conferências na auditoria.
+- **A sincronização do Plaid não morre no meio nem recomeça do mesmo lugar**
+  (`lib/plaid-paginacao.ts`, puro; `lib/plaid-sync.ts`; `/api/plaid/sync`).
+  O outro lado do mesmo caso: as três conexões do cliente tinham
+  `last_synced_at` UM segundo depois de criadas e nenhum outro — só a
+  sincronização automática da conexão terminou, quando o Plaid ainda não
+  tinha o histórico pronto; as do botão morriam no tempo da função (120 s)
+  porque gravavam UMA transação por ida ao banco (250 por página), e o
+  cursor só era salvo no FIM: cortada, a função não salvava nada e o clique
+  seguinte recomeçava do mesmo ponto. Como o Plaid entrega as mais recentes
+  primeiro, as antigas nunca chegavam. Reproduzido com o código antigo
+  morto em 20 s (40 ms por ida ao banco): ~470 linhas por clique, cursor
+  nulo, `last_synced_at` parado na hora da conexão — a mesma digital do
+  banco real. Agora: a página inteira (500, o máximo do Plaid) vai numa
+  gravação só (`upsert` com `ignoreDuplicates` e `select('id')`, que devolve
+  só as que entraram — conferido no PG 16); uma linha ruim derruba o lote, e
+  aí grava-se uma a uma para ISOLAR e CONTAR a recusa (o cursor passa por
+  ela; perder calada era o defeito); o cursor é salvo a CADA página; cada
+  rodada tem PRAZO e, acabado, para dizendo que falta (`completo: false`,
+  "clique em Sincronizar de novo") — a rota divide os 90 s entre as
+  conexões; o erro de mutação (`TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`)
+  recomeça da página em que a rodada começou e, se repetir, do zero
+  (gravação idempotente por `plaid_tx_id`); o erro do Plaid leva o CÓDIGO
+  (`erro.codigo`), que a mensagem não traz. Conexão que deu erro UMA vez
+  voltava a ser ignorada para sempre (`.eq('status','active')`); agora
+  entra de novo e, se o erro persistir, a frase volta. A mesma frase da
+  sincronização nas duas telas (`mensagemDaSincronizacao`): o que entrou, o
+  que falta baixar e o que o banco recusou. E logo depois de CONECTAR
+  (`mensagemDaConexao`, caixa e portal): "✓ 0 lançamentos importados" soava
+  como "não há nada" — o histórico ainda não estava pronto — e a primeira
+  leitura que falhava sumia atrás do ✓; no portal a frase não manda o
+  cliente clicar num botão que ele não tem nem promete sincronização
+  automática, que não existe. De passagem, as regras aplicadas
+  depois da sincronização gravavam em lotes de 400 ids na URL (~16 KB, onde
+  o gateway recusa) e o erro só deixava de contar — lotes de 100.
+  **`days_requested` se fixa ao CONECTAR**: conexão feita antes de 21/09/2026
+  pediu 90 dias e não muda; daí em diante, 730 (o máximo do Plaid). E o
+  banco pode entregar menos que 24 meses. 38 casos em
+  `testes/plaid-paginacao.mts`; a sincronização de verdade foi exercitada
+  com supabase-js contra o PostgREST simulado e um Plaid de mentira (24
+  meses, linha com data inválida, mutação no meio). **Não testado daqui**: o
+  Plaid de verdade (sem chave no container).
 - **A escolha da regra do payee é uma só, o caminho até ela é que mudou.**
   `regraDoPayee` era chamada DENTRO do laço dos fornecedores e varria a lista
   inteira de regras a cada volta: com o teto de 5.000 dos dois lados são 25
@@ -1525,10 +1588,12 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   reconhecer o erro de GRAVAÇÃO do PostgREST (PGRST204, "Could not find the
   'x' column of 'y' in the schema cache"): só entendia o de leitura (42703),
   então o recuo da sincronização do Plaid quando faltam as colunas de saldo
-  não teria disparado. **Não conferido daqui: o banco de produção** — sem
-  acesso, não dá para dizer qual das duas causas derrubou a tela; o conserto
-  cobre as duas, e a migração (testada no PG 16, com a tabela inexistente e
-  com a do painel faltando colunas) deixa o schema escrito. 59 casos em
+  não teria disparado. **Conferido depois, em produção: a coluna NÃO
+  faltava** — a migração rodou e listou as 14 colunas, todas da criação
+  original (nenhuma no fim da lista, onde cai a acrescentada). A primeira
+  causa estava descartada; a do volume não foi confirmada. O conserto cobre
+  as duas, e a migração (testada no PG 16, com a tabela inexistente e com a
+  do painel faltando colunas) deixa o schema escrito. 59 casos em
   `testes/conciliacao-bancaria.mts`; 14 conferências novas, todas sabotadas.
 - **UTF-8 sem BOM, sempre.** O projeto já sofreu com acentos corrompidos
   (o "ã" virando "A" com til mais "£") por arquivos copiados de ZIP e
