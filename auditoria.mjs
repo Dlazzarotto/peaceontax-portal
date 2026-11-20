@@ -314,14 +314,45 @@ titulo('PLAID: A SINCRONIZACAO NAO MORRE NO MEIO NEM RECOMECA DO MESMO LUGAR')
     const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
     confere('A sincronizacao pagina pelo nucleo (prazo, cursor, mutacao)', /await percorrerSync\(\{/.test(sync), 'o laco proprio parava em 20 paginas e so salvava no fim')
     confere('O cursor e salvo a cada pagina', /salvarCursor: async cursor =>[\s\S]{0,200}?sync_cursor: cursor/.test(sync), 'funcao cortada pelo tempo recomeca do mesmo lugar para sempre')
-    confere('A pagina vai numa gravacao so', /\.upsert\(novas, \{ onConflict: 'plaid_tx_id', ignoreDuplicates: true \}\)\.select\('id'\)/.test(sync),
+    confere('A pagina vai numa gravacao so', /\.upsert\(linhas, \{ onConflict: 'plaid_tx_id', ignoreDuplicates: true \}\)\.select\('id'\)/.test(sync)
+      && /const lote = await gravar\(novas\)/.test(sync),
       'uma ida ao banco por transacao estoura o tempo da funcao com 24 meses de historico')
     confere('Sem gravar transacao uma a uma no caminho normal', !/for \(const tx of (res|pagina)\.added/.test(sync), 'o laco por linha e o que estourava o tempo')
-    confere('Linha recusada pelo banco e contada, nao perdida', /if \(um\.error\) recusa\(um\.error\)/.test(sync), 'o cursor passa por cima dela e ela some calada')
+    confere('Linha recusada pelo banco e contada, nao perdida', /if \(!um\.error\) \{ added \+= \(um\.data \|\| \[\]\)\.length; continue \}/.test(sync)
+      && /\{ recusa\(um\.error\); continue \}/.test(sync) && /\n\s*iguais\+\+\n/.test(sync),
+      'o cursor passa por cima dela e ela some calada')
     confere('Conexao que deu erro uma vez continua sendo sincronizada', /\.in\('status', \['active', 'error'\]\)/.test(rota), 'um tropeco tirava a conexao do botao para sempre')
     confere('O tempo da rota e dividido entre as conexoes', /prazoMs: Math\.floor\(restante \/ \(items\.length - i\)\)/.test(rota), 'uma conexao lenta mata a funcao com as outras dentro')
     confere('O erro do Plaid leva o CODIGO junto', /erro\.codigo = data\?\.error_code/.test(pl), 'sem o codigo o erro de mutacao nao e reconhecido e a paginacao nao recomeca')
     confere('As regras gravam em lotes que cabem na URL', !/i \+= 400/.test(regras) && /i \+= 100\)/.test(regras), '400 uuids na URL passam do que o gateway aceita, e o erro so deixa de contar')
+    // A sincronizacao real: 3.471 novas, "10574 reconhecidas pelas regras" (a
+    // fila inteira reaplicada, uma vez por banco) e 29 recusas pela trava de
+    // duplicidade que derrubavam o lote inteiro para a gravacao uma a uma --
+    // o que comeu o prazo e deixou o Capital One sem rodada.
+    confere('As regras contam so quem SAIU de nao reconhecida', /applied \+= fatia\.filter\(id => pendentes\.has\(String\(id\)\)\)\.length/.test(regras)
+      && /const pendentes = new Set\(txs\.filter\(t => t\.status === 'pending'\)/.test(regras)
+      && /const contarSeEraPendente = \(id: unknown\) => \{ if \(pendentes\.has\(String\(id\)\)\) transferidas\+\+ \}/.test(regras)
+      && (regras.match(/transferidas\+\+/g) || []).length === 1
+      && (regras.match(/contarSeEraPendente\((t|espelho|espelhoCC)\.id\)/g) || []).length === 4,
+      'contar a fila reaplicada inteira dizia "10574 reconhecidas" depois de 3.471 novas (a ponta de transferencia sem espelho e refeita a cada rodada)')
+    confere('As regras rodam UMA vez por clique, depois de todos os bancos',
+      /aplicarRegras: false/.test(rota) && /\}\s*\n\s*(\/\/[^\n]*\n\s*)*const ruled = totalAdded > 0 \? await applyRulesToClient\(db, clientId\)/.test(readFileSync(join(raiz, ROTA), 'utf8')),
+      'por banco, a fila inteira era reaplicada e somada a cada conexao')
+    confere('A trava de duplicidade nao derruba o lote para uma a uma', /else if \(ehTravaDeDuplicidade\(lote\.error\)\)[\s\S]{0,900}?separarSuspeitas\(novas, doLivro\.data\)/.test(sync),
+      'cada recusa da trava mandava 500 gravacoes uma a uma e comia o prazo da rodada')
+    // Sincronizar do comeco de novo: tudo ja esta no livro com o MESMO id. Sem
+    // ler o plaid_tx_id do livro, tudo virava suspeita (1.512 idas, contra 25).
+    const pag = semComentarios('lib/plaid-paginacao.ts') || ''
+    confere('A mesma transacao do Plaid ja gravada nao vira suspeita',
+      /\.select\('tx_date, description, amount, source, plaid_tx_id'\)/.test(sync)
+      && /if \(e\.plaid_tx_id\) jaGravadas\.add\(String\(e\.plaid_tx_id\)\)/.test(pag)
+      && /if \(l\.plaid_tx_id && jaGravadas\.has\(String\(l\.plaid_tx_id\)\)\) \{ livres\.push\(l\); continue \}/.test(pag),
+      'sincronizar do comeco de novo voltava as gravacoes uma a uma (1.512 idas para 1.500 transacoes)')
+    confere('Recusa da trava e classificada, nao vira "erro tecnico"', /if \(!ehTravaDeDuplicidade\(um\.error\)\) \{ recusa\(um\.error\); continue \}/.test(sync)
+      && /if \(gemeaDeOutraOrigem\(origemDaGemea\(linha\)\)\) \{ jaNoLivro\+\+; continue \}/.test(sync),
+      'ja estar no livro (veio de extrato) nao e falha; igual no mesmo dia precisa de conferencia com exemplo')
+    confere('Quem esta ha mais tempo sem sincronizar vai primeiro', /\.order\('last_synced_at', \{ ascending: true, nullsFirst: true \}\)/.test(rota),
+      'na ordem fixa o banco de historico maior comia a rodada e o ultimo ficava sempre sem vez')
     for (const tela of ['components/BookkeepingTab.tsx', 'app/dashboard/caixa/page.tsx']) {
       checar(`${tela.split('/').slice(-2).join('/')} mostra a sincronizacao pela frase da casa`, tela, /mensagemDaSincronizacao\(r\)/,
         '"0 lancamentos novos" sozinho esconde o que falta baixar e o que o banco recusou')

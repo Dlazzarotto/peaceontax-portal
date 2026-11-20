@@ -65,7 +65,7 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   const txs: any[] = []
   for (let inicio = 0; ; inicio += PAGINA) {
     const { data: pagina } = await db.from('bank_transactions')
-      .select('id, description, amount, account_id, tx_date, transfer_match_id')
+      .select('id, description, amount, account_id, tx_date, transfer_match_id, status')
       .eq('client_id', clientId)
       .in('status', ['pending', 'auto'])
       .order('id', { ascending: true })
@@ -74,6 +74,11 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     txs.push(...pagina)
     if (pagina.length < PAGINA) break
   }
+  // O que se CONTA como reconhecido é quem saiu de "não reconhecida" agora. A
+  // regra é reaplicada também a quem já estava reconhecido (o plano de contas
+  // pode ter mudado), mas contar esses dizia "10574 reconhecidas pelas
+  // regras" depois de 3.471 transações novas.
+  const pendentes = new Set(txs.filter(t => t.status === 'pending').map(t => String(t.id)))
 
   // ── Transferências entre contas do próprio cliente ──
   // O extrato costuma dizer a conta na descrição:
@@ -146,6 +151,10 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
   const contasDeFora = new Set<string>()
   const jaTransferencia = new Set<string>()
   let transferidas = 0
+  // Conta só a ponta que era "não reconhecida". A ponta sem espelho (a outra
+  // conta ainda não importada) fica sem `transfer_match_id` e é refeita a cada
+  // rodada — contá-la de novo seria o mesmo inchaço, em menor escala.
+  const contarSeEraPendente = (id: unknown) => { if (pendentes.has(String(id))) transferidas++ }
 
   // Se existe regra para a descrição (ex.: "Peace on Tax"), ela manda —
   // transferência não sobrepõe fornecedor identificado.
@@ -202,13 +211,13 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
       ...(espelho ? { transfer_match_id: espelho.id } : {}),
     }).eq('id', t.id)
     if (e1) continue
-    jaTransferencia.add(t.id); transferidas++
+    jaTransferencia.add(t.id); contarSeEraPendente(t.id)
 
     if (espelho) {
       await db.from('bank_transactions').update({
         ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id,
       }).eq('id', espelho.id)
-      jaTransferencia.add(espelho.id); transferidas++
+      jaTransferencia.add(espelho.id); contarSeEraPendente(espelho.id)
     }
   }
 
@@ -242,13 +251,13 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
       ...(espelhoCC ? { transfer_match_id: espelhoCC.id, counterparty_account_id: espelhoCC.account_id } : {}),
     }).eq('id', t.id)
     if (ec) continue
-    jaTransferencia.add(t.id); transferidas++
+    jaTransferencia.add(t.id); contarSeEraPendente(t.id)
 
     if (espelhoCC) {
       await db.from('bank_transactions').update({
         ...base, transfer_match_id: t.id, counterparty_account_id: t.account_id,
       }).eq('id', espelhoCC.id)
-      jaTransferencia.add(espelhoCC.id); transferidas++
+      jaTransferencia.add(espelhoCC.id); contarSeEraPendente(espelhoCC.id)
     }
   }
 
@@ -279,8 +288,9 @@ export async function applyRulesToClient(db: any, clientId: string): Promise<num
     for (let i = 0; i < grupo.ids.length; i += 100) {
       const fatia = grupo.ids.slice(i, i + 100)
       const { error } = await db.from('bank_transactions').update(upd).in('id', fatia)
-      if (!error) applied += fatia.length
+      if (!error) applied += fatia.filter(id => pendentes.has(String(id))).length
     }
   }
+  // Só quem era "não reconhecida": pela regra + como ponta de transferência.
   return applied + transferidas
 }
