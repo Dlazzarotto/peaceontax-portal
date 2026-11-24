@@ -8,7 +8,8 @@ import { exigeAprovacao, nomeDaForma } from '@/lib/recebimento-aprovacao'
 import { decidirValorDaCobranca } from '@/lib/cobranca-balcao'
 import { alocarRecebimento, emAberto } from '@/lib/recebimento-parcelado'
 import SeletorPeriodo from '@/components/SeletorPeriodo'
-import { periodoDoPreset } from '@/lib/periodo-relatorio'
+import { periodoDoPreset, periodoValido, type Periodo } from '@/lib/periodo-relatorio'
+import { gravarNaUrl } from '@/lib/url-da-tela'
 import { dataDaFirma } from '@/lib/dia-da-firma'
 import { entradaDoPedido, tetoDaEntrada } from '@/lib/entrada-parcelamento'
 import ContratoItens, { LINHA_VAZIA, type LinhaDoContrato } from '@/components/ContratoItens'
@@ -133,6 +134,17 @@ export default function BillingPage() {
   const relDe = relPeriodo.de, relAte = relPeriodo.ate
   const abrirRelatorio = (id: string) =>
     window.open(`/api/billing/reports?report=${id}&from=${relDe}&to=${relAte}`, '_blank')
+  // O quadro aberto e o período ficam na URL (`relatorios`, `de`, `ate`): o
+  // Voltar de um relatório que não consegue fechar a própria aba volta para
+  // cá com o quadro aberto, não para a tela inicial do Financeiro.
+  const mudarRelatorios = (aberto: boolean) => {
+    setRelAberto(aberto)
+    gravarNaUrl({ relatorios: aberto ? '1' : null, de: aberto ? relDe : null, ate: aberto ? relAte : null })
+  }
+  const mudarRelPeriodo = (p: Periodo) => {
+    setRelPeriodo(p)
+    if (relAberto) gravarNaUrl({ de: p.de, ate: p.ate })
+  }
   // Parcelamento de fatura em aberto
   const [pcDados, setPcDados] = useState<any>({ plans: [], invoices: [] })
   const [pcFatura, setPcFatura] = useState('')
@@ -319,6 +331,13 @@ export default function BillingPage() {
         if (cli) setFCliente(cli)
       }
       if (sp.get('antigos') === '1') setVerAntigos(true)
+      // Voltando de um relatório (lib/relatorio-barra.ts): o quadro de
+      // relatórios aberto, no período em que estava.
+      if (sp.get('relatorios') === '1') {
+        setRelAberto(true)
+        const de = sp.get('de'), ate = sp.get('ate')
+        if (de && ate && periodoValido(de, ate)) setRelPeriodo({ de, ate })
+      }
       if (sp.get('aba') === 'parcelamentos') setAba('parcelamentos')
       if (sp.get('aba') === 'contratos') {
         setAba('contratos')
@@ -982,7 +1001,7 @@ export default function BillingPage() {
             { id: 'reports', rotulo: 'Relatórios', desc: 'Faturamento e recebimentos', cor: '#5A1A8A',
               somenteSocio: true,
               icone: <><path d="M3 3v18h18" /><path d="M7 15v3M12 10v8M17 6v12" /></>,
-              onClick: () => { setRelAberto(v => !v); setAbrirNovo(false) } },
+              onClick: () => { mudarRelatorios(!relAberto); setAbrirNovo(false) } },
           ].filter(b => !b.somenteSocio || perms?.verRelatorios).map((b, idx, arr) => (
             <div key={b.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <button onClick={b.onClick}
@@ -1015,7 +1034,7 @@ export default function BillingPage() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#6A7A9A' }}>Período</span>
             {/* O mesmo seletor dos relatórios contábeis e do portal. */}
-            <SeletorPeriodo valor={relPeriodo} onChange={setRelPeriodo} compacto />
+            <SeletorPeriodo valor={relPeriodo} onChange={mudarRelPeriodo} compacto />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
             {[

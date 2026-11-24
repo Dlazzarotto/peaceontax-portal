@@ -13,6 +13,13 @@ import { periodoDoPreset, periodoValido, anoDe, type Periodo } from '@/lib/perio
 import { dataDaFirma } from '@/lib/dia-da-firma'
 import { avisoDaLista, type Grupo } from '@/lib/lista-de-lancamentos'
 import { mensagemDaSincronizacao } from '@/lib/plaid-paginacao'
+import { lerDaUrl, gravarNaUrl } from '@/lib/url-da-tela'
+
+// As abas do livro. A aba vai para a URL (`vista`): é por ela que o Voltar de
+// um relatório devolve à aba Relatórios em vez da inicial (lib/url-da-tela.ts).
+const VISTAS = ['banking', 'register', 'statements', 'payees', 'rules', 'reports', 'reconcile'] as const
+type Vista = (typeof VISTAS)[number]
+const ehVista = (v: unknown): v is Vista => typeof v === 'string' && (VISTAS as readonly string[]).includes(v)
 
 // Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
 const fmtDate = (d: string | null | undefined) => {
@@ -178,7 +185,8 @@ export default function BookkeepingTab({ clientId }: Props) {
   const [plaidItems, setPlaidItems] = useState<any[]>([])
   const [plaidBusy, setPlaidBusy] = useState(false)
   const [accountFilter, setAccountFilter] = useState<string>('all')
-  const [view, setView] = useState<'banking'|'register'|'statements'|'payees'|'rules'|'reports'|'reconcile'>('banking')
+  const [view, setView] = useState<Vista>('banking')
+  const raiz = useRef<HTMLDivElement>(null)
   const [tab, setTab] = useState<'recognized'|'unrecognized'|'excluded'>('recognized')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [sortField, setSortField] = useState<'tx_date'|'description'|'amount'>('tx_date')
@@ -683,6 +691,19 @@ export default function BookkeepingTab({ clientId }: Props) {
     setPayeeRegistry(r.payees || [])
   }
 
+  // Trocar de aba (e, na de Relatórios, de período) fica na URL: o Voltar de
+  // um relatório que não consegue fechar a própria aba navega para esse
+  // endereço — e a tela reabre ali, não na aba inicial.
+  const mudarVista = (k: Vista) => {
+    setView(k)
+    if (k === 'rules' || k === 'payees') { loadRules(); loadPayees() }
+    gravarNaUrl({ vista: k === 'banking' ? null : k, de: k === 'reports' ? periodo.de : null, ate: k === 'reports' ? periodo.ate : null })
+  }
+  const mudarPeriodo = (p: Periodo) => {
+    setPeriodo(p)
+    if (view === 'reports') gravarNaUrl({ de: p.de, ate: p.ate })
+  }
+
   const loadRules = async () => {
     const r = await fetch(`/api/bookkeeping/rules?clientId=${clientId}`).then(x => x.json())
     setRules(r.rules || [])
@@ -692,6 +713,26 @@ export default function BookkeepingTab({ clientId }: Props) {
       if (r.businessKind === 'nonprofit') setRScope('client')
     }
   }
+
+  // Aberta por um endereço com a aba e o período (o Voltar de um relatório,
+  // um recarregar), a tela reabre ali — lib/relatorio-barra.ts monta o endereço.
+  useEffect(() => {
+    const de = lerDaUrl('de'), ate = lerDaUrl('ate')
+    if (de && ate && periodoValido(de, ate)) setPeriodo({ de, ate })
+    const v = lerDaUrl('vista')
+    if (!ehVista(v) || v === 'banking') return
+    setView(v)
+    if (v === 'rules' || v === 'payees') { loadRules(); loadPayees() }
+    // No caixa da firma o livro fica no FIM da página: sem rolar até ele, quem
+    // volta do relatório vê o fluxo de caixa e acha que caiu em outra tela.
+    // Espera os quadros de cima crescerem, senão a rolagem para no meio.
+    const t = setTimeout(() => {
+      const el = raiz.current
+      if (el && el.getBoundingClientRect().top > window.innerHeight * 0.5) el.scrollIntoView({ block: 'start' })
+    }, 600)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const createRule = async () => {
     if (!rName.trim() || !rCategory) { setMsg('Regra precisa de nome e categoria.'); return }
@@ -759,7 +800,7 @@ export default function BookkeepingTab({ clientId }: Props) {
       if (r.filaFalhou) partes.push(`⚠️ ${r.filaFalhou} da fila recusadas pelo banco`)
       setMsg(`${partes.join(' · ')}.${r.aviso ? ` ${r.aviso}` : ''}`)
       setReclassOn(false); setReclassPwd(''); setReclassReason('')
-      setView('banking')
+      mudarVista('banking')
       setRName(''); setRPattern(''); setRAmountOp(''); setRAmountVal(''); setRPayee(''); setRAccount(''); setEditRuleId(null)
       loadRules(); loadPayees(); load()
     } else setMsg(`Erro: ${r.error}`)
@@ -1047,11 +1088,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   ]
 
   return (
-    <div>
+    <div ref={raiz}>
       {/* Menu por tema (estilo QuickBooks Desktop) */}
       <div style={{ display:'flex', gap:4, marginBottom:16, background:'#fff', borderRadius:12, padding:6, border:'1px solid #e2e8f4', flexWrap:'wrap' }}>
         {MENU.map(([k, label]) => (
-          <button key={k} onClick={() => { setView(k); if (k === 'rules' || k === 'payees') { loadRules(); loadPayees() } }}
+          <button key={k} onClick={() => mudarVista(k)}
             style={{ padding:'10px 16px', background: view === k ? '#2D3278' : 'transparent',
               color: view === k ? '#fff' : '#4a5a70', border:'none', borderRadius:9,
               fontSize:13.5, fontWeight:700, cursor:'pointer' }}>
@@ -1416,15 +1457,17 @@ export default function BookkeepingTab({ clientId }: Props) {
           <div style={{ fontSize:13, fontWeight:700, color:'#0f2340', marginBottom:8 }}>📑 Relatórios</div>
           <div style={{ marginBottom:8 }}>
             {/* O mesmo seletor do portal e do Financeiro (lib/periodo-relatorio.ts) */}
-            <SeletorPeriodo valor={periodo} onChange={setPeriodo} compacto />
+            <SeletorPeriodo valor={periodo} onChange={mudarPeriodo} compacto />
           </div>
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button onClick={openPnl} disabled={!periodoOk} style={btn('#2D3278', !periodoOk)}>📈 P&L</button>
-            <button onClick={() => window.open(`/api/bookkeeping/balance-sheet?clientId=${clientId}&asOf=${periodo.ate}`, '_blank')}
+            <button onClick={() => window.open(`/api/bookkeeping/balance-sheet?clientId=${clientId}&asOf=${periodo.ate}&from=${periodo.de}`, '_blank')}
               disabled={!periodoOk} style={btn('#0a6a8a', !periodoOk)}>🏦 Balance Sheet</button>
             <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&from=${periodo.de}&to=${periodo.ate}&report=vendors`, '_blank')}
               disabled={!periodoOk} style={btn('#5a1a8a', !periodoOk)}>🏪 Fornecedores</button>
-            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&year=${anoDoPeriodo}&report=1099`, '_blank')}
+            {/* from/to e não year: o 1099 sai do ano do FIM do mesmo jeito, e o
+                Voltar do relatório volta a este período (não ao ano inteiro) */}
+            <button onClick={() => window.open(`/api/bookkeeping/vendors?clientId=${clientId}&from=${periodo.de}&to=${periodo.ate}&report=1099`, '_blank')}
               disabled={!periodoOk} style={btn('#8a4a0a', !periodoOk)}>📋 1099 · {anoDoPeriodo}</button>
           </div>
           <div style={{ fontSize:11.5, color:'#6a7a9a', marginTop:8 }}>

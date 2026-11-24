@@ -10,11 +10,12 @@
 // O 1099 é por ano-calendário (lei), então ele usa o ANO do fim do período
 // escolhido e a tela diz isso. O Balanço é "em tal data": usa o fim.
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import SeletorPeriodo from '@/components/SeletorPeriodo'
 import { periodoDoPreset, periodoValido, anoDe, type Periodo } from '@/lib/periodo-relatorio'
 import { dataDaFirma } from '@/lib/dia-da-firma'
 import { limiteDo1099 } from '@/lib/relatorio-1099'
+import { lerDaUrl, gravarNaUrl } from '@/lib/url-da-tela'
 
 const T: Record<string, any> = {
   en: {
@@ -82,6 +83,13 @@ export default function ClientReports({ clientId, displayName, lang }: {
   const t = T[lang || 'pt'] || T.pt
   // Nasce em "ano passado": é o exercício que se fecha e se declara.
   const [periodo, setPeriodo] = useState<Periodo>(() => periodoDoPreset('ano_passado', dataDaFirma(new Date())))
+  // O período fica na URL: o Voltar de um relatório que não consegue fechar a
+  // própria aba (o portal instalado no celular) volta para cá no mesmo período.
+  useEffect(() => {
+    const de = lerDaUrl('de'), ate = lerDaUrl('ate')
+    if (de && ate && periodoValido(de, ate)) setPeriodo({ de, ate })
+  }, [])
+  const mudarPeriodo = (p: Periodo) => { setPeriodo(p); gravarNaUrl({ de: p.de, ate: p.ate }) }
   const ok = periodoValido(periodo.de, periodo.ate)
   const ano1099 = anoDe(periodo.ate)
   // O limite muda com o ano (600 até 2025, 2000 a partir de 2026): a mesma
@@ -123,14 +131,14 @@ export default function ClientReports({ clientId, displayName, lang }: {
 
       <div style={{ background:'#fff', borderRadius:14, padding:'14px 18px', border:'1px solid #e2e8f4', marginBottom:16 }}>
         <div style={{ fontSize:13.5, fontWeight:700, color:'#4a5a70', marginBottom:8 }}>{t.period}</div>
-        <SeletorPeriodo valor={periodo} onChange={setPeriodo} textos={t.seletor} />
+        <SeletorPeriodo valor={periodo} onChange={mudarPeriodo} textos={t.seletor} />
       </div>
 
       {botao('#2D3278', '📈', t.pnl,     t.pnlDesc,     () => open('pnl', { from: periodo.de, to: periodo.ate }))}
-      {botao('#1a6b4a', '⚖️', t.bs,      t.bsDesc,      () => open('balance-sheet', { asOf: periodo.ate }))}
+      {botao('#1a6b4a', '⚖️', t.bs,      t.bsDesc,      () => open('balance-sheet', { asOf: periodo.ate, from: periodo.de }))}
       {botao('#5a1a8a', '🏪', t.vendors, t.vendorsDesc, () => open('vendors', { from: periodo.de, to: periodo.ate, report: 'vendors' }))}
       {botao('#8a4a0a', '📋', `${t.f1099} · ${ano1099}`, `${t.f1099Desc(limite1099)} — ${t.nota1099(ano1099)}`,
-        () => open('vendors', { year: String(ano1099), report: '1099' }))}
+        () => open('vendors', { from: periodo.de, to: periodo.ate, report: '1099' }))}
 
       <p style={{ fontSize:12, color:'#9aaab0', lineHeight:1.6, marginTop:18 }}>
         {t.note}

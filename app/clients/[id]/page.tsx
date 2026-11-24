@@ -6,6 +6,13 @@ import BookkeepingTab from '@/components/BookkeepingTab'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { getCategories, getCategoryIcon, TAX_YEARS } from '@/lib/documentCategories'
+import { lerDaUrl, gravarNaUrl } from '@/lib/url-da-tela'
+
+// A aba vai para a URL (`aba`): o Voltar de um relatório do livro devolve a
+// ficha na aba Bookkeeping, não em Documents (lib/url-da-tela.ts).
+const ABAS = ['documents', 'messages', 'profile', 'quotes', 'plans', 'signatures', 'bookkeeping'] as const
+type Aba = (typeof ABAS)[number]
+const ehAba = (v: unknown): v is Aba => typeof v === 'string' && (ABAS as readonly string[]).includes(v)
 
 const STAGES = ['Onboarding','Gathering Docs','In Preparation','Under Review','Filed','Complete']
 const STAGE_COLOR: Record<string,string> = { 'Onboarding':'#6a7a9a','Gathering Docs':'#c06010','In Preparation':'#2D3278','Under Review':'#5a1a8a','Filed':'#1a6b4a','Complete':'#1a6b4a' }
@@ -17,7 +24,13 @@ export default function ClientDetailPage() {
   const [docs,      setDocs]      = useState<any[]>([])
   const [messages,  setMessages]  = useState<any[]>([])
   const [loading,   setLoading]   = useState(true)
-  const [tab,       setTab]       = useState<'documents'|'messages'|'profile'|'quotes'|'plans'|'signatures'|'bookkeeping'>('documents')
+  const [tab,       setTab]       = useState<Aba>('documents')
+  useEffect(() => { const a = lerDaUrl('aba'); if (ehAba(a)) setTab(a) }, [])
+  // Sair do livro tira da URL a aba e o período DELE, senão voltariam junto.
+  const mudarAba = (t: Aba) => {
+    setTab(t)
+    gravarNaUrl({ aba: t === 'documents' ? null : t, ...(t === 'bookkeeping' ? {} : { vista: null, de: null, ate: null }) })
+  }
   const [year,      setYear]      = useState(new Date().getFullYear())
   const [cat,       setCat]       = useState<string|null>(null)
   const [uploading, setUploading] = useState(false)
@@ -133,7 +146,7 @@ export default function ClientDetailPage() {
           ['bookkeeping','📊 Bookkeeping'],
           ['profile',   '👤 Profile'],
         ] as const).map(([t, label]) => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => mudarAba(t)}
             style={{ padding:'10px 20px', border:'none', background:'none', cursor:'pointer', fontSize:14,
               fontWeight:tab===t?700:400, color:tab===t?'#2D3278':'#6a7a9a',
               borderBottom:tab===t?'2px solid #2D3278':'2px solid transparent', marginBottom:-2 }}>

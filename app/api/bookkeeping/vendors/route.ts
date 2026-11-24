@@ -17,7 +17,8 @@
 // extrato e o nome do cliente é digitado por ele no aceite do convite.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO, voltarDosRelatoriosContabeis } from '@/lib/relatorio-barra'
+import { idDaFirma } from '@/lib/caixa-firma'
 import { apurar1099, ehContaDeDespesa, formularioDoPedido, FORMULARIOS_1099,
          type Formulario1099, type Linha1099 } from '@/lib/relatorio-1099'
 import { colunaAusente } from '@/lib/caixa-firma'
@@ -174,8 +175,11 @@ export async function GET(req: NextRequest) {
     apuracao.semPrestador.viaPlataforma ? ` (${apuracao.semPrestador.viaPlataforma} through PayPal, Venmo or Cash App: the bank statement does not name who received the transfer)` : ''}. Identify the payee, or a 1099 may be missed.</div>` : ''}
   ${apuracao.candidatos.length ? '<div class="warn">Collect Form W-9 from these payees and confirm the entity type. Corporations are generally exempt, except for attorney fees and medical payments. Verify amounts before filing.</div>' : ''}`
 
+  // Voltar sem histórico nem aba para fechar: a tela de relatórios de onde ele
+  // saiu, no período PEDIDO (no 1099 o cálculo usa o ano inteiro do fim dele).
+  const firmaId = isClient ? null : await idDaFirma(db)
   const barra = barraDoRelatorio({
-    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    voltarPara: voltarDosRelatoriosContabeis({ isClient, clientId, ehFirma: firmaId === clientId, de: pedido.de, ate: pedido.ate }),
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}

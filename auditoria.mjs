@@ -3056,6 +3056,64 @@ titulo('CONTRATO RECORRENTE NUM LUGAR SO (payment_plans)')
   }
 }
 
+titulo('RELATORIOS: O P&L SO COM RESULTADO E O VOLTAR PARA A TELA DE ORIGEM')
+// Decisao do socio (11/2026): o P&L mostrava "Balance Sheet / Non-P&L Items"
+// com transferencias e pagamentos de cartao; e conta do motor fora do plano
+// caia em DESPESA. E o Voltar de relatorio sem aba para fechar ia para a
+// central (/dashboard/bookkeeping) e, depois de ver o detalhe, ficava mudo.
+{
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
+  const pnl = semComentarios('app/api/bookkeeping/pnl/route.ts'), grupo = semComentarios('lib/grupo-do-resultado.ts')
+  const barra = semComentarios('lib/relatorio-barra.ts'), plano = semComentarios('lib/plano-de-contas.ts')
+  if ([pnl, grupo, barra, plano].some(x => x === null)) falta('Ancoras dos relatorios', 'arquivo inexistente -- ancora perdida e FALHA')
+  else {
+    confere('O P&L separa as secoes pelo modulo do resultado', /secoesDoResultado\(somarPorConta\(txs\), kindMap\)/.test(pnl) && /totaisDoResultado\(secoes\)/.test(pnl)
+      && !/kindMap\[[^\]]+\]\s*\|\|\s*'expense'/.test(pnl),
+      'grupo decidido na rota: conta do motor fora do plano volta a cair em despesa')
+    confere('O P&L nao tem secao de balanco', !/Non-P&(amp;)?L|informational|'liability'|'asset'|'non_pnl'/.test(pnl),
+      'transferencia, pagamento de cartao, ativo e passivo nao sao resultado (decisao do socio)')
+    confere('Plano de contas que falha recusa o P&L', /if \(plano\.erro\) return NextResponse\.json\(/.test(pnl) && /todasAsLinhas<[^>]*>\(\(\) =>\s*db\.from\('bookkeeping_categories'\)/.test(pnl),
+      'mapa vazio faz toda conta cair em despesa: a receita sairia como gasto')
+    const iMov = grupo.indexOf('MOVIMENTOS_DE_BALANCO.includes(nome.trim())'), iPlano = grupo.indexOf('grupoNoPlano[nome]')
+    confere('Movimento do motor sai ANTES de olhar o plano', iMov >= 0 && iPlano > iMov,
+      'com o plano primeiro, Transfer fora do plano (ou com grupo errado) entra no resultado')
+    const movs = (grupo.match(/MOVIMENTOS_DE_BALANCO: readonly string\[\] = \[([^\]]*)\]/) || [])[1] || ''
+    confere('Os movimentos de balanco sao contas do sistema (o nome nao muda)',
+      /'Transfer'/.test(movs) && /'Credit Card Payment'/.test(movs) && /CONTA_DO_DEPOSITO/.test(movs)
+      && /'Transfer':/.test(plano) && /'Credit Card Payment':/.test(plano) && /\[CONTA_DO_DEPOSITO\]:/.test(plano),
+      'nome que pode ser renomeado deixaria a regra sem efeito')
+    // O Voltar: nesta ordem — outro relatorio desta aba, aba aberta pela tela, mesma aba, destino.
+    const i1 = barra.indexOf('if (deOutroRelatorio && window.history.length > 1) { window.history.back(); return }')
+    const i2 = barra.indexOf('window.opener && !window.opener.closed ? window.opener : null')
+    const i3 = barra.indexOf('if (daCasa && window.history.length > 1) { window.history.back(); return }')
+    const i4 = barra.indexOf('window.location.href = destino\n      })')
+    confere('O Voltar fecha a aba aberta pela tela antes de tentar o historico', i1 >= 0 && i2 > i1 && i3 > i2 && i4 > i3,
+      'com o historico primeiro, depois de ver o detalhe o botao fica mudo (voltava para lugar nenhum)')
+    for (const r of ['pnl', 'balance-sheet', 'vendors']) {
+      const t = semComentarios(`app/api/bookkeeping/${r}/route.ts`) || ''
+      confere(`${r}: o Voltar vai para a tela exata de origem`, /voltarPara: voltarDosRelatoriosContabeis\(\{ isClient, clientId, ehFirma: firmaId === clientId,/.test(t)
+        && !/'\/dashboard\/bookkeeping'/.test(t), "'/dashboard/bookkeeping' e a central: sem o cliente e sem a aba Relatorios")
+    }
+    checar('Financeiro: o Voltar reabre o quadro de relatorios', 'app/api/billing/reports/route.ts', /voltarPara: voltarDosRelatoriosDoFinanceiro\(from, to\)/,
+      'sem isso o Voltar cai na tela inicial do Financeiro')
+    // Cada tela le o que o endereco de volta leva — e grava quando muda.
+    const bk = semComentarios('components/BookkeepingTab.tsx') || '', ficha = semComentarios('app/clients/[id]/page.tsx') || ''
+    const fin = semComentarios('app/dashboard/billing/page.tsx') || '', portal = semComentarios('components/portal/ClientReports.tsx') || ''
+    confere('Livro: a aba e o periodo vem da URL e vao para ela', /lerDaUrl\('vista'\)/.test(bk) && /lerDaUrl\('de'\)/.test(bk)
+      && /gravarNaUrl\(\{ vista: k === 'banking' \? null : k,/.test(bk) && /onClick=\{\(\) => mudarVista\(k\)\}/.test(bk)
+      && /onChange=\{mudarPeriodo\}/.test(bk) && !/setView\('[a-z]+'\)/.test(bk),
+      'a tela reabre na aba inicial e o Voltar parece levar ao menu')
+    confere('Ficha: a aba vem da URL e vai para ela', /lerDaUrl\('aba'\)/.test(ficha) && /onClick=\{\(\) => mudarAba\(t\)\}/.test(ficha)
+      && /gravarNaUrl\(\{ aba:/.test(ficha), 'a ficha reabre em Documents')
+    confere('Financeiro: o quadro de relatorios vem da URL e vai para ela', /sp\.get\('relatorios'\) === '1'/.test(fin)
+      && /mudarRelatorios\(!relAberto\)/.test(fin) && /onChange=\{mudarRelPeriodo\}/.test(fin), 'o Financeiro reabre fechado')
+    confere('Portal: o periodo vem da URL e vai para ela', /lerDaUrl\('de'\)/.test(portal) && /onChange=\{mudarPeriodo\}/.test(portal),
+      'o portal reabre no periodo padrao')
+  }
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 // Resolvidas: Plans x recurring_plans (sql/contrato-unico-v1.sql), Quotes x
 // estimates (orcamentos no Financeiro), staff_roles x team_members
