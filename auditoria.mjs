@@ -3114,6 +3114,47 @@ titulo('RELATORIOS: O P&L SO COM RESULTADO E O VOLTAR PARA A TELA DE ORIGEM')
   }
 }
 
+titulo('REGRA CRIADA PELA TRANSACAO: A FILA INTEIRA, EM LOTES, SEM FALHAR CALADO')
+// "Clico na transacao, crio a regra e nao cria." Medido: 3.000 na fila, 600
+// casando -> 6,3 s, 209 idas ao banco, 200 de 600 reconhecidas (lia mil e
+// gravava uma por vez). E o quadro fazia .then(x => x.json()): a pagina de
+// erro da Vercel no tempo esgotado deixava o clique sem efeito nenhum.
+{
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
+  const rota = semComentarios('app/api/bookkeeping/rules/route.ts'), fila = semComentarios('lib/aplicar-na-fila.ts')
+  const tela = semComentarios('components/BookkeepingTab.tsx')
+  if ([rota, fila, tela].some(x => x === null)) falta('Ancoras da regra pela transacao', 'arquivo inexistente -- ancora perdida e FALHA')
+  else {
+    const usos = (rota.match(/await aplicarNaFila\(db, \{/g) || []).length
+    confere('Criar, editar e reclassificar aplicam pela fila paginada', usos === 3
+      && !/\.update\(upd\)\.eq\('id', tx\.id\)/.test(rota) && !/\.limit\(5000\)/.test(rota),
+      'uma gravacao por lancamento e leitura de mil: a regra pega so parte da fila, ou estoura o tempo')
+    confere('Uma definicao de casamento para criar e editar', (rota.match(/casaDaRegra\(\{/g) || []).length === 2
+      && /const casaARegra = casaDaRegra\(/.test(rota), 'copia lado a lado diverge')
+    confere('A rota de regras tem teto de tempo', /export const maxDuration = \d+/.test(rota), 'no pior caso, a pagina de erro no lugar da resposta')
+    confere('A lista de regras e lida inteira', /todasAsLinhas\(\(\) => \{\s*const q = db0\.from\('bookkeeping_rules'\)/.test(rota),
+      'gerais + do cliente passam de mil e a regra nova (prioridade 30) some da lista')
+    confere('Leitura das regras existentes que falha recusa', /if \(errExistentes\) return NextResponse\.json\(/.test(rota),
+      'sem conferir duplicata, a regra seria criada em dobro')
+    confere('A fila grava em lotes de 100, so no que ainda esta no estado lido', /export const POR_LOTE = 100\b/.test(fila)
+      && /\.update\(o\.alteracao, \{ count: 'exact' \}\)\s*\.eq\('client_id', o\.clientId\)\.in\('status', \[\.\.\.o\.status\]\)\.in\('id', lote\)/.test(fila)
+      && /if \(error\) throw new Error\(/.test(fila) && /\.order\('id'\)\.range\(/.test(fila),
+      'lote grande nao cabe na URL; sem o status, a linha aprovada no meio volta para a fila')
+    const quadro = (tela.match(/const applyAsRule = async \(\) => \{[\s\S]*?\n {2}\}\n/) || [''])[0]
+    const soEste = (tela.match(/const applyOnlyThis = async \(\) => \{[\s\S]*?\n {2}\}\n/) || [''])[0]
+    confere('O quadro "Criar regra" le a resposta sem engolir erro', !!quadro && /pedirJson\('\/api\/bookkeeping\/rules'/.test(quadro)
+      && !/\.then\(x => x\.json\(\)\)/.test(quadro + soEste) && /if \(!t\?\.ok\)/.test(soEste),
+      'pagina de erro da Vercel = clique sem efeito; "Categorizada" sem olhar a resposta')
+    confere('O quadro trava os botoes enquanto grava', /if \(!catDecision \|\| salvandoRegra\) return/.test(quadro)
+      && /onClick=\{applyAsRule\} disabled=\{salvandoRegra\}/.test(tela) && /onClick=\{applyOnlyThis\} disabled=\{salvandoRegra\}/.test(tela),
+      'dois cliques: o segundo volta com "ja existe uma regra com este texto"')
+    confere('Lista de regras que falha nao vira lista vazia', !/setRules\(r\.rules \|\| \[\]\)/.test(tela) && /if \(!Array\.isArray\(r\?\.rules\)\)/.test(tela),
+      'a regra recem-criada pareceria nao existir')
+  }
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 // Resolvidas: Plans x recurring_plans (sql/contrato-unico-v1.sql), Quotes x
 // estimates (orcamentos no Financeiro), staff_roles x team_members

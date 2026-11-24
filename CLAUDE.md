@@ -474,6 +474,43 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   DAQUELE cliente** — a regra passa a valer para todos, a reclassificação
   retroativa não. A resposta diz isso (`escopoDoRegistro`), senão a conclusão
   é "não funcionou".
+- **Criar regra pela transação aplica à fila INTEIRA, em lotes, e o quadro
+  não engole erro** (`lib/aplicar-na-fila.ts`, `/api/bookkeeping/rules`, quadro
+  "Categorizar como…" do `BookkeepingTab`). "Clico na transação, crio a regra
+  e não cria": com o histórico do Plaid a fila passou de mil, e o POST lia
+  com `.limit(5000)` — o PostgREST devolve MIL, sem `order` — e gravava UMA
+  linha por ida ao banco. Medido no build de produção contra o PostgREST
+  simulado (25 ms por ida): 3.000 na fila, 600 casando → **6,3 s, 209 idas,
+  200 de 600 reconhecidas**, resposta `applied: 200` sem aviso. Com mais
+  casos a função estoura o tempo, a Vercel devolve uma PÁGINA de erro e o
+  quadro, que fazia `.then(x => x.json())`, morria calado — nem mensagem nem
+  quadro fechado, com a regra possivelmente já gravada (o clique seguinte
+  dava "já existe uma regra com este texto"). Agora `aplicarNaFila` lê em
+  páginas por `id` (leitura que falha LANÇA), grava em lotes de 100 ids
+  (URL) **e só no que ainda está no estado lido** (`.in('status', …)` na
+  gravação: a linha aprovada entre ler e gravar não volta à fila) e conta o
+  que o banco GRAVOU (`count: 'exact'`); o mesmo caso: **0,8 s, 18 idas, 600
+  de 600**. Criar, editar e reclassificar o registro passam pelo mesmo
+  módulo e pela MESMA definição de casamento (`casaDaRegra` — o POST tinha
+  cópia própria); `casaTexto` e `limparRuido` continuam na rota, porque o
+  motor vive em três arquivos e precisa seguir idêntico. Regra gravada que
+  não pôde ser aplicada responde `ok` com `aviso`, nunca erro (senão o
+  clique seguinte diz "já existe"). `maxDuration = 60`. O quadro lê a
+  resposta como texto antes de JSON (`pedirJson`), trava os dois botões
+  enquanto grava (dois cliques criavam a regra e o segundo voltava "já
+  existe"), confere a categorização do lançamento (o "Só este" dizia
+  "✓ Categorizada" sem olhar) e deixou de somar "+1" ao que a regra já
+  contara. O Payee dizia "Opcional" e a regra o exige. E a lista de regras
+  do cliente (gerais + do cliente) passou a ser lida inteira, e a leitura que
+  falha não zera a lista na tela — nos dois casos a regra nova parecia não
+  existir. **Não verificado**: quantas regras há em produção; a leitura das
+  regras pelo MOTOR (`lib/apply-rules.ts`, `categorize`) segue sem paginar, e
+  acima de mil as excedentes não seriam aplicadas — conferir com
+  `select count(*) from bookkeeping_rules` antes de mexer nos três arquivos.
+  15 casos em `testes/aplicar-na-fila.mts` (banco falso com o teto de mil,
+  falha injetada e aprovação no meio); nove conferências na auditoria,
+  sabotadas de 13 jeitos; o quadro exercitado no navegador (504, botão
+  travado, sucesso, a regra uma só, as 600 reconhecidas).
 - **O contrato recorrente tem UM cadastro: `payment_plans` — e ele COBRA**
   (`lib/contrato-unico.ts`, `lib/emissao-contratos.ts`, `/api/billing/contratos`,
   `/api/cron/contratos`, migrações `sql/contrato-unico-v1.sql` e

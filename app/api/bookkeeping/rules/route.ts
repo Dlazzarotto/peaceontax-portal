@@ -9,6 +9,14 @@ import { createClient } from '@supabase/supabase-js'
 import { getAuth, serviceDb, canAccessClient } from '@/lib/api-auth'
 import { getStaffLevel } from '@/lib/staff-perms'
 import { textoGenerico, MOTIVO_GENERICO } from '@/lib/regra-texto'
+import { aplicarNaFila } from '@/lib/aplicar-na-fila'
+import { todasAsLinhas } from '@/lib/paginar'
+
+// Criar ou editar uma regra a aplica à fila do cliente — e, depois do
+// histórico do Plaid, a fila tem milhares de lançamentos. Lida em páginas e
+// gravada em lotes (lib/aplicar-na-fila.ts), cabe com folga; o teto aqui é
+// para o pior caso não virar uma página de erro no lugar da resposta.
+export const maxDuration = 60
 
 
 // Mesmo motor de casamento das demais rotas: palavra inteira, sem fragmentos
@@ -28,6 +36,35 @@ const casaTexto = (desc: string, v: string, tipo: string): boolean => {
 
 // Regra cujo texto é só jargão do banco casa com quase tudo — a tela avisa.
 const marcarGenericas = (rules: any[]) => rules.map(r => ({ ...r, generica: textoGenerico(r.pattern) }))
+
+/**
+ * UMA definição de "este lançamento casa com a regra", para criar, editar e
+ * reclassificar o registro. O POST tinha a sua cópia, lado a lado com a do
+ * PATCH — e cópia diverge.
+ */
+function casaDaRegra(r: {
+  conta: string | null; direction: string; pattern: string | null; matchType: string
+  amountOp: string | null; amountValue: number | null
+}) {
+  return (tx: { description: string; amount: number | string; account_id?: string | null }): boolean => {
+    if (r.conta && tx.account_id !== r.conta) return false
+    const desc = limparRuido(String(tx.description).toLowerCase())
+    const amount = Number(tx.amount)
+    if (r.direction === 'in' && amount <= 0) return false
+    if (r.direction === 'out' && amount >= 0) return false
+    if (r.pattern) {
+      const variants = r.pattern.split('|')
+      if (!variants.some((v: string) => casaTexto(desc, v, r.matchType))) return false
+    }
+    if (r.amountOp) {
+      const abs = Math.abs(amount)
+      if (r.amountOp === 'gt' && !(abs > r.amountValue!)) return false
+      if (r.amountOp === 'lt' && !(abs < r.amountValue!)) return false
+      if (r.amountOp === 'eq' && Math.abs(abs - r.amountValue!) > 0.005) return false
+    }
+    return true
+  }
+}
 
 async function requireManager(userId: string) {
   const level = await getStaffLevel(userId)
@@ -58,13 +95,17 @@ export async function GET(req: NextRequest) {
     .select('business_kind').eq('id', clientId).maybeSingle()
   const soDoCliente = cli?.business_kind === 'nonprofit'
 
-  let q = db0.from('bookkeeping_rules').select('*')
-  q = soDoCliente
-    ? q.eq('client_id', clientId)                                   // non-profit: nada global
-    : q.or(`client_id.eq.${clientId},client_id.is.null`)
-  const { data, error } = await q
-    .order('priority', { ascending: true })
-    .order('created_at', { ascending: false })
+  // Em páginas: as gerais e as do cliente juntas podem passar de mil, e o
+  // PostgREST corta em mil sem avisar — a regra recém-criada (prioridade 30,
+  // depois das gerais) seria a primeira a sumir da lista.
+  const { data, error } = await todasAsLinhas(() => {
+    const q = db0.from('bookkeeping_rules').select('*')
+    return (soDoCliente
+      ? q.eq('client_id', clientId)                                 // non-profit: nada global
+      : q.or(`client_id.eq.${clientId},client_id.is.null`))
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: false })
+  })
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({
     rules: marcarGenericas(data || []),
@@ -133,7 +174,9 @@ export async function POST(req: NextRequest) {
     let eq = db.from('bookkeeping_rules')
       .select('id, name, pattern, direction, account_id')
     eq = global ? eq.is('client_id', null) : eq.eq('client_id', b.clientId)
-    const { data: existing } = await eq
+    const { data: existing, error: errExistentes } = await eq
+    // Leitura que falha não é "nenhuma igual": criaria a regra em dobro.
+    if (errExistentes) return NextResponse.json({ error: `Não foi possível conferir as regras existentes: ${errExistentes.message}` }, { status: 500 })
     const norm = (p2: string | null) => (p2 || '').split('|').map(x => x.trim()).filter(Boolean).sort().join('|')
     const dup = (existing || []).find((r: any) =>
       (r.direction === direction || r.direction === 'both' || direction === 'both') &&
@@ -163,44 +206,36 @@ export async function POST(req: NextRequest) {
     ).then(() => null, () => null)
   }
 
-  // RETROATIVO: aplica a regra às transações existentes do cliente
-  // (pending + auto — preserva as revisadas manualmente pela equipe)
-  let applied = 0
+  // RETROATIVO: aplica a regra à fila do cliente (pending + auto — preserva o
+  // que a equipe já revisou). Era `.limit(5000)` (o PostgREST devolve MIL) e
+  // uma gravação por lançamento: com a fila do Plaid, a regra pegava só parte
+  // dela, ou a função estourava o tempo e a tela ficava sem resposta.
+  // A regra JÁ ESTÁ gravada aqui: se aplicar falhar, a resposta diz isso em
+  // vez de virar erro — senão o clique seguinte daria "já existe uma regra
+  // com este texto" e ninguém entenderia o que aconteceu.
+  let fila = { casaram: 0, aplicadas: 0, falharam: 0, primeiraFalha: null as string | null }
+  let erroDaFila: string | null = null
   if (b.clientId) {
-    const { data: txs } = await db.from('bank_transactions')
-      .select('id, description, amount, account_id')
-      .eq('client_id', b.clientId)
-      .in('status', ['pending', 'auto'])
-      .limit(5000)
-
-    for (const tx of (txs || [])) {
-      if (ruleAccount && (tx as any).account_id !== ruleAccount) continue
-      const desc = limparRuido(String(tx.description).toLowerCase())
-      const amount = Number(tx.amount)
-      if (direction === 'in' && amount <= 0) continue
-      if (direction === 'out' && amount >= 0) continue
-      if (pattern) {
-        const variants = pattern.split('|')
-        const hit = variants.some((v: string) => casaTexto(desc, v, matchType))
-        if (!hit) continue
-      }
-      if (amountOp) {
-        const abs = Math.abs(amount)
-        if (amountOp === 'gt' && !(abs > amountValue!)) continue
-        if (amountOp === 'lt' && !(abs < amountValue!)) continue
-        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) continue
-      }
-      const upd: Record<string, unknown> = {
-        category, category_confidence: 100, categorized_by: 'rule',
-        status: 'auto', updated_at: new Date().toISOString(),
-      }
-      if (payee) upd.payee = payee
-      await db.from('bank_transactions').update(upd).eq('id', tx.id)
-      applied++
+    const upd: Record<string, unknown> = {
+      category, category_confidence: 100, categorized_by: 'rule',
+      status: 'auto', updated_at: new Date().toISOString(),
     }
+    if (payee) upd.payee = payee
+    try {
+      fila = await aplicarNaFila(db, {
+        clientId: b.clientId, status: ['pending', 'auto'], alteracao: upd,
+        casa: casaDaRegra({ conta: ruleAccount, direction, pattern, matchType, amountOp, amountValue }),
+      })
+    } catch (e) { erroDaFila = (e as Error).message }
   }
 
-  return NextResponse.json({ ok: true, applied })
+  return NextResponse.json({
+    ok: true, applied: fila.aplicadas, casaram: fila.casaram,
+    filaFalhou: fila.falharam, falhaExemplo: fila.primeiraFalha || undefined,
+    aviso: erroDaFila
+      ? `A regra foi criada, mas não foi aplicada aos lançamentos já importados (${erroDaFila}). Use "Aplicar regras" para tentar de novo.`
+      : undefined,
+  })
 }
 
 export async function DELETE(req: NextRequest) {
@@ -316,77 +351,35 @@ export async function PATCH(req: NextRequest) {
 
     const targetClient = b.clientId || existing.client_id
 
-    // UMA definição de "esta transação casa com a regra". A fila e o registro
-    // comparavam por CÓPIA, lado a lado — e cópia diverge: bastava alguém
-    // ajustar um dos dois para a reclassificação passar a pegar um conjunto
-    // diferente do que a fila pega, sem nada acusar.
-    const casaARegra = (tx: { description: string; amount: number; account_id?: string | null }) => {
-      if (contaFinal && tx.account_id !== contaFinal) return false
-      const desc = limparRuido(String(tx.description).toLowerCase())
-      const amount = Number(tx.amount)
-      if (direction === 'in' && amount <= 0) return false
-      if (direction === 'out' && amount >= 0) return false
-      if (pattern) {
-        const variants = pattern.split('|')
-        if (!variants.some((v: string) => casaTexto(desc, v, matchType))) return false
-      }
-      if (amountOp) {
-        const abs = Math.abs(amount)
-        if (amountOp === 'gt' && !(abs > amountValue!)) return false
-        if (amountOp === 'lt' && !(abs < amountValue!)) return false
-        if (amountOp === 'eq' && Math.abs(abs - amountValue!) > 0.005) return false
-      }
-      return true
-    }
+    // UMA definição de "esta transação casa com a regra" (casaDaRegra), para a
+    // fila, o registro e a criação. Comparavam por CÓPIA, lado a lado — e
+    // cópia diverge: a reclassificação passaria a pegar um conjunto diferente
+    // do que a fila pega, sem nada acusar.
+    const casaARegra = casaDaRegra({ conta: contaFinal, direction, pattern, matchType, amountOp, amountValue })
 
-    // Lê TODAS as linhas, em páginas. `.limit(5000)` era truncamento SILENCIOSO:
-    // o PostgREST tem teto próprio (1000 por padrão) e a consulta não tinha
-    // `order`, então nem dava para saber QUAIS mil voltaram. Num cliente com
-    // muitos lançamentos, parte do registro simplesmente não era visitada — e a
-    // resposta dizia ok.
-    const PAGINA = 1000
-    const lerTudo = async (status: string[]) => {
-      const linhas: { id: string; description: string; amount: number; account_id?: string | null }[] = []
-      for (let de = 0; ; de += PAGINA) {
-        const { data, error } = await db.from('bank_transactions')
-          .select('id, description, amount, account_id')
-          .eq('client_id', targetClient)
-          .in('status', status)
-          .order('id')
-          .range(de, de + PAGINA - 1)
-        // Consulta que falha não pode virar lista vazia: aqui isso seria
-        // "nenhuma transação casou", com a tela dizendo que deu certo.
-        if (error) throw new Error(`não foi possível ler os lançamentos: ${error.message}`)
-        linhas.push(...((data || []) as typeof linhas))
-        if (!data || data.length < PAGINA) break
-      }
-      return linhas
-    }
-
-    // Reaplica retroativamente (pending + auto do cliente atual)
+    // Reaplica retroativamente (pending + auto do cliente atual): lê TUDO em
+    // páginas e grava em lotes, contando o que o banco gravou e o que recusou
+    // (lib/aplicar-na-fila.ts). Leitura que falha lança — o catch do fim
+    // responde o motivo, em vez de "nenhuma casou".
     let applied = 0
     let filaFalhou = 0
+    let primeiraFalha = ''
     if (targetClient) {
-      for (const tx of await lerTudo(['pending', 'auto'])) {
-        if (!casaARegra(tx)) continue
-        const upd: Record<string, unknown> = {
-          category, category_confidence: 100, categorized_by: 'rule',
-          status: 'auto', updated_at: new Date().toISOString(),
-        }
-        if (payee) upd.payee = payee
-        // `applied++` era incondicional: contava como aplicada a linha que o
-        // banco recusou. O número na tela virava ficção.
-        const { error: fErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
-        if (fErr) filaFalhou++
-        else applied++
+      const upd: Record<string, unknown> = {
+        category, category_confidence: 100, categorized_by: 'rule',
+        status: 'auto', updated_at: new Date().toISOString(),
       }
+      if (payee) upd.payee = payee
+      const f = await aplicarNaFila(db, { clientId: targetClient, status: ['pending', 'auto'], casa: casaARegra, alteracao: upd })
+      applied = f.aplicadas
+      filaFalhou = f.falharam
+      if (f.primeiraFalha) primeiraFalha = f.primeiraFalha
     }
 
     // ── RECLASSIFICAR O REGISTRO (aprovadas) — owner/manager + SENHA + MOTIVO ──
     let registerChanged = 0
     let registerCasou = 0
     let registerFalhou = 0
-    let primeiraFalha = ''
     // Pedir a reclassificação e não ter cliente alvo era PULADO em silêncio: a
     // senha foi digitada, o motivo foi escrito, a resposta saía ok e nada
     // acontecia. Se não dá para fazer, tem de recusar.
@@ -430,22 +423,18 @@ export async function PATCH(req: NextRequest) {
         }, { status: 403 })
       }
 
-      for (const tx of await lerTudo(['approved', 'reviewed'])) {
-        if (!casaARegra(tx)) continue
-        registerCasou++
-        const upd: Record<string, unknown> = {
-          category, categorized_by: 'rule', updated_at: new Date().toISOString(),
-        }
-        if (payee) upd.payee = payee
-        // status permanece: continua no registro, apenas reclassificado
-        const { error: uErr } = await db.from('bank_transactions').update(upd).eq('id', tx.id)
-        // O erro era DESCARTADO (`if (!uErr) registerChanged++`): com todas as
-        // escritas recusadas a resposta saía ok, com 0, e a tela nem mostrava
-        // o 0 — quem pediu a reclassificação não tinha como saber que nada
-        // mudou. Agora a falha viaja.
-        if (uErr) { registerFalhou++; if (!primeiraFalha) primeiraFalha = uErr.message }
-        else registerChanged++
-      }
+      // status permanece: continua no registro, apenas reclassificado. O erro
+      // era DESCARTADO (`if (!uErr) registerChanged++`): com todas as escritas
+      // recusadas a resposta saía ok, com 0, e a tela nem mostrava o 0 — quem
+      // pediu a reclassificação não tinha como saber que nada mudou. Agora a
+      // falha viaja, e a gravação vai em lotes, como a da fila.
+      const updReg: Record<string, unknown> = { category, categorized_by: 'rule', updated_at: new Date().toISOString() }
+      if (payee) updReg.payee = payee
+      const reg = await aplicarNaFila(db, { clientId: targetClient, status: ['approved', 'reviewed'], casa: casaARegra, alteracao: updReg })
+      registerCasou = reg.casaram
+      registerChanged = reg.aplicadas
+      registerFalhou = reg.falharam
+      if (!primeiraFalha && reg.primeiraFalha) primeiraFalha = reg.primeiraFalha
 
       await db.from('bookkeeping_reclass_log').insert({
         rule_id: b.id, client_id: targetClient,
@@ -475,8 +464,8 @@ export async function PATCH(req: NextRequest) {
         : undefined,
     })
   } catch (e) {
-    // `lerTudo` lanca quando a leitura do extrato falha. Sem isto a rota
-    // devolveria 500 sem corpo e a tela diria so "Servidor respondeu 500".
+    // `aplicarNaFila` lanca quando a leitura dos lancamentos falha. Sem isto a
+    // rota devolveria 500 sem corpo e a tela diria so "Servidor respondeu 500".
     return NextResponse.json({ error: `Regra salva, mas ${(e as Error).message}` }, { status: 500 })
   }
 }

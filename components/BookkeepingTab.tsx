@@ -21,6 +21,24 @@ const VISTAS = ['banking', 'register', 'statements', 'payees', 'rules', 'reports
 type Vista = (typeof VISTAS)[number]
 const ehVista = (v: unknown): v is Vista => typeof v === 'string' && (VISTAS as readonly string[]).includes(v)
 
+/**
+ * Pede e lê a resposta como TEXTO antes de JSON (o mesmo cuidado da
+ * conciliação). O quadro "Criar regra" da transação fazia `.then(x => x.json())`:
+ * quando a função estourava o tempo, a Vercel devolvia uma PÁGINA de erro, o
+ * `json()` estourava e o clique não dava em nada — nem mensagem, nem quadro
+ * fechado. E a regra já podia estar gravada.
+ */
+async function pedirJson(url: string, init?: RequestInit): Promise<any> {
+  let r: Response, bruto: string
+  try { r = await fetch(url, init); bruto = await r.text() }
+  catch (e) { return { ok: false, error: `Sem resposta do servidor (${(e as Error).message}). Confira a conexão e tente de novo.` } }
+  try { return JSON.parse(bruto) }
+  catch {
+    if (r.status === 504) return { ok: false, error: 'O servidor demorou demais para responder (HTTP 504). A regra pode ter sido gravada — confira em ⚙️ Regras antes de criar de novo.' }
+    return { ok: false, error: `O servidor respondeu HTTP ${r.status} sem dados legíveis. Tente de novo em instantes.` }
+  }
+}
+
 // Datas sempre no padrão dos EUA (MM/DD/YYYY) — o livro é americano
 const fmtDate = (d: string | null | undefined) => {
   if (!d) return '—'
@@ -273,6 +291,9 @@ export default function BookkeepingTab({ clientId }: Props) {
 
   // Modal QuickBooks: aplicar só ao lançamento ou criar regra
   const [catDecision, setCatDecision] = useState<{ tx: Tx; category: string }|null>(null)
+  // O quadro trava os botões enquanto grava: dois cliques criavam a regra e
+  // o segundo voltava com "já existe uma regra com este texto".
+  const [salvandoRegra, setSalvandoRegra] = useState(false)
   const [mPattern, setMPattern] = useState('')
   const [mPayee, setMPayee] = useState('')
   const [mPayeeType, setMPayeeType] = useState('vendor')
@@ -705,8 +726,11 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const loadRules = async () => {
-    const r = await fetch(`/api/bookkeeping/rules?clientId=${clientId}`).then(x => x.json())
-    setRules(r.rules || [])
+    const r = await pedirJson(`/api/bookkeeping/rules?clientId=${clientId}`)
+    // Leitura que falha não vira "nenhuma regra": a lista some inteira — e a
+    // regra recém-criada parece não ter sido criada. Fica a lista anterior.
+    if (!Array.isArray(r?.rules)) { setMsg(`⚠️ Não foi possível carregar as regras: ${r?.error || 'resposta inesperada do servidor'}`); return }
+    setRules(r.rules)
     if (r.businessKind) {
       setBusinessKind(r.businessKind)
       // Non-profit: regra é sempre da própria entidade
@@ -956,52 +980,66 @@ export default function BookkeepingTab({ clientId }: Props) {
   }
 
   const applyOnlyThis = async () => {
-    if (!catDecision) return
-    await fetch('/api/bookkeeping/transactions', {
-      method:'PATCH', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee || undefined }),
-    })
-    setMsg('✓ Categorizada — somente este lançamento.')
-    setCatDecision(null); load()
+    if (!catDecision || salvandoRegra) return
+    setSalvandoRegra(true)
+    try {
+      // Dizia "✓ Categorizada" sem olhar a resposta — inclusive quando a
+      // gravação falhava.
+      const t = await pedirJson('/api/bookkeeping/transactions', {
+        method:'PATCH', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee || undefined }),
+      })
+      if (!t?.ok) { setMErr(`Não foi possível categorizar: ${t?.error || 'resposta inesperada do servidor'}`); return }
+      setMsg('✓ Categorizada — somente este lançamento.')
+      setCatDecision(null); load()
+    } finally { setSalvandoRegra(false) }
   }
 
   const applyAsRule = async () => {
-    if (!catDecision) return
+    if (!catDecision || salvandoRegra) return
     setMErr('')
     if (!mPattern.trim()) { setMErr('Defina o texto da regra.'); return }
     if (!mPayee.trim()) { setMErr('Payee é obrigatório para criar a regra — informe o favorecido.'); return }
 
-    // 1. Cria a regra (aplicação retroativa a pendentes + reconhecidas)
-    const r = await fetch('/api/bookkeeping/rules', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({
-        clientId, scope: 'client',
-        name: mPattern.trim().slice(0, 40),
-        direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
-        pattern: mPattern.replace(/ \/ /g, '|').trim(), matchType: 'contains',
-        payee: mPayee.trim(),
-        category: catDecision.category,
-      }),
-    }).then(x => x.json())
+    setSalvandoRegra(true)
+    try {
+      // 1. Cria a regra — a rota já a aplica à fila INTEIRA do cliente
+      //    (pending + auto), em páginas e em lotes (lib/aplicar-na-fila.ts).
+      const r = await pedirJson('/api/bookkeeping/rules', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({
+          clientId, scope: 'client',
+          name: mPattern.trim().slice(0, 40),
+          direction: Number(catDecision.tx.amount) > 0 ? 'in' : 'out',
+          pattern: mPattern.replace(/ \/ /g, '|').trim(), matchType: 'contains',
+          payee: mPayee.trim(),
+          category: catDecision.category,
+        }),
+      })
+      if (!r?.ok) {
+        setMErr(`Não foi possível criar a regra: ${r?.error || 'resposta inesperada do servidor'}`)   // fica no quadro, visível
+        return
+      }
 
-    if (!r.ok) {
-      setMErr(`Não foi possível criar a regra: ${r.error}`)   // fica no modal, visível
-      return
-    }
+      // 2. Este lançamento: revisado com a categoria + payee
+      const t = await pedirJson('/api/bookkeeping/transactions', {
+        method:'PATCH', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee.trim() }),
+      })
+      // 3. Payee no cadastro com o tipo escolhido (a regra já o cadastra; aqui vale o TIPO)
+      await pedirJson('/api/bookkeeping/payees', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ clientId, name: mPayee.trim(), type: mPayeeType }),
+      })
 
-    // 2. Este lançamento: revisado com a categoria + payee
-    await fetch('/api/bookkeeping/transactions', {
-      method:'PATCH', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ id: catDecision.tx.id, category: catDecision.category, payee: mPayee.trim() }),
-    })
-    // 3. Payee no cadastro com o tipo escolhido
-    await fetch('/api/bookkeeping/payees', {
-      method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({ clientId, name: mPayee.trim(), type: mPayeeType }),
-    })
-
-    setMsg(`✓ Regra criada e aplicada a ${(r.applied ?? 0) + 1} lançamento(s) com a mesma informação.`)
-    setCatDecision(null); setMErr(''); load(); loadRules()
+      // O "+1" contava este lançamento duas vezes quando ele estava na fila
+      // (a regra já o tinha reconhecido). Agora cada número diz uma coisa só.
+      const partes = [`✓ Regra criada — reconheceu ${r.applied ?? 0} lançamento(s) da fila (aguardando aprovação)`]
+      partes.push(t?.ok ? 'este lançamento foi categorizado' : `⚠️ este lançamento não foi categorizado: ${t?.error || 'resposta inesperada'}`)
+      if (r.filaFalhou) partes.push(`⚠️ ${r.filaFalhou} recusado(s) pelo banco${r.falhaExemplo ? `: ${r.falhaExemplo}` : ''}`)
+      setMsg(`${partes.join(' · ')}.${r.aviso ? ` ${r.aviso}` : ''}`)
+      setCatDecision(null); setMErr(''); load(); loadRules()
+    } finally { setSalvandoRegra(false) }
   }
 
   const openPnl = () => {
@@ -1896,7 +1934,9 @@ export default function BookkeepingTab({ clientId }: Props) {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:12 }}>
               <div>
                 <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Payee (Vendor/Customer) *</label>
-                <input value={mPayee} onChange={e => setMPayee(e.target.value)} list="payee-list" placeholder="Opcional"
+                {/* Dizia "Opcional" e a regra o exige: quem deixava em branco
+                    só descobria no clique. Para "Só este lançamento" segue livre. */}
+                <input value={mPayee} onChange={e => setMPayee(e.target.value)} list="payee-list" placeholder="Obrigatório para criar regra"
                   style={{ width:'100%', padding:'7px 10px', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, outline:'none' }} />
               </div>
               <div>
@@ -1944,11 +1984,11 @@ export default function BookkeepingTab({ clientId }: Props) {
                 style={{ padding:'9px 14px', background:'#fff', color:'#6a7a9a', border:'1.5px solid #e2e8f4', borderRadius:8, fontSize:13, fontWeight:700, cursor:'pointer' }}>
                 Cancelar
               </button>
-              <button onClick={applyOnlyThis} style={btn('#6a7a9a')}>
+              <button onClick={applyOnlyThis} disabled={salvandoRegra} style={btn('#6a7a9a', salvandoRegra)}>
                 Só este lançamento
               </button>
-              <button onClick={applyAsRule} style={btn('#1a6b4a')}>
-                📐 Criar regra (aplica a todos)
+              <button onClick={applyAsRule} disabled={salvandoRegra} style={btn('#1a6b4a', salvandoRegra)}>
+                {salvandoRegra ? '⏳ Gravando…' : '📐 Criar regra (aplica a todos)'}
               </button>
             </div>
           </div>
