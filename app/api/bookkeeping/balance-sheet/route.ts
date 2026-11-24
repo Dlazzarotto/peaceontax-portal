@@ -9,7 +9,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO, voltarDosRelatoriosContabeis } from '@/lib/relatorio-barra'
+import { idDaFirma } from '@/lib/caixa-firma'
 import { dataDeCorteDosParametros, dataPorExtensoEN, rotuloDoPeriodo, anoDe } from '@/lib/periodo-relatorio'
 import { todasAsLinhas } from '@/lib/paginar'
 
@@ -95,8 +96,12 @@ export async function GET(req: NextRequest) {
   const totalLiab = totalCards
   const net = totalAssets - totalLiab
 
+  // Voltar sem histórico nem aba para fechar: a tela de relatórios de onde ele
+  // saiu. `from` não entra no balanço (que é "em tal data"); a tela o manda só
+  // para a volta cair no período em que estava.
+  const firmaId = isClient ? null : await idDaFirma(db)
   const barra = barraDoRelatorio({
-    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    voltarPara: voltarDosRelatoriosContabeis({ isClient, clientId, ehFirma: firmaId === clientId, de: sp.get('from'), ate: cutoff }),
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!doctype html><html><head><meta charset="utf-8">${META_RELATORIO}<title>Balance Sheet ${dataPorExtensoEN(cutoff)} — ${escaparHtml(name)}</title>

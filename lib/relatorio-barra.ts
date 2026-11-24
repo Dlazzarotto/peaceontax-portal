@@ -2,9 +2,19 @@
 //
 // Todo relatório em HTML (P&L, balanço, fornecedores, detalhe de conta,
 // fatura) usa a mesma barra, para o comportamento ser um só:
-//   Voltar   → veio de uma página nossa na mesma aba: volta pelo histórico;
-//              abriu em aba nova (window.open do painel/portal): fecha a aba;
-//              se o navegador não deixar fechar, vai para a tela de origem.
+//   Voltar   → veio de OUTRO relatório nesta aba (P&L → detalhe da conta):
+//              volta a ele pelo histórico;
+//              abriu em aba nova (window.open da tela): fecha a aba — a tela
+//              de origem continua como estava, na aba e no período;
+//              aberto nesta mesma aba a partir de uma tela nossa: histórico;
+//              sem nada disso (app instalado no celular, link salvo, aba que o
+//              navegador não deixa fechar): vai para `voltarPara`, que é a
+//              tela EXATA de onde o relatório saiu (voltarDosRelatoriosContabeis).
+//              Antes era `/dashboard/bookkeeping` — a central, sem o cliente e
+//              sem a aba Relatórios: "o voltar vai para o menu principal".
+//              E o caso "fui ao detalhe e voltei" deixava o botão MUDO: o
+//              histórico da aba tinha duas páginas, ele tentava voltar e não
+//              havia para onde.
 //   Painel   → destino FIXO, sempre. O Voltar depende do histórico e de o
 //              navegador deixar fechar a aba — em celular, quem abriu o
 //              relatório por um link ficava sem caminho de volta. Este não
@@ -25,6 +35,40 @@
  * Nenhum dos oito impressos tinha esta linha.
  */
 export const META_RELATORIO = '<meta name="viewport" content="width=device-width, initial-scale=1">'
+
+const DATA = /^\d{4}-\d{2}-\d{2}$/
+const periodoDaVolta = (q: URLSearchParams, de?: string | null, ate?: string | null) => {
+  if (de && ate && DATA.test(de) && DATA.test(ate) && de <= ate) { q.set('de', de); q.set('ate', ate) }
+}
+
+/**
+ * A tela de onde saem os relatórios contábeis (P&L, Balanço, Fornecedores,
+ * 1099), na aba Relatórios e no período escolhido — o destino do Voltar
+ * quando não há histórico nem aba para fechar. Cada tela lê estes parâmetros
+ * ao abrir: a ficha do cliente (`aba`), o livro (`vista`, `de`, `ate`,
+ * components/BookkeepingTab.tsx) e o portal (`de`, `ate`).
+ */
+export function voltarDosRelatoriosContabeis(o: {
+  isClient: boolean; clientId: string; ehFirma: boolean; de?: string | null; ate?: string | null
+}): string {
+  const q = new URLSearchParams()
+  let base = '/portal/reports'
+  if (!o.isClient && o.ehFirma) { base = '/dashboard/caixa'; q.set('vista', 'reports') }
+  else if (!o.isClient) {
+    base = `/clients/${encodeURIComponent(o.clientId)}`
+    q.set('aba', 'bookkeeping'); q.set('vista', 'reports')
+  }
+  periodoDaVolta(q, o.de, o.ate)
+  const s = q.toString()
+  return s ? `${base}?${s}` : base
+}
+
+/** O mesmo para os relatórios do Financeiro: a tela com o quadro de relatórios aberto. */
+export function voltarDosRelatoriosDoFinanceiro(de?: string | null, ate?: string | null): string {
+  const q = new URLSearchParams({ relatorios: '1' })
+  periodoDaVolta(q, de, ate)
+  return `/dashboard/billing?${q}`
+}
 
 /** Escapa texto para dentro de HTML (inclusive atributo com aspas duplas). */
 export function escaparHtml(v: unknown): string {
@@ -90,11 +134,24 @@ export function barraDoRelatorio(opts: {
         var destino = voltar.getAttribute('data-destino') || '/dashboard'
         if (destino.charAt(0) !== '/' || destino.charAt(1) === '/') destino = '/dashboard'
         var ref = document.referrer || ''
-        if (ref.indexOf(location.origin) === 0 && window.history.length > 1) { window.history.back(); return }
-        // Aba aberta pelo painel ou pelo portal: fechar é o "voltar"
-        window.close()
-        // Navegador recusou fechar (aba não aberta por script): vai para a origem
-        setTimeout(function () { window.location.href = destino }, 200)
+        var daCasa = ref.indexOf(location.origin + '/') === 0
+        var deOutroRelatorio = daCasa && ref.indexOf(location.origin + '/api/') === 0
+        // 1. Veio de outro relatório nesta aba (P&L -> detalhe): volta a ele
+        if (deOutroRelatorio && window.history.length > 1) { window.history.back(); return }
+        // 2. Aba aberta pela tela: fechar devolve a tela como estava — também
+        //    depois de ir ao detalhe e voltar, quando o histórico tem 2 páginas
+        var dono = null
+        try { dono = window.opener && !window.opener.closed ? window.opener : null } catch (e) {}
+        if (dono) {
+          window.close()
+          // Navegador recusou fechar (app instalado): vai para a tela de origem
+          setTimeout(function () { window.location.href = destino }, 250)
+          return
+        }
+        // 3. Aberto nesta mesma aba a partir de uma tela nossa: volta a ela
+        if (daCasa && window.history.length > 1) { window.history.back(); return }
+        // 4. Sem caminho de volta (link salvo, aba sem dono): a tela de origem
+        window.location.href = destino
       })
     })()
   </script>`

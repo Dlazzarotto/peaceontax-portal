@@ -25,6 +25,7 @@ import {
   RELATORIOS, type RelatorioId, agregarFaturamento, agregarRecebimentos, agregarAberto, agregarRecorrente,
   agregarServicos, renderRelatorio, money, fmtUS, rotuloMes, nomeCliente, FAIXAS, FORMA, type Secao,
 } from '@/lib/relatorios-financeiro'
+import { voltarDosRelatoriosDoFinanceiro } from '@/lib/relatorio-barra'
 
 export const dynamic = 'force-dynamic'
 
@@ -187,7 +188,10 @@ export async function GET(req: NextRequest) {
     }
 
     if (json) return NextResponse.json({ ok: true, report, from, to, resumo, dados })
-    return html(renderRelatorio({ titulo: meta.titulo, periodo: tituloPeriodo, resumo, secoes }))
+    // Voltar sem histórico nem aba para fechar: o Financeiro com o quadro de
+    // relatórios aberto e o mesmo período — não a tela inicial do Financeiro.
+    return html(renderRelatorio({ titulo: meta.titulo, periodo: tituloPeriodo, resumo, secoes,
+      voltarPara: voltarDosRelatoriosDoFinanceiro(from, to) }))
   } catch (e) {
     console.error('billing/reports:', e)
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })

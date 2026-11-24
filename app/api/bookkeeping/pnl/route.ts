@@ -4,13 +4,17 @@
 // Cada conta é um link para o detalhe (category-detail), na mesma aba.
 // Baseado no registro já aprovado (status approved/reviewed): o que ainda
 // está na fila de classificação (pending/auto) não entra.
+// Só RESULTADO: o que é de balanço (transferência, pagamento de cartão,
+// ativo, passivo) não aparece — lib/grupo-do-resultado.ts.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
 import { getUser } from '@/lib/supabase-server'
-import { barraDoRelatorio, escaparHtml, META_RELATORIO } from '@/lib/relatorio-barra'
+import { barraDoRelatorio, escaparHtml, META_RELATORIO, voltarDosRelatoriosContabeis } from '@/lib/relatorio-barra'
 import { periodoDosParametros, rotuloDoPeriodo } from '@/lib/periodo-relatorio'
 import { todasAsLinhas } from '@/lib/paginar'
+import { somarPorConta, secoesDoResultado, totaisDoResultado, type LinhaDoResultado } from '@/lib/grupo-do-resultado'
+import { idDaFirma } from '@/lib/caixa-firma'
 
 const FIRM = {
   name: 'Peace on Tax Corp',
@@ -18,12 +22,16 @@ const FIRM = {
   phone: '(833) 732-2327', email: 'info@peaceontax.com',
 }
 
-// Mapa categoria → grupo, carregado do banco
-async function loadKindMap(db: any): Promise<Record<string, string>> {
-  const { data } = await db.from('bookkeeping_categories').select('name, kind')
-  const map: Record<string, string> = {}
-  for (const c of (data || [])) map[c.name] = c.kind
-  return map
+// Mapa categoria → grupo, carregado do banco. Leitura que falha NÃO vira mapa
+// vazio: sem o plano, toda conta cai em despesa (lib/grupo-do-resultado.ts) e
+// a receita sairia como gasto — o P&L errado com cara de certo.
+async function loadKindMap(db: any): Promise<{ mapa: Record<string, string>; erro: string | null }> {
+  const { data, error } = await todasAsLinhas<{ name: string; kind: string }>(() =>
+    db.from('bookkeeping_categories').select('name, kind'))
+  if (error) return { mapa: {}, erro: error.message }
+  const mapa: Record<string, string> = {}
+  for (const c of data) mapa[c.name] = c.kind
+  return { mapa, erro: null }
 }
 
 export const dynamic = 'force-dynamic'
@@ -53,7 +61,9 @@ export async function GET(req: NextRequest) {
   }
 
   const db = serviceDb()
-  const kindMap = await loadKindMap(db)
+  const plano = await loadKindMap(db)
+  if (plano.erro) return NextResponse.json({ error: `P&L não gerado — falhou ao ler o plano de contas: ${plano.erro}` }, { status: 500 })
+  const kindMap = plano.mapa
   const { data: client } = await db.from('clients')
     .select('name, business_name').eq('id', clientId).single()
 
@@ -77,17 +87,12 @@ export async function GET(req: NextRequest) {
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId).gte('tx_date', de).lte('tx_date', ate).eq('status', 'pending')
 
-  // Agrega por categoria
-  const byCat: Record<string, number> = {}
-  for (const t of txs) {
-    const cat = t.category || 'Other'
-    byCat[cat] = (byCat[cat] || 0) + Number(t.amount)
-  }
-
-  const group = (kind: string) => Object.entries(byCat)
-    .filter(([c]) => (kindMap[c] || 'expense') === kind)
-    .map(([c, v]) => ({ cat: c, val: v }))
-    .sort((a, b) => a.cat.localeCompare(b.cat, undefined, { sensitivity: 'base' }))
+  // Soma por conta e separa as seções (lib/grupo-do-resultado.ts). O que é de
+  // balanço — transferência, pagamento de cartão, ativo, passivo, retirada —
+  // fica fora do demonstrativo, inclusive conta do motor que falte no plano
+  // (antes ela caía em despesa).
+  const secoes = secoesDoResultado(somarPorConta(txs), kindMap)
+  const linhas = (l: LinhaDoResultado[]) => l.map(x => ({ cat: x.conta, val: x.valor }))
 
   // Sub-contas ("Pai: Filho"): agrupa sob a mãe, com subtotal
   const withSubs = (items: { cat: string; val: number }[]) => {
@@ -120,24 +125,18 @@ export async function GET(req: NextRequest) {
         + `<tr><td style="padding:2px 14px 8px 30px; font-size:12.5px; font-style:italic">Total ${escaparHtml(g.cat)}</td><td class="r" style="border-top:1px solid #e2e8f4">${money(g.total)}</td></tr>`
     }).join('')
 
-  const income   = group('income')
-  const cogs     = group('cogs')
-  const expenses = group('expense')
-  const otherInc = group('other_income')
-  const otherExp = group('other_expense')
-  const liab     = group('liability')
-  const assets   = group('asset')
-  const nonPnl   = [...group('non_pnl'), ...liab, ...assets]  // informativos
+  const income   = linhas(secoes.income)
+  const cogs     = linhas(secoes.cogs)
+  const expenses = linhas(secoes.expense)
+  const otherInc = linhas(secoes.other_income)
+  const otherExp = linhas(secoes.other_expense)
 
-  const sum = (a: {val:number}[]) => a.reduce((s, i) => s + i.val, 0)
-  const totalIncome   = sum(income)
-  const totalCogs     = sum(cogs)
-  const grossProfit   = totalIncome + totalCogs
-  const totalExpense  = sum(expenses)
-  const operProfit    = grossProfit + totalExpense
-  const totalOtherInc = sum(otherInc)
-  const totalOtherExp = sum(otherExp)
-  const netProfit     = operProfit + totalOtherInc + totalOtherExp
+  const totais = totaisDoResultado(secoes)
+  const totalIncome  = totais.receita
+  const grossProfit  = totais.bruto
+  const totalExpense = totais.despesa
+  const operProfit   = totais.operacional
+  const netProfit    = totais.liquido
 
   // "2025", "October 2026", "Q3 2026" ou as duas datas — lib/periodo-relatorio.ts
   const period = rotuloDoPeriodo(de, ate)
@@ -158,8 +157,11 @@ export async function GET(req: NextRequest) {
   const row = (label: string, val: number, indent = true, linkCat?: string) =>
     `<tr><td style="padding:6px 14px ${indent ? '6px 30px' : ''}">${linkCat ? catLink(linkCat, label) : label}</td><td class="r">${money(val)}</td></tr>`
 
+  // Voltar sem histórico nem aba para fechar (app instalado, link salvo): a
+  // tela de relatórios de onde ele saiu, no mesmo período — nunca a central.
+  const firmaId = isClient ? null : await idDaFirma(db)
   const barra = barraDoRelatorio({
-    voltarPara: isClient ? '/portal/reports' : '/dashboard/bookkeeping',
+    voltarPara: voltarDosRelatoriosContabeis({ isClient, clientId, ehFirma: firmaId === clientId, de, ate }),
     painelPara: isClient ? '/portal' : '/dashboard',
   })
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8">${META_RELATORIO}
@@ -182,7 +184,6 @@ export async function GET(req: NextRequest) {
   tr.section td { font-weight:700; padding:14px 14px 4px; border-bottom:1px solid #000; }
   tr.subtotal td { border-top:1px solid #000; font-weight:700; padding:5px 14px; }
   tr.net td { border-top:1px solid #000; border-bottom:3px double #000; font-weight:700; padding:8px 14px; font-size:15px; }
-  tr.nonpnl td { font-size:13px; }
   .warn { margin-top:18px; border:1px solid #000; padding:9px 12px; font-size:12px; }
   .foot { margin-top:32px; padding-top:10px; border-top:1px solid #000; text-align:center; font-size:11px; line-height:1.6; }
   a { color:#000; }
@@ -226,10 +227,6 @@ ${barra.html}
     ${otherExp.map(i => row(i.cat, i.val, true, i.cat)).join('')}` : ''}
 
     <tr class="net"><td>NET ${netProfit >= 0 ? 'PROFIT' : 'LOSS'}</td><td class="r">${money(netProfit)}</td></tr>
-
-    ${nonPnl.length ? `
-    <tr class="section"><td colspan="2" style="background:#8a9ab0">Balance Sheet / Non-P&amp;L Items (informational)</td></tr>
-    ${nonPnl.map(n => `<tr class="nonpnl">${row(n.cat, n.val, true, n.cat).slice(4)}`).join('')}` : ''}
   </table>
 
   ${errPend ? `<div class="warn">⚠️ Could not count the uncategorized transactions (${escaparHtml(errPend.message)}) — treat this P&amp;L as preliminary.</div>`

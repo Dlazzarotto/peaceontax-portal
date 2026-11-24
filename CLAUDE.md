@@ -1294,6 +1294,28 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   repetido é recusado sem diferença de maiúscula e acento. A tela chama
   `planoDaEdicao` e `pedidoDoFormulario`, as mesmas da rota, para mostrar
   antes o que muda. 123 casos em `testes/plano-de-contas.mts`.
+- **O P&L é só RESULTADO** (decisão do sócio, 11/2026;
+  `lib/grupo-do-resultado.ts`, `/api/bookkeeping/pnl`). A rota mostrava no
+  fim "Balance Sheet / Non-P&L Items (informational)" — transferências,
+  pagamentos de cartão, empréstimos, retiradas, ativo: dinheiro que mudou de
+  lugar, não resultado. Saiu; o saldo das contas é o Balanço. E havia um
+  defeito pior, mudo: a rota decidia o grupo por `kindMap[c] || 'expense'`,
+  então **`Transfer` ou `Credit Card Payment` que faltasse no plano virava
+  DESPESA** — e os tipos dessas contas foram definidos no painel, o
+  repositório não os garante. Agora `grupoNoResultado` decide: os movimentos
+  que o motor grava pelo nome (`MOVIMENTOS_DE_BALANCO`: `Transfer`,
+  `Credit Card Payment`, `CONTA_DO_DEPOSITO` — todos em `CONTAS_DO_SISTEMA`,
+  que não mudam de nome) saem ANTES de olhar o plano, mesmo com o grupo
+  errado; sub-conta fora do plano segue a MÃE (`Loans: Bank X` de mãe
+  passivo não vira despesa); conta fora do plano que não é do motor segue
+  entrando como despesa — no lugar errado se vê e se corrige, sumida não. A
+  soma é em CENTAVOS (`somarPorConta`, `totaisDoResultado`). E a leitura do
+  plano conferia o erro em lugar nenhum: plano que falha devolvia mapa vazio
+  e TODA conta caía em despesa — a receita saía como gasto. Agora o P&L
+  recusa (500), e lê em páginas. 28 casos em
+  `testes/grupo-do-resultado.mts`, com uma varredura de que movimento de
+  balanço nunca mexe no lucro; exercitado no build de produção contra o
+  PostgREST simulado (inclusive o plano que falha).
 - **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
   sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
   saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem
@@ -1371,6 +1393,30 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   destino FIXO (Dashboard, ou Meu portal no relatório do cliente) e
   Imprimir — o Voltar sozinho depende do histórico e de o navegador deixar
   fechar a aba.
+  **O Voltar decide nesta ordem, e a ordem é a regra** (a auditoria a
+  confere): veio de OUTRO relatório nesta aba (`/api/` no referrer: P&L →
+  detalhe) → histórico; aba aberta pela tela (`window.opener`) → fecha, e
+  a tela de origem segue como estava; aberto nesta mesma aba a partir de
+  uma tela nossa → histórico; nada disso → `voltarPara`. Antes o histórico
+  vinha primeiro, e depois de ir ao detalhe e voltar ao P&L o botão ficava
+  MUDO (o histórico da aba tinha duas páginas, ele voltava para lugar
+  nenhum — conferido com o script antigo e o novo lado a lado). E
+  `voltarPara` era a central (`/dashboard/bookkeeping`) ou a tela inicial do
+  Financeiro: no sistema instalado como app no celular o navegador não
+  deixa fechar a aba, e o sócio caía "no menu principal". Agora é a tela
+  EXATA de origem (`voltarDosRelatoriosContabeis`,
+  `voltarDosRelatoriosDoFinanceiro`), na aba e no período — e por isso
+  **a tela que abre relatório guarda a aba e o período na URL**
+  (`lib/url-da-tela.ts`: `aba` na ficha do cliente, `vista`/`de`/`ate` no
+  livro, `relatorios`/`de`/`ate` no Financeiro, `de`/`ate` no portal). Sem
+  `useSearchParams` (pediria Suspense na página inteira) e sem
+  `router.replace` (rola a tela): `history.replaceState` devolvendo o
+  `history.state` que o roteador do Next guarda — `null` ali quebraria o
+  voltar do próprio Next. O livro do caixa fica no FIM da página: aberto
+  com `vista`, ele rola até si. Balanço e 1099 recebem o período da tela
+  (`from`) só para a volta; no 1099 o cálculo segue no ano do fim. 28 casos
+  em `testes/voltar-dos-relatorios.mts`; exercitado no build de produção
+  (aba nova, detalhe e volta; aberto sem dono; mesma aba).
 - **Formato voltado ao cliente vem de `lib/format.ts`** (`fmtUS`, `money`), e
   aviso ao cliente sai por `lib/avisos.ts` (e-mail com a marca, portal).
 - **Botão de e-mail é UM: `botaoDeEmail` (`lib/email-botao.ts`).** O convite
