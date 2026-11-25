@@ -65,7 +65,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
    do gerente + campo de motivo gravado na tabela de auditoria correspondente.
 4. **O cliente é da firma.** Mensagens saem como "Peace on Tax"; autoria só
    por dentro.
-5. **Documento que sai leva a marca** (logo, endereço, contato).
+5. **Documento que sai leva a marca** (logo, endereço, contato). Exceção
+   (decisão do sócio, 11/2026): Balanço e P&L são demonstrativos DO
+   CLIENTE — a empresa dele no topo e a Peace on Tax só no rodapé, pequena,
+   sem logo (`lib/demonstrativo.ts`).
 6. **Consentimento é prova.** Data, hora, IP, origem e texto exato ficam em
    `sms_consent_log`; o histórico nunca é sobrescrito.
 7. **O motor decide sozinho, a IA não.** Transferência interna e pagamento de
@@ -1353,6 +1356,59 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   `testes/grupo-do-resultado.mts`, com uma varredura de que movimento de
   balanço nunca mexe no lucro; exercitado no build de produção contra o
   PostgREST simulado (inclusive o plano que falha).
+- **Balanço e P&L saem no formato do QuickBooks, e o Balanço fecha por
+  partidas dobradas** (decisão do sócio, 11/2026; `lib/demonstrativo.ts`,
+  `lib/balanco.ts`, rotas `balance-sheet` e `pnl`). O modelo foi um Balance
+  Sheet exportado do QuickBooks: a empresa do cliente no topo, coluna TOTAL,
+  conta sem cifrão (zerada em branco), "Total …" em negrito com traço a partir
+  do recuo, linha dupla nos totais finais, negativo "-5,481.12" na conta e
+  "$ -33,119.34" no total, e o rodapé com "Cash Basis", o carimbo no fuso do
+  escritório e "Prepared by Peace on Tax Corp" — nada de timbre nem logo. O
+  desenho é UM (`htmlDoDemonstrativo`), e é ele quem escapa tudo: a rota não
+  monta HTML. Avisos e notas da equipe ficam em `.so-tela` (não saem no
+  impresso; as notas também não vão ao portal). Na impressão o `thead`
+  repete o TOTAL em cada página, o rodapé é `position: fixed` no pé e o
+  `tfoot` guarda o lugar dele — sem isso a última linha de cada página
+  passava por baixo do rodapé (conferido com um P&L de 3 páginas).
+  **O Balanço anterior não era um balanço**: o caixa era o saldo corrido do
+  último extrato (conta do Plaid, sem saldo corrido, nem aparecia), o ativo
+  somava compras do ANO em `Math.abs` (vender o equipamento AUMENTAVA o
+  ativo), empréstimo fora do passivo, nenhum patrimônio — "Assets −
+  Liabilities" no lugar. Agora cada lançamento tem duas pernas (a conta
+  bancária e a conta do plano): caixa = abertura + todos os lançamentos até a
+  data (o que o BANCO mostra); ativo/passivo do plano acumulam desde o
+  começo; patrimônio = Opening Balance Equity + contas `non_pnl` + Retained
+  Earnings + Net Income, e o **Net Income é a conta do P&L** (`grupoNoResultado`,
+  só `approved`/`reviewed`, plano INTEIRO — o Balanço antigo lia só o plano
+  ativo). Duas linhas que o QuickBooks não tem, porque lá a transferência é
+  um lançamento só e o "For Review" não entrou no livro: **Transactions
+  Awaiting Review** (o líquido da fila até a data) e **Transfers in Transit**
+  (transferência/pagamento de cartão com uma ponta só até a data; os
+  movimentos do motor contam em qualquer situação). Com elas fecha por
+  construção, ao centavo — e se não fechar, a rota recusa (500).
+  **Saldo de abertura** é deduzido da REFERÊNCIA mais próxima da data:
+  conciliação concluída → saldo corrido do extrato (no FIM do dia: a ordem
+  das linhas no dia é desconhecida, e o último saldo é o único que não é o
+  "antes" de outra linha) → saldo do banco (`current_balance`, dia do
+  escritório). O sentido do saldo corrido do cartão (dívida positiva) é
+  votado pelos próprios dados. Lançamento `manual` e a conta de passagem não
+  passam pelo banco: ficam fora da referência e entram no caixa por cima
+  (senão o cheque não compensado era engolido pela abertura). O Balanço lê
+  TODAS as contas (a inativa tinha saldo na data) e TODOS os lançamentos (a
+  referência pode ser posterior). Conferido no build de produção contra um
+  livro SIMULADO que reproduz o Balance Sheet do QuickBooks enviado pelo
+  sócio (Activation Church, 31/12/2024): todas as linhas batem, inclusive a
+  conta que só tinha o saldo de hoje do banco. **O cartão importado do
+  QuickBooks nascia `credit`**, e o resto do sistema procura `credit_card`:
+  ele entrava no Balanço e no fluxo de caixa como dinheiro e o 1099 não o via
+  como cartão. A importação grava `credit_card`, `ehCartao` aceita os dois e
+  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 73 casos em
+  `testes/balanco.mts` (com varredura de 300 livros aleatórios que precisam
+  fechar) e 43 em `testes/demonstrativo.mts`; 12 conferências na auditoria,
+  sabotadas de 15 jeitos. **Não verificado**: dados reais de produção —
+  conta com extrato e Plaid duplicados no mesmo período sai com o caixa
+  dobrado (é o caso da sobreposição ainda a conferir). Fornecedores, 1099 e
+  Detalhe por conta seguem com o timbre.
 - **Orçamento mora no Financeiro, e quem se paga é a FATURA** (decisão do
   sócio). A aba Quotes da ficha (tabela `quotes`, link de pagamento próprio)
   saiu: o dinheiro dela entrava fora do livro — sem `invoice_payments`, sem

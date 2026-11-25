@@ -148,3 +148,22 @@ export function rotuloDoPeriodo(de: string, ate: string, idioma: 'en' | 'pt' = '
   const curto = (x: string) => `${MES_EN_CURTO[+x.slice(5, 7) - 1]} ${+x.slice(8, 10)}`
   return a === a2 ? `${curto(de)} – ${curto(ate)}, ${a}` : `${curto(de)}, ${a} – ${curto(ate)}, ${a2}`
 }
+
+/**
+ * O período escrito como o QuickBooks escreve no cabeçalho do P&L:
+ * "January - December 2024", "October 2026", "July - September 2026",
+ * "January 1 - March 15, 2026", "December 15, 2025 - January 15, 2026".
+ * Meses inteiros saem só com o nome do mês; o resto, com o dia.
+ */
+export function periodoNoPadraoQB(de: string, ate: string): string {
+  if (de === ate) return dataPorExtensoEN(de)
+  const a = anoDe(de), m = +de.slice(5, 7), d = +de.slice(8, 10)
+  const a2 = anoDe(ate), m2 = +ate.slice(5, 7), d2 = +ate.slice(8, 10)
+  if (d === 1 && d2 === ultimoDiaDoMes(a2, m2)) {
+    if (a === a2 && m === m2) return `${MESES_EN[m - 1]} ${a}`
+    if (a === a2) return `${MESES_EN[m - 1]} - ${MESES_EN[m2 - 1]} ${a}`
+    return `${MESES_EN[m - 1]} ${a} - ${MESES_EN[m2 - 1]} ${a2}`
+  }
+  if (a === a2) return `${MESES_EN[m - 1]} ${d} - ${MESES_EN[m2 - 1]} ${d2}, ${a}`
+  return `${dataPorExtensoEN(de)} - ${dataPorExtensoEN(ate)}`
+}
