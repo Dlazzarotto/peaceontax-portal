@@ -144,7 +144,11 @@ export async function POST(req: NextRequest) {
       const e = porContaQB.get(nomeQB)
       if (e?.accountId) { idDaConta.set(nomeQB, e.accountId); continue }
       const { data: acc, error } = await db.from('bank_accounts').upsert(
-        { client_id: clientId, name: nomeQB, account_hint: nomeQB, type: e?.tipo === 'credit' ? 'credit' : 'checking' },
+        // 'credit_card', como o resto do sistema grava: com 'credit' o cartão
+        // entrava no Balanço e no fluxo de caixa como DINHEIRO em banco e o
+        // 1099 não o reconhecia como cartão (sql/contas-cartao-tipo-v1.sql
+        // acerta as contas que já nasceram assim).
+        { client_id: clientId, name: nomeQB, account_hint: nomeQB, type: e?.tipo === 'credit' || e?.tipo === 'credit_card' ? 'credit_card' : 'checking' },
         { onConflict: 'client_id,name' }
       ).select('id').single()
       if (error) return NextResponse.json({ error: `Conta "${nomeQB}": ${error.message}` }, { status: 500 })

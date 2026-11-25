@@ -3155,6 +3155,57 @@ titulo('REGRA CRIADA PELA TRANSACAO: A FILA INTEIRA, EM LOTES, SEM FALHAR CALADO
   }
 }
 
+titulo('DEMONSTRATIVO DO CLIENTE: FORMATO QUICKBOOKS, BALANCO QUE FECHA, A FIRMA SO NO RODAPE')
+// Decisao do socio (11/2026): Balance Sheet e P&L no formato do QuickBooks,
+// com a empresa do cliente no topo e a Peace on Tax so no rodape, pequena e
+// sem logo. E o Balanco deixou de ser "simplificado": era o saldo corrido do
+// ultimo extrato (conta do Plaid nem aparecia), compras do ANO em valor
+// absoluto como ativo, emprestimo fora do passivo e nenhum patrimonio -- nao
+// fechava porque nao era um balanco (lib/balanco.ts, partidas dobradas).
+{
+  const semComentarios = arq => existsSync(join(raiz, arq))
+    ? readFileSync(join(raiz, arq), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1') : null
+  const confere = (nome, cond, porque) => cond ? ok(nome) : falta(nome, porque)
+  const dem = semComentarios('lib/demonstrativo.ts'), bal = semComentarios('lib/balanco.ts')
+  const pnl = semComentarios('app/api/bookkeeping/pnl/route.ts'), bs = semComentarios('app/api/bookkeeping/balance-sheet/route.ts')
+  const qb = semComentarios('app/api/bookkeeping/import-quickbooks/route.ts')
+  if ([dem, bal, pnl, bs, qb].some(x => x === null)) falta('Ancoras do demonstrativo', 'arquivo inexistente -- ancora perdida e FALHA')
+  else {
+    for (const [nome, t] of [['pnl', pnl], ['balance-sheet', bs]]) {
+      confere(`${nome}: desenha pelo modulo do demonstrativo`, /htmlDoDemonstrativo\(\{/.test(t) && !/<table|<tr|<td/.test(t),
+        'HTML montado na rota foge do formato e do escape do modulo')
+      confere(`${nome}: sem timbre nem logo`, !/logo\.png|class="timbre"|75 Pleasant|\(833\) 732/.test(t),
+        'o demonstrativo e do cliente: a firma vai so no rodape (decisao do socio)')
+    }
+    confere('O demonstrativo escapa o que vem do banco', !/\$\{\s*(d\.(empresa|titulo|periodo|regime)|l\.rotulo|l\.href|notas\.titulo|a|f|c)\s*\}/.test(dem)
+      && /escaparHtml\(d\.empresa\)/.test(dem) && /escaparHtml\(l\.rotulo\)/.test(dem),
+      'nome de empresa ou de conta cru no HTML roda na sessao de quem abre o relatorio')
+    confere('A firma so no rodape, pequena, sem logo', /<div class="rodape">[\s\S]{0,400}Prepared by Peace on Tax Corp/.test(dem)
+      && (dem.match(/Peace on Tax/g) || []).length === 1 && !/logo\.png|<img/.test(dem),
+      'decisao do socio: a marca sai do cabecalho do demonstrativo do cliente')
+    confere('Avisos e notas da equipe nao saem no impresso', /@media print \{[\s\S]{0,300}\.so-tela \{ display: none !important; \}/.test(dem),
+      'nota interna da equipe impressa no demonstrativo do cliente')
+    confere('O Balanco e por partidas dobradas e recusa o que nao fecha', /montarBalanco\(\{/.test(bs) && /if \(!b\.fecha\)/.test(bs)
+      && /fecha: ativo === passivo \+ pl/.test(bal),
+      'balanco que nao fecha sairia com cara de certo')
+    confere('O Net Income do Balanco e a conta do P&L', /grupoNoResultado\(/.test(bal)
+      && /STATUS_DO_LIVRO: readonly string\[\] = \['approved', 'reviewed'\]/.test(bal)
+      && /\.in\('status', \['approved', 'reviewed'\]\)/.test(pnl),
+      'com regras diferentes o Net Income do Balanco diverge do P&L do mesmo ano')
+    confere('O Balanco le todas as contas, todos os lancamentos e o plano inteiro',
+      /db\.from\('bank_accounts'\)\.select\('\*'\)\.eq\('client_id', clientId\),/.test(bs) && !/\.lte\('tx_date'/.test(bs)
+      && /todasAsLinhas<[^>]*>\(\(\) => db\.from\('bank_transactions'\)/.test(bs)
+      && /todasAsLinhas<[^>]*>\(\(\) => db\.from\('bookkeeping_categories'\)\.select\('name, kind'\)\)/.test(bs),
+      'conta inativa some de um balanco em que tinha saldo; a referencia de saldo pode ser posterior a data; plano so ativo diverge do P&L')
+    confere('O lancamento manual nao entra na referencia do banco',
+      /ORIGENS_FORA_DO_BANCO: readonly string\[\] = \['manual', \.\.\.ORIGENS_DE_PASSAGEM\]/.test(bal),
+      'o cheque nao compensado seria engolido pelo saldo de abertura')
+    confere('Cartao: o Balanco aceita os dois tipos e a importacao grava credit_card',
+      /return t === 'credit_card' \|\| t === 'credit'/.test(bal) && /\? 'credit_card' : 'checking'/.test(qb) && !/\? 'credit' : 'checking'/.test(qb),
+      "conta 'credit' entra no balanco e no fluxo de caixa como dinheiro em banco")
+  }
+}
+
 titulo('DUPLICACOES A DECIDIR (nao sao erros, sao escolhas)')
 // Resolvidas: Plans x recurring_plans (sql/contrato-unico-v1.sql), Quotes x
 // estimates (orcamentos no Financeiro), staff_roles x team_members
