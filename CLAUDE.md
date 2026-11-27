@@ -1377,15 +1377,26 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   Liabilities" no lugar. Agora cada lançamento tem duas pernas (a conta
   bancária e a conta do plano): caixa = abertura + todos os lançamentos até a
   data (o que o BANCO mostra); ativo/passivo do plano acumulam desde o
-  começo; patrimônio = Opening Balance Equity + contas `non_pnl` + Retained
-  Earnings + Net Income, e o **Net Income é a conta do P&L** (`grupoNoResultado`,
-  só `approved`/`reviewed`, plano INTEIRO — o Balanço antigo lia só o plano
-  ativo). Duas linhas que o QuickBooks não tem, porque lá a transferência é
-  um lançamento só e o "For Review" não entrou no livro: **Transactions
-  Awaiting Review** (o líquido da fila até a data) e **Transfers in Transit**
-  (transferência/pagamento de cartão com uma ponta só até a data; os
-  movimentos do motor contam em qualquer situação). Com elas fecha por
-  construção, ao centavo — e se não fechar, a rota recusa (500).
+  começo; patrimônio = contas `non_pnl` + Retained Earnings + Net Income, e o
+  **Net Income é a conta do P&L** (`grupoNoResultado`, só `approved`/`reviewed`,
+  plano INTEIRO — o Balanço antigo lia só o plano ativo).
+  **Sem linha de Opening Balance Equity nem de Transfers in Transit**
+  (decisão do sócio, 11/2026, depois do Balanço real da Activation Church
+  mostrar US$ 1,5 milhão de abertura e −36 mil em trânsito). Os dois
+  COMPÕEM o Retained Earnings (`composicaoDosLucros`: resultado dos anos
+  anteriores + conta "Retained Earnings" do plano + saldo de abertura das
+  contas, inclusive a conta "Opening Balance Equity" que a importação do
+  QuickBooks traz + transferências/pagamentos de cartão com uma ponta só até
+  a data) — é o que o contador faz no QuickBooks ao zerar o OBE. **Apagar a
+  linha sem levar o valor deixaria o Balanço sem fechar**; por isso o valor
+  vai para o Retained Earnings e a composição vai para as NOTAS da equipe
+  (só tela), com o saldo de abertura de cada conta: abertura muito acima do
+  patrimônio do ano anterior é histórico faltando ou conta em dobro, e a
+  ponta sem par é a outra ponta depois da data ou fora do sistema — o
+  número continua visível para quem corrige, não para o cliente. Fica a linha
+  **Transactions Awaiting Review** (o líquido da fila até a data; os
+  movimentos do motor contam em qualquer situação). Fecha por construção, ao
+  centavo — e se não fechar, a rota recusa (500).
   **Saldo de abertura** é deduzido da REFERÊNCIA mais próxima da data:
   conciliação concluída → saldo corrido do extrato (no FIM do dia: a ordem
   das linhas no dia é desconhecida, e o último saldo é o único que não é o
@@ -1402,10 +1413,10 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   QuickBooks nascia `credit`**, e o resto do sistema procura `credit_card`:
   ele entrava no Balanço e no fluxo de caixa como dinheiro e o 1099 não o via
   como cartão. A importação grava `credit_card`, `ehCartao` aceita os dois e
-  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 73 casos em
+  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 83 casos em
   `testes/balanco.mts` (com varredura de 300 livros aleatórios que precisam
-  fechar) e 43 em `testes/demonstrativo.mts`; 12 conferências na auditoria,
-  sabotadas de 15 jeitos. **Não verificado**: dados reais de produção —
+  fechar) e 43 em `testes/demonstrativo.mts`; 15 conferências na auditoria,
+  sabotadas de 21 jeitos. **Não verificado**: dados reais de produção —
   conta com extrato e Plaid duplicados no mesmo período sai com o caixa
   dobrado (é o caso da sobreposição ainda a conferir). Fornecedores, 1099 e
   Detalhe por conta seguem com o timbre.

@@ -11,7 +11,7 @@
 
 import {
   ehCartao, sentidoDoSaldoCorrido, saldoNoFimDoDia, referenciasDaConta, escolherReferencia,
-  ladoNoBalanco, montarBalanco, CONTA_DE_ABERTURA,
+  ladoNoBalanco, montarBalanco,
   type LancamentoDoBalanco, type ContaDoBalanco,
 } from '../lib/balanco.ts'
 import { somarPorConta, secoesDoResultado, totaisDoResultado } from '../lib/grupo-do-resultado.ts'
@@ -123,8 +123,9 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   // banco em 10/01/2025 = 5000; depois da data entrou +400 → em 31/12 = 4600
   eq('c1: caixa na data = saldo do banco menos o que entrou depois', b.bancos, [{ conta: 'Checking 8301', valor: 460000 }])
   // abertura = 5000 − (1000 − 300 − 100 + 50 − 20 + 400) = 3970
-  eq('c1: a abertura vai para Opening Balance Equity', b.patrimonio.find(l => l.conta === CONTA_DE_ABERTURA)?.valor, 397000)
-  eq('c1: a retirada do sócio é patrimônio', b.patrimonio.find(l => l.conta === 'Owner Draw')?.valor, -10000)
+  eq('c1: a abertura compõe o Retained Earnings (sem linha de Opening Balance Equity)', b.composicaoDosLucros.saldoDeAbertura, 397000)
+  eq('c1: Retained Earnings = resultado anterior + abertura + transferências sem par', b.lucrosAcumulados, 397000)
+  eq('c1: no patrimônio fica só a retirada do sócio', b.patrimonio, [{ conta: 'Owner Draw', valor: -10000 }])
   eq('c1: Net Income = só o livro aprovado do ano', b.resultadoDoExercicio, 70000)
   eq('c1: a fila (pendente e reconhecido) fica à parte', b.aguardandoRevisao, { quantidade: 2, valor: 3000 })
   eq('c1: o excluído não entra em nada', b.totais.ativo, 460000)
@@ -148,7 +149,7 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
   eq('c2: o cartão é passivo (dívida positiva)', b.cartoes, [{ conta: 'Visa 2493', valor: 10000 }])
   eq('c2: a conta corrente depois de pagar o cartão', b.bancos, [{ conta: 'Checking', valor: 140000 }])
-  eq('c2: o pagamento com as duas pontas não deixa nada em trânsito', b.emTransito, 0)
+  eq('c2: o pagamento com as duas pontas não deixa transferência sem par', b.composicaoDosLucros.transferenciasSemPar, 0)
   eq('c2: a ponta "auto" do pagamento conta (regra do motor), não fica na fila', b.aguardandoRevisao.quantidade, 0)
   eq('c2: Net Income', b.resultadoDoExercicio, 130000)
   eq('c2: fecha', b.fecha, true)
@@ -163,10 +164,12 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
     { account_id: 's', tx_date: '2025-01-02', amount: 500, category: 'Transfer', status: 'approved' },
   ]
   const em31 = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
-  eq('c3: em 31/12 o dinheiro saiu de uma e não chegou na outra: em trânsito', em31.emTransito, 50000)
+  eq('c3: em 31/12 o dinheiro saiu de uma e não chegou na outra: ponta sem par', em31.composicaoDosLucros.transferenciasSemPar, -50000)
+  eq('c3: ela vai para o Retained Earnings, não para uma linha de ativo', em31.lucrosAcumulados, -50000)
+  eq('c3: no ativo, só o que está nos bancos', em31.totais.ativo, 250000)
   eq('c3: em 31/12 fecha', em31.fecha, true)
   const em02 = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2025-01-02' })
-  eq('c3: em 02/01 chegou: nada em trânsito', em02.emTransito, 0)
+  eq('c3: em 02/01 chegou: nada sem par', em02.composicaoDosLucros.transferenciasSemPar, 0)
   eq('c3: em 02/01 a poupança tem o dinheiro', em02.bancos.find(l => l.conta === 'Savings')?.valor, 50000)
   eq('c3: em 02/01 o resultado do ano NOVO começa do zero', em02.resultadoDoExercicio, 0)
   eq('c3: e o de 2024 virou lucros acumulados', em02.lucrosAcumulados, 300000)
@@ -200,7 +203,7 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
   // banco em 31/12 = 1100 (o cheque ainda não passou); livro = 1100 − 400
   eq('c5: o cheque não compensado sai do caixa do livro', b.bancos, [{ conta: 'Checking', valor: 70000 }])
-  eq('c5: a abertura não engole o lançamento manual', b.patrimonio.find(l => l.conta === CONTA_DE_ABERTURA)?.valor, 100000)
+  eq('c5: a abertura não engole o lançamento manual', b.composicaoDosLucros.saldoDeAbertura, 100000)
   eq('c5: fecha', b.fecha, true)
 }
 
@@ -233,8 +236,9 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   ]
   const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
   eq('c7: o saldo corrido do QuickBooks dá abertura zero (o lançamento de abertura já está no livro)', b.contas[0].abertura, 0)
-  eq('c7: uma linha só de Opening Balance Equity', b.patrimonio, [{ conta: 'Opening Balance Equity', valor: 500000 }])
-  eq('c7: Retained Earnings do plano se soma aos lucros acumulados', b.lucrosAcumulados, 75000)
+  eq('c7: a conta Opening Balance Equity do plano sai do patrimônio', b.patrimonio, [])
+  eq('c7: e entra no saldo de abertura do Retained Earnings', b.composicaoDosLucros, { resultadoAnterior: 100000, contaDoPlano: -25000, saldoDeAbertura: 500000, transferenciasSemPar: 0 })
+  eq('c7: Retained Earnings = 1.000 de 2023 − 250 da conta do plano + 5.000 de abertura', b.lucrosAcumulados, 575000)
   eq('c7: fecha', b.fecha, true)
 }
 
@@ -303,6 +307,31 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
     if (!b.fecha || b.totais.ativo !== b.totais.passivoEPatrimonio) falhas++
   }
   eq('varredura: 300 livros aleatórios, todos fecham ao centavo', falhas, 0)
+}
+
+// ── Retained Earnings = as quatro partes, em qualquer livro ───────────────
+{
+  const contas: ContaDoBalanco[] = [
+    { id: 'a', name: 'Checking', type: 'checking', current_balance: 9000, balance_as_of: '2025-06-01T12:00:00Z' },
+    { id: 'b', name: 'Savings', type: 'savings' },
+  ]
+  const lancs: LancamentoDoBalanco[] = [
+    { account_id: 'a', tx_date: '2023-05-01', amount: 4000, category: 'Sales', status: 'approved' },
+    { account_id: 'a', tx_date: '2024-05-01', amount: -1500, category: 'Rent', status: 'approved' },
+    { account_id: 'a', tx_date: '2024-06-01', amount: 700, category: 'Opening Balance Equity', status: 'approved' },
+    { account_id: 'a', tx_date: '2024-07-01', amount: -300, category: 'Retained Earnings', status: 'approved' },
+    { account_id: 'a', tx_date: '2024-12-31', amount: -2000, category: 'Transfer', status: 'approved' },
+    { account_id: 'b', tx_date: '2025-01-03', amount: 2000, category: 'Transfer', status: 'approved' },
+  ]
+  const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
+  const k = b.composicaoDosLucros
+  eq('quatro partes: resultado anterior (2023)', k.resultadoAnterior, 400000)
+  eq('quatro partes: conta do plano', k.contaDoPlano, -30000)
+  eq('quatro partes: transferência sem par', k.transferenciasSemPar, -200000)
+  // banco em 01/06/2025 = 9000; lançamentos do banco até lá = 4000−1500+700−300−2000 = 900 → abertura 8100; + 700 da conta OBE
+  eq('quatro partes: saldo de abertura (deduzido + conta do plano)', k.saldoDeAbertura, 880000)
+  eq('o Retained Earnings é a soma das quatro', b.lucrosAcumulados, k.resultadoAnterior + k.contaDoPlano + k.saldoDeAbertura + k.transferenciasSemPar)
+  eq('e o Balanço fecha', b.fecha, true)
 }
 
 console.log(`balanco: ${passou} passaram, ${falhou} falharam`)

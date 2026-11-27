@@ -3203,6 +3203,18 @@ titulo('DEMONSTRATIVO DO CLIENTE: FORMATO QUICKBOOKS, BALANCO QUE FECHA, A FIRMA
     confere('Cartao: o Balanco aceita os dois tipos e a importacao grava credit_card',
       /return t === 'credit_card' \|\| t === 'credit'/.test(bal) && /\? 'credit_card' : 'checking'/.test(qb) && !/\? 'credit' : 'checking'/.test(qb),
       "conta 'credit' entra no balanco e no fluxo de caixa como dinheiro em banco")
+    // Decisao do socio (11/2026): sem linha de Opening Balance Equity nem de
+    // Transfers in Transit. Os dois compoem o Retained Earnings -- tirar a
+    // linha sem levar o valor deixaria o Balanco sem fechar.
+    confere('O Balanco nao mostra saldo de abertura nem transferencia em transito em linha propria',
+      !/'Transfers in Transit'|'Opening Balance Equity'|emTransito/.test(bs)
+      && /const ativo = soma\(bancos\) \+ semContaValor \+ soma\(outrosAtivos\)/.test(bal),
+      'decisao do socio: os dois compoem o Retained Earnings')
+    confere('O Retained Earnings soma as quatro partes', /const lucrosAcumulados = composicaoDosLucros\.resultadoAnterior \+ composicaoDosLucros\.contaDoPlano\s*\+ composicaoDosLucros\.saldoDeAbertura \+ composicaoDosLucros\.transferenciasSemPar/.test(bal),
+      'parte que fica de fora some do Balanco, e ele deixa de fechar')
+    confere('As notas da equipe mostram de que se compoe o Retained Earnings', /const k = b\.composicaoDosLucros/.test(bs) && /frases\.push\(`Retained Earnings \(/.test(bs)
+      && /'Saldo de abertura'/.test(bs),
+      'saldo de abertura alto ou transferencia sem par ficariam invisiveis -- sao o sinal de historico faltando ou conta em dobro')
   }
 }
 
