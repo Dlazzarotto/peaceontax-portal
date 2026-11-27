@@ -45,9 +45,18 @@
 // Com tudo isso o Balanço fecha por construção, ao centavo.
 //
 // SALDO DE ABERTURA. O sistema não tem um "saldo inicial" digitado por conta;
-// ele é deduzido de uma REFERÊNCIA: um saldo conhecido numa data. São três, e
-// vale a mais próxima da data do Balanço (as outras dependem de todos os
-// lançamentos entre elas e a data estarem no sistema):
+// ele é deduzido de uma REFERÊNCIA: um saldo conhecido numa data. A
+// referência tem de ser DA DATA DO BALANÇO OU DE ANTES — vale a mais recente
+// até ela. A primeira versão aceitava a mais próxima mesmo DEPOIS da data e,
+// para conta do Plaid, a única referência é o saldo de HOJE: o Balanço de
+// 31/12/2025 partia do saldo de 11/2026 e desfazia os lançamentos de 2026.
+// Isso só fecha se todos os lançamentos de 2026 estiverem no sistema — no CD
+// da Activation Church não estavam (o Plaid quase não manda movimento de CD),
+// e o MESMO Balanço de 31/12/2025 deu $701,984.92 num dia e $603,975.47 dois
+// dias depois. Período fechado não muda com o que acontece depois dele. A
+// conta sem referência até a data fica só com os lançamentos do sistema, e a
+// estimativa pelo saldo posterior vai para as notas da equipe, para conferir
+// com o extrato — nunca para o demonstrativo. São três referências:
 //   1. a conciliação concluída (o saldo final do extrato que a equipe digitou);
 //   2. o saldo corrido do extrato importado (CSV, PDF, QuickBooks), no FIM do
 //      dia — a ordem das linhas dentro do dia não é conhecida, então o fim do
@@ -213,22 +222,31 @@ export function referenciasDaConta(o: {
 
 const PRIORIDADE: Record<FonteDoSaldo, number> = { conciliacao: 0, extrato: 1, banco: 2 }
 
-function diasEntre(a: string, b: string): number {
-  const t = (x: string) => Date.UTC(+x.slice(0, 4), +x.slice(5, 7) - 1, +x.slice(8, 10))
-  return Math.round(Math.abs(t(a) - t(b)) / 86_400_000)
-}
-
 /**
- * A referência que vale para a data do Balanço: a mais PRÓXIMA dela (as
- * outras dependem de todos os lançamentos do meio estarem no sistema); no
- * empate, a de antes da data; depois, conciliação, extrato e banco.
+ * A referência que vale para a data do Balanço: a mais RECENTE entre as da
+ * data ou de antes — nunca uma posterior (ver o cabeçalho). No empate de
+ * data, conciliação, extrato e banco, nessa ordem. Nenhuma até a data: null,
+ * e a conta fica só com os lançamentos do sistema.
  */
 export function escolherReferencia(refs: readonly Referencia[], corte: string): Referencia | null {
   let melhor: Referencia | null = null
-  let km: [number, number, number] | null = null
   for (const r of refs) {
-    const k: [number, number, number] = [diasEntre(r.data, corte), r.data <= corte ? 0 : 1, PRIORIDADE[r.fonte]]
-    if (!km || k[0] < km[0] || (k[0] === km[0] && (k[1] < km[1] || (k[1] === km[1] && k[2] < km[2])))) { melhor = r; km = k }
+    if (r.data > corte) continue
+    if (!melhor || r.data > melhor.data || (r.data === melhor.data && PRIORIDADE[r.fonte] < PRIORIDADE[melhor.fonte])) melhor = r
+  }
+  return melhor
+}
+
+/**
+ * A referência mais próxima DEPOIS da data — só para a estimativa das notas
+ * da equipe ("pelo saldo que o banco informou em…, seriam $X"), quando não há
+ * nenhuma até a data. Nunca entra no demonstrativo.
+ */
+export function referenciaPosterior(refs: readonly Referencia[], corte: string): Referencia | null {
+  let melhor: Referencia | null = null
+  for (const r of refs) {
+    if (r.data <= corte) continue
+    if (!melhor || r.data < melhor.data || (r.data === melhor.data && PRIORIDADE[r.fonte] < PRIORIDADE[melhor.fonte])) melhor = r
   }
   return melhor
 }
@@ -263,7 +281,14 @@ export interface SaldoDeConta {
   /** Na data, em centavos e com o sinal do livro (cartão: dívida negativa). */
   saldo: number
   abertura: number
+  /** A referência usada: da data do Balanço ou de antes. Null: só os lançamentos do sistema. */
   referencia: Referencia | null
+  /**
+   * Só quando não há referência até a data: o saldo na data que a referência
+   * POSTERIOR daria, desfazendo os lançamentos de depois. É para conferir com
+   * o extrato nas notas da equipe — o demonstrativo não usa.
+   */
+  estimativa: { saldo: number; referencia: Referencia } | null
 }
 
 export interface LinhaDeValor { conta: string; valor: number }
@@ -351,14 +376,18 @@ export function montarBalanco(e: {
     ids.add(id)
     const cartao = ehCartao(c.type)
     const ls = porConta.get(id) || []
-    const ref = escolherReferencia(referenciasDaConta({
+    const refs = referenciasDaConta({
       cartao, lancamentos: ls, conciliacoes: concPorConta.get(id) || [],
       saldoDoBanco: c.current_balance, saldoDoBancoEm: diaDoBanco(c.balance_as_of),
-    }), corte)
-    let abertura = 0
-    if (ref) abertura = ref.saldo - ls.filter(l => doBanco(l) && dia(l.tx_date) <= ref.data).reduce((s, l) => s + c0(l.amount), 0)
+    })
+    // Abertura = referência − lançamentos do banco até a data dela.
+    const aberturaPela = (r: Referencia) => r.saldo - ls.filter(l => doBanco(l) && dia(l.tx_date) <= r.data).reduce((s, l) => s + c0(l.amount), 0)
     const mov = ls.filter(l => dia(l.tx_date) <= corte).reduce((s, l) => s + c0(l.amount), 0)
-    return { id, nome: String(c.name || 'Account'), cartao, saldo: abertura + mov, abertura, referencia: ref }
+    const ref = escolherReferencia(refs, corte)
+    const abertura = ref ? aberturaPela(ref) : 0
+    const posterior = ref ? null : referenciaPosterior(refs, corte)
+    const estimativa = posterior ? { saldo: aberturaPela(posterior) + mov, referencia: posterior } : null
+    return { id, nome: String(c.name || 'Account'), cartao, saldo: abertura + mov, abertura, referencia: ref, estimativa }
   })
 
   // ── As duas pernas de cada lançamento até a data ───────────────────────

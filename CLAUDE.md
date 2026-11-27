@@ -1397,26 +1397,37 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   **Transactions Awaiting Review** (o líquido da fila até a data; os
   movimentos do motor contam em qualquer situação). Fecha por construção, ao
   centavo — e se não fechar, a rota recusa (500).
-  **Saldo de abertura** é deduzido da REFERÊNCIA mais próxima da data:
-  conciliação concluída → saldo corrido do extrato (no FIM do dia: a ordem
-  das linhas no dia é desconhecida, e o último saldo é o único que não é o
-  "antes" de outra linha) → saldo do banco (`current_balance`, dia do
-  escritório). O sentido do saldo corrido do cartão (dívida positiva) é
+  **Saldo de abertura** é deduzido da REFERÊNCIA mais RECENTE da data do
+  Balanço ou de antes — **nunca de uma posterior**: conciliação concluída →
+  saldo corrido do extrato (no FIM do dia: a ordem das linhas no dia é
+  desconhecida, e o último saldo é o único que não é o "antes" de outra
+  linha) → saldo do banco (`current_balance`, dia do escritório). A primeira
+  versão aceitava a mais próxima mesmo depois da data, e para conta do Plaid
+  a única é o saldo de HOJE: o Balanço de 31/12/2025 partia de 11/2026 e
+  desfazia 2026, o que só fecha com 2026 inteiro no sistema — e no CD da
+  Activation Church (o Plaid quase não manda movimento de CD) o MESMO
+  Balanço de 31/12/2025 deu $701,984.92 num dia e $603,975.47 dois dias
+  depois. Período fechado não muda com o que vem depois dele. Conta sem
+  referência até a data fica só com os lançamentos do sistema; a estimativa
+  pela referência posterior (`referenciaPosterior`, `estimativa`) vai para
+  as NOTAS da equipe, para conferir com o extrato, e o caminho é concluir a
+  conciliação do mês da data com o saldo final do extrato. O sentido do saldo corrido do cartão (dívida positiva) é
   votado pelos próprios dados. Lançamento `manual` e a conta de passagem não
   passam pelo banco: ficam fora da referência e entram no caixa por cima
   (senão o cheque não compensado era engolido pela abertura). O Balanço lê
   TODAS as contas (a inativa tinha saldo na data) e TODOS os lançamentos (a
-  referência pode ser posterior). Conferido no build de produção contra um
-  livro SIMULADO que reproduz o Balance Sheet do QuickBooks enviado pelo
-  sócio (Activation Church, 31/12/2024): todas as linhas batem, inclusive a
-  conta que só tinha o saldo de hoje do banco. **O cartão importado do
+  referência posterior vira a estimativa das notas). Conferido no build de
+  produção contra um livro SIMULADO que reproduz o Balance Sheet do
+  QuickBooks enviado pelo sócio (Activation Church, 31/12/2024): todas as
+  linhas batem. **O cartão importado do
   QuickBooks nascia `credit`**, e o resto do sistema procura `credit_card`:
   ele entrava no Balanço e no fluxo de caixa como dinheiro e o 1099 não o via
   como cartão. A importação grava `credit_card`, `ehCartao` aceita os dois e
-  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 83 casos em
+  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 96 casos em
   `testes/balanco.mts` (com varredura de 300 livros aleatórios que precisam
-  fechar) e 43 em `testes/demonstrativo.mts`; 15 conferências na auditoria,
-  sabotadas de 21 jeitos. **Não verificado**: dados reais de produção —
+  fechar, e o Balanço de uma data passada que não muda quando o saldo de hoje
+  muda) e 43 em `testes/demonstrativo.mts`; 17 conferências na auditoria,
+  sabotadas de 25 jeitos. **Não verificado**: dados reais de produção —
   conta com extrato e Plaid duplicados no mesmo período sai com o caixa
   dobrado (é o caso da sobreposição ainda a conferir). Fornecedores, 1099 e
   Detalhe por conta seguem com o timbre.

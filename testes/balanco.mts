@@ -10,7 +10,7 @@
 // PASSIVO + PATRIMÔNIO sempre, ao centavo.
 
 import {
-  ehCartao, sentidoDoSaldoCorrido, saldoNoFimDoDia, referenciasDaConta, escolherReferencia,
+  ehCartao, sentidoDoSaldoCorrido, saldoNoFimDoDia, referenciasDaConta, escolherReferencia, referenciaPosterior,
   ladoNoBalanco, montarBalanco,
   type LancamentoDoBalanco, type ContaDoBalanco,
 } from '../lib/balanco.ts'
@@ -88,8 +88,14 @@ eq('cartão (saldo = dívida): o fim do dia no sentido dele', saldoNoFimDoDia([{
 }
 {
   const r = (data: string, fonte: 'conciliacao' | 'extrato' | 'banco') => ({ data, saldo: 1, fonte })
-  eq('vale a referência mais próxima da data', escolherReferencia([r('2024-06-30', 'extrato'), r('2025-01-02', 'banco')], '2024-12-31')?.data, '2025-01-02')
-  eq('no empate de distância, a de antes da data', escolherReferencia([r('2025-01-01', 'extrato'), r('2024-12-30', 'extrato')], '2024-12-31')?.data, '2024-12-30')
+  // O Balanço de uma data só usa saldo DAQUELA data ou de antes: o de depois
+  // (o saldo de hoje do banco) fazia o Balanço de 2025 mudar com 2026.
+  eq('a referência posterior não vale, nem mais próxima', escolherReferencia([r('2024-06-30', 'extrato'), r('2025-01-02', 'banco')], '2024-12-31')?.data, '2024-06-30')
+  eq('vale a mais recente até a data', escolherReferencia([r('2023-12-31', 'extrato'), r('2024-11-30', 'conciliacao'), r('2024-03-31', 'extrato')], '2024-12-31')?.data, '2024-11-30')
+  eq('a da própria data vale', escolherReferencia([r('2024-12-31', 'banco')], '2024-12-31')?.data, '2024-12-31')
+  eq('só referências depois da data: nenhuma', escolherReferencia([r('2025-01-01', 'extrato'), r('2026-11-25', 'banco')], '2024-12-31'), null)
+  eq('a posterior mais próxima fica à parte, para a estimativa', referenciaPosterior([r('2026-11-25', 'banco'), r('2025-01-02', 'extrato'), r('2024-06-30', 'extrato')], '2024-12-31')?.data, '2025-01-02')
+  eq('com referência até a data, a posterior não importa', referenciaPosterior([r('2024-06-30', 'extrato')], '2024-12-31'), null)
   eq('na mesma data, a conciliação vence o extrato', escolherReferencia([r('2024-12-31', 'extrato'), r('2024-12-31', 'conciliacao')], '2024-12-31')?.fonte, 'conciliacao')
   eq('na mesma data, o extrato vence o banco', escolherReferencia([r('2024-12-31', 'banco'), r('2024-12-31', 'extrato')], '2024-12-31')?.fonte, 'extrato')
   eq('sem referência: nada', escolherReferencia([], '2024-12-31'), null)
@@ -121,16 +127,28 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   ]
   const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31' })
   // banco em 10/01/2025 = 5000; depois da data entrou +400 → em 31/12 = 4600
-  eq('c1: caixa na data = saldo do banco menos o que entrou depois', b.bancos, [{ conta: 'Checking 8301', valor: 460000 }])
+  // O banco só disse o saldo DEPOIS da data (10/01/2025): o Balanço de 31/12
+  // não o usa — fica com os lançamentos do sistema até a data.
+  eq('c1: sem saldo até a data, o caixa é só a soma dos lançamentos', b.bancos, [{ conta: 'Checking 8301', valor: 63000 }])
+  eq('c1: a referência posterior não é usada', b.contas[0].referencia, null)
+  eq('c1: ela vira só estimativa (saldo do banco menos o que entrou depois)', b.contas[0].estimativa, { saldo: 460000, referencia: { data: '2025-01-10', saldo: 500000, fonte: 'banco' } })
   // abertura = 5000 − (1000 − 300 − 100 + 50 − 20 + 400) = 3970
-  eq('c1: a abertura compõe o Retained Earnings (sem linha de Opening Balance Equity)', b.composicaoDosLucros.saldoDeAbertura, 397000)
-  eq('c1: Retained Earnings = resultado anterior + abertura + transferências sem par', b.lucrosAcumulados, 397000)
+  eq('c1: sem referência, nada de saldo de abertura', b.composicaoDosLucros.saldoDeAbertura, 0)
+  eq('c1: Retained Earnings zerado (nada antes de 2024, nada sem par)', b.lucrosAcumulados, 0)
   eq('c1: no patrimônio fica só a retirada do sócio', b.patrimonio, [{ conta: 'Owner Draw', valor: -10000 }])
   eq('c1: Net Income = só o livro aprovado do ano', b.resultadoDoExercicio, 70000)
   eq('c1: a fila (pendente e reconhecido) fica à parte', b.aguardandoRevisao, { quantidade: 2, valor: 3000 })
-  eq('c1: o excluído não entra em nada', b.totais.ativo, 460000)
+  eq('c1: o excluído não entra em nada', b.totais.ativo, 63000)
   eq('c1: fecha', b.fecha, true)
-  eq('c1: a referência foi o banco, no dia do escritório', b.contas[0].referencia, { data: '2025-01-10', saldo: 500000, fonte: 'banco' })
+  // Na data em que o banco informou o saldo, ele vale (no dia do escritório)
+  const noDia = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2025-01-10' })
+  eq('c1: na data do saldo do banco, o caixa é o do banco', noDia.bancos, [{ conta: 'Checking 8301', valor: 500000 }])
+  eq('c1: e a abertura deduzida dele compõe o Retained Earnings', noDia.composicaoDosLucros.saldoDeAbertura, 397000)
+  eq('c1: a referência é o banco, no dia do escritório', noDia.contas[0].referencia, { data: '2025-01-10', saldo: 500000, fonte: 'banco' })
+  // O Balanço de uma data passada não muda quando o saldo de HOJE muda
+  const outroDia = montarBalanco({ contas: [{ ...contas[0], current_balance: 3800 }], lancamentos: lancs, plano, corte: '2024-12-31' })
+  eq('c1: o saldo de hoje mudou e o Balanço de 31/12 não', [outroDia.bancos, outroDia.totais], [b.bancos, b.totais])
+  eq('c1: só a estimativa das notas acompanha', outroDia.contas[0].estimativa?.saldo, 340000)
 }
 
 // ── Cenário 2: cartão, pagamento com as duas pontas ───────────────────────
@@ -328,8 +346,14 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   eq('quatro partes: resultado anterior (2023)', k.resultadoAnterior, 400000)
   eq('quatro partes: conta do plano', k.contaDoPlano, -30000)
   eq('quatro partes: transferência sem par', k.transferenciasSemPar, -200000)
-  // banco em 01/06/2025 = 9000; lançamentos do banco até lá = 4000−1500+700−300−2000 = 900 → abertura 8100; + 700 da conta OBE
-  eq('quatro partes: saldo de abertura (deduzido + conta do plano)', k.saldoDeAbertura, 880000)
+  // O saldo do banco é de 01/06/2025, depois da data: não entra; fica a conta OBE do plano (700)
+  eq('quatro partes: saldo de abertura (só a conta do plano: o banco é de depois)', k.saldoDeAbertura, 70000)
+  const comConciliacao = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2024-12-31',
+    conciliacoes: [{ account_id: 'a', statement_date: '2024-12-31', ending_balance: 9000, status: 'completed' }] })
+  // conciliação em 31/12 = 9000; lançamentos do banco até lá = 4000−1500+700−300−2000 = 900 → abertura 8100; + 700 da conta OBE
+  eq('quatro partes: com a conciliação de 31/12, a abertura deduzida entra', comConciliacao.composicaoDosLucros.saldoDeAbertura, 880000)
+  eq('quatro partes: e o caixa é o da conciliação', comConciliacao.bancos, [{ conta: 'Checking', valor: 900000 }])
+  eq('quatro partes: fecha com a conciliação', comConciliacao.fecha, true)
   eq('o Retained Earnings é a soma das quatro', b.lucrosAcumulados, k.resultadoAnterior + k.contaDoPlano + k.saldoDeAbertura + k.transferenciasSemPar)
   eq('e o Balanço fecha', b.fecha, true)
 }

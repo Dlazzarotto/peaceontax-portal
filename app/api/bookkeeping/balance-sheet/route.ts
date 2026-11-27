@@ -32,7 +32,7 @@ const mmddyyyy = (d: string) => `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0,
 const soma = (ls: readonly LinhaDeValor[]) => ls.reduce((s, l) => s + l.valor, 0)
 
 function deOndeVeio(r: Referencia | null): string {
-  if (!r) return 'Nenhuma: abertura considerada zero'
+  if (!r) return 'Nenhum saldo até a data: só os lançamentos do sistema'
   if (r.fonte === 'conciliacao') return `Conciliação concluída, extrato de ${mmddyyyy(r.data)}`
   if (r.fonte === 'extrato') return `Saldo corrido do extrato importado, em ${mmddyyyy(r.data)}`
   return `Saldo informado pelo banco em ${mmddyyyy(r.data)}`
@@ -182,13 +182,24 @@ export async function GET(req: NextRequest) {
   if (b.semConta.quantidade > 0) {
     frases.push(`${b.semConta.quantidade} lançamento(s) sem conta bancária (${valorDoTotal(b.semConta.valor)}) — aparecem em "Transactions Without a Bank Account". Atribua a conta no lançamento.`)
   }
-  const semReferencia = b.contas.filter(c => !c.referencia && c.saldo !== 0).map(c => c.nome)
+  // Conta sem saldo conhecido até a data: o demonstrativo fica só com os
+  // lançamentos do sistema (nunca com o saldo de uma data POSTERIOR — ver
+  // lib/balanco.ts). A estimativa pelo saldo posterior vai aqui, para a
+  // equipe conferir com o extrato do mês da data.
+  const semReferencia = b.contas.filter(c => !c.referencia && (c.saldo !== 0 || (c.estimativa && c.estimativa.saldo !== 0)))
   if (semReferencia.length) {
-    frases.push(`Sem saldo de referência (o saldo de abertura foi considerado zero): ${semReferencia.join(', ')}. Concluir uma conciliação da conta, ou importar um extrato com a coluna de saldo, resolve.`)
+    const itens = semReferencia.map(c => {
+      const sinal = (v: number) => (c.cartao ? -v : v)
+      const est = c.estimativa
+        ? `; pelo saldo ${c.estimativa.referencia.fonte === 'banco' ? 'que o banco informou' : 'conhecido'} em ${mmddyyyy(c.estimativa.referencia.data)}, desfazendo os lançamentos de depois, seria ${valorDoTotal(sinal(c.estimativa.saldo))}`
+        : ''
+      return `${c.nome} (no sistema ${valorDoTotal(sinal(c.saldo))}${est})`
+    })
+    frases.push(`Sem saldo conhecido até ${mmddyyyy(cutoff)} — nestas contas o Balanço usa só a soma dos lançamentos do sistema, nunca um saldo de depois da data: ${itens.join('; ')}. Para o Balanço usar o saldo real, conclua a conciliação do mês de ${mmddyyyy(cutoff).slice(0, 2)}/${cutoff.slice(0, 4)} dessas contas com o saldo final do extrato do banco (ou importe o extrato com a coluna de saldo).`)
   }
   if (errConcs) frases.push(`Não foi possível ler as conciliações (${errConcs.message}): o saldo de abertura saiu do extrato ou do banco.`)
   const linhasDasNotas = b.contas
-    .filter(c => c.saldo !== 0 || c.referencia)
+    .filter(c => c.saldo !== 0 || c.referencia || c.estimativa)
     .sort((x, y) => x.nome.localeCompare(y.nome, 'en', { sensitivity: 'base' }))
     .map(c => [
       c.cartao ? `${c.nome} (cartão)` : c.nome,
