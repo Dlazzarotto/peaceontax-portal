@@ -71,6 +71,7 @@
 import { grupoNoResultado, MOVIMENTOS_DE_BALANCO, CONTA_SEM_NOME } from './grupo-do-resultado.ts'
 import { ORIGENS_DE_PASSAGEM } from './fluxo-de-caixa.ts'
 import { dataDaFirma } from './dia-da-firma.ts'
+import { ehCartao } from './tipo-de-conta.ts'
 
 /** O livro: o que o P&L soma. */
 export const STATUS_DO_LIVRO: readonly string[] = ['approved', 'reviewed']
@@ -83,15 +84,8 @@ export const ORIGENS_FORA_DO_BANCO: readonly string[] = ['manual', ...ORIGENS_DE
 export const CONTA_DE_ABERTURA = 'Opening Balance Equity'
 export const CONTA_DE_LUCROS_ACUMULADOS = 'Retained Earnings'
 
-/**
- * Cartão de crédito. A importação do QuickBooks gravava 'credit' (o resto do
- * sistema grava 'credit_card'): sem aceitar os dois, o cartão importado de lá
- * entraria no Balanço como DINHEIRO em banco, com a dívida somando no ativo.
- */
-export function ehCartao(tipo: unknown): boolean {
-  const t = String(tipo ?? '').trim().toLowerCase()
-  return t === 'credit_card' || t === 'credit'
-}
+/** Cartão de crédito: a definição é UMA, em lib/tipo-de-conta.ts (a conciliação usa a mesma). */
+export { ehCartao }
 
 export interface ContaDoBalanco {
   id: string
@@ -339,6 +333,23 @@ function diaDoBanco(instante: unknown): string | null {
   if (instante === null || instante === undefined || instante === '') return null
   const d = new Date(String(instante))
   return Number.isNaN(d.getTime()) ? null : dataDaFirma(d)
+}
+
+/**
+ * As contas sem saldo conhecido até a data, em dois grupos, para o alerta da
+ * tela e as notas da equipe:
+ *  · `foraDoBalanco`: nenhum lançamento até a data e nenhum saldo — a linha
+ *    NÃO aparece no demonstrativo, mas a conta existe (a estimativa pelo saldo
+ *    de depois não é zero). Foi assim que o cartão da Capital One "sumiu" do
+ *    Balanço de 2025: ela só entrega 90 dias de histórico ao Plaid;
+ *  · `soLancamentos`: aparecem, mas só com a soma dos lançamentos do sistema.
+ */
+export function contasSemSaldoNaData(b: Pick<Balanco, 'contas'>): { foraDoBalanco: SaldoDeConta[]; soLancamentos: SaldoDeConta[] } {
+  const sem = b.contas.filter(c => !c.referencia)
+  return {
+    foraDoBalanco: sem.filter(c => c.saldo === 0 && !!c.estimativa && c.estimativa.saldo !== 0),
+    soLancamentos: sem.filter(c => c.saldo !== 0),
+  }
 }
 
 export function montarBalanco(e: {

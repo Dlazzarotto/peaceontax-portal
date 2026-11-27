@@ -17,6 +17,8 @@
 // Tudo em CENTAVOS: são centenas de valores somados, e `fecha` compara com
 // zero exato, não com uma tolerância em dólar.
 
+import { ehCartao } from './tipo-de-conta.ts'
+
 export interface LancamentoDaConciliacao { id: string; amount: number | string | null }
 
 export interface ApuracaoDaConciliacao {
@@ -256,4 +258,19 @@ export function avisoDeColunas(semColuna: string[]): string | null {
   if (!semColuna.length) return null
   return `Gravado sem ${semColuna.join(', ')}: o banco ainda não tem ${semColuna.length > 1 ? 'essas colunas' : 'essa coluna'}. `
     + 'Rode a migração sql/conciliacao-bancaria-v1.sql.'
+}
+
+/**
+ * O sinal em que a pessoa DIGITA o saldo do extrato. Na fatura do cartão a
+ * dívida aparece como número POSITIVO, mas o livro grava a compra negativa e o
+ * pagamento positivo — e a conta da conciliação (saldo inicial + lançamentos =
+ * saldo final) é feita no sinal do livro. Sem converter, o saldo do cartão
+ * tinha de ser digitado NEGATIVO para fechar; e no cartão sem lançamento no
+ * mês (a Capital One só entrega 90 dias de histórico ao Plaid) a conciliação
+ * fechava com qualquer sinal — digitado como na fatura, o Balanço leria a
+ * dívida invertida. A tela multiplica por este sinal na ida e na volta; o
+ * banco continua gravando no sinal do livro, e o servidor não muda.
+ */
+export function sinalDoExtrato(tipoDaConta: unknown): 1 | -1 {
+  return ehCartao(tipoDaConta) ? -1 : 1
 }

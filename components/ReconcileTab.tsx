@@ -4,9 +4,9 @@
 // diferença zero → fechar. Só considera o que está no REGISTRO (aprovado).
 
 import { useState, useEffect, useCallback, memo } from 'react'
-import { apurarConciliacao } from '@/lib/conciliacao-bancaria'
+import { apurarConciliacao, sinalDoExtrato } from '@/lib/conciliacao-bancaria'
 
-interface Acc { id: string; name: string }
+interface Acc { id: string; name: string; type?: string | null }
 interface Props { clientId: string; accounts: Acc[] }
 
 // Datas no padrão dos EUA (MM/DD/YYYY)
@@ -81,6 +81,12 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
   const [categorias, setCategorias] = useState<{ name: string; kind: string }[]>([])
   const [erroCategorias, setErroCategorias] = useState('')
 
+  // Cartão: a pessoa digita os saldos como na FATURA (a dívida, positiva); a
+  // conta e o banco usam o sinal do livro. A tela converte na ida e na volta
+  // (sinalDoExtrato) — sem isso, cartão sem lançamento no mês fechava com o
+  // saldo invertido e o Balanço lia a dívida ao contrário.
+  const sinal = sinalDoExtrato(accounts.find(a => a.id === accountId)?.type)
+
   // Ao trocar de conta: histórico e saldo inicial sugerido
   useEffect(() => {
     if (!accountId) return
@@ -89,14 +95,14 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
       .then(d => {
         if (!d?.ok) { setMsg(`Erro: ${d?.error}`); return }
         setHistorico(d.historico || [])
-        setBeginning(String(d.saldoInicialSugerido ?? 0))
+        setBeginning(String(sinal * Number(d.saldoInicialSugerido ?? 0)))
         if (d.emAberto) {
           setStatementDate(d.emAberto.statement_date || '')
-          setEnding(d.emAberto.ending_balance == null ? '' : String(d.emAberto.ending_balance))
+          setEnding(d.emAberto.ending_balance == null ? '' : String(sinal * Number(d.emAberto.ending_balance)))
           setMsg('↻ Existe uma conciliação em andamento nesta conta — carregue os lançamentos para continuar.')
         }
       })
-  }, [accountId, clientId])
+  }, [accountId, clientId, sinal])
 
   useEffect(() => {
     // Lista que falha não é "nenhuma conta": o seletor vazio diria isso.
@@ -147,8 +153,8 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         action, clientId, accountId, statementDate,
-        beginningBalance: Number(beginning) || 0,
-        endingBalance: Number(ending) || 0,
+        beginningBalance: sinal * (Number(beginning) || 0),
+        endingBalance: sinal * (Number(ending) || 0),
         clearedIds: Array.from(cleared),
       }),
     })
@@ -181,7 +187,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
 
   // A MESMA conta da rota (lib/conciliacao-bancaria.ts): a tela dizia
   // "diferença 0.00" e a rota recusava, porque cada uma somava de um jeito.
-  const conta = apurarConciliacao({ saldoInicial: beginning, saldoFinal: ending, elegiveis: txs, marcados: cleared })
+  const conta = apurarConciliacao({ saldoInicial: sinal * (Number(beginning) || 0), saldoFinal: sinal * (Number(ending) || 0), elegiveis: txs, marcados: cleared })
   const fechado = conta.fecha && conta.naoElegiveis.length === 0 && carregado && ending !== ''
 
   const card: React.CSSProperties = { background:'#fff', borderRadius:14, padding:'16px 18px', border:'1px solid #e2e8f4', marginBottom:14 }
@@ -224,17 +230,33 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
             <input type="date" value={statementDate} onChange={e => setStatementDate(e.target.value)} style={inp} />
           </div>
           <div>
-            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Saldo inicial</label>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>{sinal < 0 ? 'Saldo anterior da fatura (dívida)' : 'Saldo inicial'}</label>
             <input value={beginning} onChange={e => setBeginning(e.target.value)} style={{ ...inp, width:120 }} />
           </div>
           <div>
-            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>Saldo final do extrato</label>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'#6a7a9a', marginBottom:3 }}>{sinal < 0 ? 'Saldo final da fatura (dívida)' : 'Saldo final do extrato'}</label>
             <input value={ending} onChange={e => setEnding(e.target.value)} placeholder="0.00" style={{ ...inp, width:140 }} />
           </div>
           <button onClick={carregar} disabled={busy || !accountId || !statementDate} style={btn('#2D3278', busy || !accountId || !statementDate)}>
             {busy ? 'Carregando…' : '📋 Carregar lançamentos'}
           </button>
         </div>
+        {sinal < 0 && (
+          <p style={{ fontSize:12, color:'#2D3278', margin:'10px 0 0', lineHeight:1.5 }}>
+            💳 Cartão de crédito: digite os saldos <b>como aparecem na fatura</b> — o que se deve, em número positivo.
+          </p>
+        )}
+        {/* Antes daqui o cartão só fechava com o saldo NEGATIVO, e o hábito fica. Num mês
+            sem lançamento no sistema o negativo ainda fecha (inicial = final) — e gravaria a
+            dívida ao contrário: o Balanço leria o cartão como dinheiro. A diferença não pega
+            esse caso; o aviso pega. Negativo de verdade (crédito na fatura) existe, por isso
+            avisa e não recusa. */}
+        {sinal < 0 && (Number(beginning) < 0 || Number(ending) < 0) && (
+          <p style={{ fontSize:12, color:'#8a5a00', background:'#fff8e6', border:'1px solid #f0d48a', borderRadius:8, padding:'8px 10px', margin:'8px 0 0', lineHeight:1.5 }}>
+            ⚠️ Saldo negativo na fatura do cartão é <b>crédito</b> a favor do cliente (pagou mais do que devia).
+            Se é dívida, digite em número positivo, como aparece na fatura — negativo aqui faz o Balanço ler o cartão como dinheiro.
+          </p>
+        )}
       </div>
 
       {carregado && (
@@ -251,12 +273,12 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
               </div>
               <div>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Saldo calculado</div>
-                <div style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{money(conta.saldoCalculado)}</div>
+                <div style={{ fontSize:16, fontWeight:800, color:'#0f2340' }}>{money(sinal * conta.saldoCalculado)}</div>
               </div>
               <div style={{ marginLeft:'auto', textAlign:'right' as const }}>
                 <div style={{ fontSize:10.5, color:'#6a7a9a', fontWeight:700, textTransform:'uppercase' as const }}>Diferença</div>
                 <div style={{ fontSize:22, fontWeight:800, color: fechado ? '#1a6b4a' : '#b02020' }}>
-                  {fechado ? '✓ 0.00' : money(conta.diferenca)}
+                  {fechado ? '✓ 0.00' : money(sinal * conta.diferenca)}
                 </div>
               </div>
             </div>
@@ -348,7 +370,7 @@ export default function ReconcileTab({ clientId, accounts }: Props) {
               <span style={{ color:'#6a7a9a' }}>
                 {h.status === 'completed' ? '✅ fechada' : '↻ em andamento'} · {h.cleared_count ?? '—'} lançamentos
               </span>
-              <span style={{ marginLeft:'auto', fontWeight:700 }}>{money(Number(h.ending_balance))}</span>
+              <span style={{ marginLeft:'auto', fontWeight:700 }}>{money(sinal * Number(h.ending_balance))}</span>
               <button onClick={() => reabrir(h.id)}
                 style={{ background:'none', border:'none', color:'#b02020', fontSize:11.5, fontWeight:700, cursor:'pointer', textDecoration:'underline' }}>
                 reabrir

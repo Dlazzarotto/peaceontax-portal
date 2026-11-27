@@ -150,7 +150,12 @@ export interface Demonstrativo {
   meta: string
   /** barraDoRelatorio(...): Voltar, Painel, Imprimir. */
   barra: { css: string; html: string }
-  /** Avisos que aparecem só na TELA, nunca no impresso (texto puro). */
+  /**
+   * Avisos que aparecem só na TELA, nunca no impresso (texto puro) — no TOPO
+   * da página: o aviso de que uma conta ficou fora do Balanço ficava no fim,
+   * abaixo do demonstrativo, e quem abria o relatório no celular via só a
+   * conta faltando e achava que era defeito.
+   */
   avisos?: readonly string[]
   /** Notas da equipe, só na tela: um título, frases e uma tabela (texto puro). */
   notas?: { titulo: string; frases?: readonly string[]; tabela?: { cabecalho: readonly string[]; linhas: readonly (readonly string[])[] } }
@@ -193,7 +198,10 @@ export function htmlDoDemonstrativo(d: Demonstrativo): string {
   .rodape .base { font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; }
   .rodape .firma { font-size: 8px; margin-top: 3px; }
   .so-tela { max-width: 8.5in; margin: 0 auto 28px; font-size: 12.5px; line-height: 1.5; color: #3c4043; }
-  .avisos { border: 1px solid #d6a700; background: #fff8e1; padding: 9px 12px; margin-bottom: 10px; }
+  .avisos { border: 1px solid #d6a700; background: #fff8e1; padding: 9px 12px; }
+  .avisos div + div { margin-top: 6px; }
+  .so-tela.topo { margin: 84px auto 0; }
+  .so-tela.topo + .folha { margin-top: 14px; }
   .notas { border: 1px solid #d0d4da; background: #fff; padding: 10px 14px; }
   .notas h4 { margin: 0 0 6px; font-size: 12.5px; }
   .notas p { margin: 4px 0; }
@@ -204,6 +212,8 @@ export function htmlDoDemonstrativo(d: Demonstrativo): string {
     body { background: #fff; }
     .folha { margin: 0; min-height: 0; padding: 22px 14px 18px; box-shadow: none; }
     .so-tela { padding: 0 14px; }
+    .so-tela.topo { margin: 0 auto; padding: 0 14px 12px; }
+    .so-tela.topo + .folha { margin-top: 0; }
     table.dem { font-size: 12px; }
     table.dem td.v { width: 8.5em; }
   }
@@ -223,6 +233,7 @@ export function htmlDoDemonstrativo(d: Demonstrativo): string {
   }
 </style></head><body>
 ${d.barra.html}
+${avisos.length ? `<div class="so-tela topo"><div class="avisos">${avisos.map(a => `<div>${escaparHtml(a)}</div>`).join('')}</div></div>` : ''}
 <div class="folha">
   <div class="cab">
     <div class="empresa">${escaparHtml(d.empresa)}</div>
@@ -241,9 +252,8 @@ ${d.linhas.map(linhaHtml).join('\n')}
     <div class="firma">Prepared by Peace on Tax Corp</div>
   </div>
 </div>
-${avisos.length || notas ? `<div class="so-tela">
-  ${avisos.length ? `<div class="avisos">${avisos.map(a => `<div>${escaparHtml(a)}</div>`).join('')}</div>` : ''}
-  ${notas ? `<div class="notas"><h4>${escaparHtml(notas.titulo)}</h4>${(notas.frases || []).map(f => `<p>${escaparHtml(f)}</p>`).join('')}${tabelaDeNotas}</div>` : ''}
+${notas ? `<div class="so-tela">
+  <div class="notas"><h4>${escaparHtml(notas.titulo)}</h4>${(notas.frases || []).map(f => `<p>${escaparHtml(f)}</p>`).join('')}${tabelaDeNotas}</div>
 </div>` : ''}
 </body></html>`
 }
