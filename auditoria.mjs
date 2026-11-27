@@ -3215,6 +3215,15 @@ titulo('DEMONSTRATIVO DO CLIENTE: FORMATO QUICKBOOKS, BALANCO QUE FECHA, A FIRMA
     confere('As notas da equipe mostram de que se compoe o Retained Earnings', /const k = b\.composicaoDosLucros/.test(bs) && /frases\.push\(`Retained Earnings \(/.test(bs)
       && /'Saldo de abertura'/.test(bs),
       'saldo de abertura alto ou transferencia sem par ficariam invisiveis -- sao o sinal de historico faltando ou conta em dobro')
+    // O Balanco de 31/12/2025 partia do saldo de HOJE do banco e desfazia 2026:
+    // o CD da Activation Church deu $701,984.92 num dia e $603,975.47 dois dias
+    // depois, para a MESMA data. Saldo so da data do Balanco ou de antes.
+    confere('O Balanco so usa saldo da data ou de antes', /export function escolherReferencia[\s\S]{0,300}?if \(r\.data > corte\) continue/.test(bal)
+      && /const ref = escolherReferencia\(refs, corte\)\s*\n\s*const abertura = ref \? aberturaPela\(ref\) : 0/.test(bal),
+      'o Balanco de um periodo fechado mudaria com o saldo de hoje do banco')
+    confere('A estimativa pelo saldo posterior so vai para as notas da equipe', /seria \$\{valorDoTotal\(sinal\(c\.estimativa\.saldo\)\)\}/.test(bs)
+      && /c\.estimativa && c\.estimativa\.saldo !== 0/.test(bs),
+      'sem a estimativa, a conta sem saldo ate a data some do Balanco sem a equipe saber quanto conferir')
   }
 }
 
