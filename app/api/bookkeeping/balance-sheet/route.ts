@@ -20,7 +20,7 @@ import { barraDoRelatorio, META_RELATORIO, voltarDosRelatoriosContabeis } from '
 import { idDaFirma } from '@/lib/caixa-firma'
 import { dataDeCorteDosParametros, dataPorExtensoEN } from '@/lib/periodo-relatorio'
 import { todasAsLinhas } from '@/lib/paginar'
-import { montarBalanco, type LinhaDeValor, type Referencia } from '@/lib/balanco'
+import { montarBalanco, contasSemSaldoNaData, type LinhaDeValor, type Referencia } from '@/lib/balanco'
 import { htmlDoDemonstrativo, linhasDasContas, valorDoTotal, type LinhaDoDemonstrativo } from '@/lib/demonstrativo'
 
 export const dynamic = 'force-dynamic'
@@ -152,6 +152,25 @@ export async function GET(req: NextRequest) {
 
   // ── O que só a tela mostra ─────────────────────────────────────────────
   const avisos: string[] = []
+  // Conta sem saldo conhecido até a data: a que não tem lançamento nenhum até
+  // ela fica FORA do demonstrativo (a Capital One só entrega 90 dias ao Plaid,
+  // e o cartão "sumiu" do Balanço de 2025). Isso vai no TOPO da tela, não só
+  // nas notas do fim: quem abre o relatório vê a conta faltando antes de tudo.
+  const sem = contasSemSaldoNaData(b)
+  if (sem.foraDoBalanco.length || sem.soLancamentos.length) {
+    if (isClient) {
+      avisos.push(`Some account balances as of ${dataPorExtensoEN(cutoff)} have not been confirmed yet — this balance sheet is preliminary.`)
+    } else {
+      const nome = (c: { nome: string; cartao: boolean }) => (c.cartao ? `${c.nome} (cartão)` : c.nome)
+      const fora = sem.foraDoBalanco.length
+        ? `Não aparecem neste Balanço, por falta de saldo em ${mmddyyyy(cutoff)}: ${sem.foraDoBalanco.map(nome).join(', ')}. `
+        : ''
+      const so = sem.soLancamentos.length
+        ? `${sem.soLancamentos.length === 1 ? 'Esta conta aparece' : 'Estas contas aparecem'} só com os lançamentos do sistema, sem saldo conhecido em ${mmddyyyy(cutoff)}: ${sem.soLancamentos.map(nome).join(', ')}. `
+        : ''
+      avisos.push(`⚠️ ${fora}${so}Para o Balanço sair certo, conclua a conciliação de ${mmddyyyy(cutoff).slice(0, 2)}/${cutoff.slice(0, 4)} dessas contas com o saldo final do extrato (no cartão, o saldo como aparece na fatura). A estimativa de cada uma está nas notas, no fim da página.`)
+    }
+  }
   if (b.aguardandoRevisao.quantidade > 0) {
     avisos.push(`${b.aguardandoRevisao.quantidade} transaction(s) up to ${dataPorExtensoEN(cutoff)} are still awaiting review — this balance sheet is preliminary.`)
   }

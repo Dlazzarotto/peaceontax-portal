@@ -11,7 +11,7 @@
 
 import {
   ehCartao, sentidoDoSaldoCorrido, saldoNoFimDoDia, referenciasDaConta, escolherReferencia, referenciaPosterior,
-  ladoNoBalanco, montarBalanco,
+  ladoNoBalanco, montarBalanco, contasSemSaldoNaData,
   type LancamentoDoBalanco, type ContaDoBalanco,
 } from '../lib/balanco.ts'
 import { somarPorConta, secoesDoResultado, totaisDoResultado } from '../lib/grupo-do-resultado.ts'
@@ -356,6 +356,37 @@ eq('conta fora do plano é resultado (despesa), como no P&L', ladoNoBalanco('Con
   eq('quatro partes: fecha com a conciliação', comConciliacao.fecha, true)
   eq('o Retained Earnings é a soma das quatro', b.lucrosAcumulados, k.resultadoAnterior + k.contaDoPlano + k.saldoDeAbertura + k.transferenciasSemPar)
   eq('e o Balanço fecha', b.fecha, true)
+}
+
+// ── Conta sem saldo na data: fora do demonstrativo, mas não esquecida ────
+{
+  const contas: ContaDoBalanco[] = [
+    // Capital One: só 90 dias no Plaid — nada em 2025, só o saldo de hoje
+    { id: 'cap', name: 'Capital One Discover it ...2493', type: 'credit_card', current_balance: 7847.01, balance_as_of: '2026-11-25T15:00:00Z' },
+    { id: 'chk', name: 'Peabody ...8301', type: 'checking', current_balance: 5000, balance_as_of: '2026-11-25T15:00:00Z' },
+    { id: 'cnc', name: 'Conciliada', type: 'checking' },
+    { id: 'nada', name: 'Sem nada', type: 'checking' },
+  ]
+  const lancs: LancamentoDoBalanco[] = [
+    { account_id: 'cap', tx_date: '2026-10-01', amount: -300, category: 'Rent', status: 'approved', source: 'plaid' },
+    { account_id: 'chk', tx_date: '2025-06-01', amount: 1500, category: 'Donations', status: 'approved', source: 'plaid' },
+    { account_id: 'cnc', tx_date: '2025-06-01', amount: 200, category: 'Donations', status: 'approved', source: 'plaid' },
+  ]
+  const conc = [{ account_id: 'cnc', statement_date: '2025-12-31', ending_balance: 1200, status: 'completed' }]
+  const b = montarBalanco({ contas, lancamentos: lancs, plano, corte: '2025-12-31', conciliacoes: conc })
+  const sem = contasSemSaldoNaData(b)
+  eq('o cartão sem nada em 2025 fica fora do demonstrativo — e é apontado', sem.foraDoBalanco.map(c => c.nome), ['Capital One Discover it ...2493'])
+  eq('a conta com lançamentos e sem saldo aparece só com eles — e é apontada', sem.soLancamentos.map(c => c.nome), ['Peabody ...8301'])
+  eq('a conciliada e a que não tem nada não entram em nenhum grupo', b.contas.filter(c => !sem.foraDoBalanco.includes(c) && !sem.soLancamentos.includes(c)).map(c => c.nome), ['Conciliada', 'Sem nada'])
+  eq('o cartão não está nas linhas do demonstrativo', b.cartoes, [])
+  // A tela de conciliação grava o saldo da fatura (positivo) no sinal do livro (negativo)
+  const comFatura = montarBalanco({
+    contas, lancamentos: lancs, plano, corte: '2025-12-31',
+    conciliacoes: [...conc, { account_id: 'cap', statement_date: '2025-12-31', ending_balance: -7547.01, status: 'completed' }],
+  })
+  eq('conciliado com o saldo da fatura, o cartão volta como dívida positiva', comFatura.cartoes, [{ conta: 'Capital One Discover it ...2493', valor: 754701 }])
+  eq('e sai da lista dos sem saldo', contasSemSaldoNaData(comFatura).foraDoBalanco, [])
+  eq('fecha', comFatura.fecha, true)
 }
 
 console.log(`balanco: ${passou} passaram, ${falhou} falharam`)

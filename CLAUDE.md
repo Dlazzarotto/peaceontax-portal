@@ -1411,7 +1411,29 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   referência até a data fica só com os lançamentos do sistema; a estimativa
   pela referência posterior (`referenciaPosterior`, `estimativa`) vai para
   as NOTAS da equipe, para conferir com o extrato, e o caminho é concluir a
-  conciliação do mês da data com o saldo final do extrato. O sentido do saldo corrido do cartão (dívida positiva) é
+  conciliação do mês da data com o saldo final do extrato.
+  **Conta sem saldo na data é APONTADA NO TOPO da tela** (`contasSemSaldoNaData`:
+  `foraDoBalanco` — sem lançamento nenhum até a data, a linha some do
+  demonstrativo — e `soLancamentos`). O cartão da Capital One (ela só entrega
+  **90 dias** ao Plaid) sumiu do Balanço de 2025 e o aviso estava no fim da
+  página: no celular, parecia defeito. Os avisos de `htmlDoDemonstrativo`
+  vêm ANTES do demonstrativo (só na tela); para a equipe, com os nomes; para
+  o cliente no portal, só "balance sheet is preliminary".
+  **Conciliação de cartão: o saldo se digita como na FATURA** (a dívida,
+  positiva — `sinalDoExtrato` de `lib/conciliacao-bancaria.ts`, aplicado pela
+  tela na carga, na conta, no envio e no histórico). O livro grava compra
+  negativa e pagamento positivo, e a conta da conciliação é nesse sinal: sem
+  converter, o saldo do cartão tinha de ser digitado NEGATIVO para fechar; e
+  no cartão sem lançamento no mês fechava com qualquer sinal — digitado como
+  na fatura, o Balanço leria a dívida invertida. O banco e o servidor não
+  mudam (continua gravando no sinal do livro). **O hábito antigo é o risco
+  que sobra**: quem aprendeu a digitar o cartão negativo, num mês sem
+  lançamento no sistema (inicial = final), ainda fecha — e agora gravaria a
+  dívida ao contrário, o Balanço lendo o cartão como dinheiro. A diferença
+  não pega esse caso; por isso saldo NEGATIVO no cartão abre um aviso
+  ("negativo é crédito a favor do cliente; se é dívida, digite positivo"). Avisa
+  e não recusa: crédito na fatura (pagou a mais) existe. "O que é cartão" é UMA
+  definição (`lib/tipo-de-conta.ts`), que o Balanço e a conciliação importam. O sentido do saldo corrido do cartão (dívida positiva) é
   votado pelos próprios dados. Lançamento `manual` e a conta de passagem não
   passam pelo banco: ficam fora da referência e entram no caixa por cima
   (senão o cheque não compensado era engolido pela abertura). O Balanço lê
@@ -1423,11 +1445,11 @@ Vêm da seção 2 da especificação. Toda mudança de código precisa respeitá
   QuickBooks nascia `credit`**, e o resto do sistema procura `credit_card`:
   ele entrava no Balanço e no fluxo de caixa como dinheiro e o 1099 não o via
   como cartão. A importação grava `credit_card`, `ehCartao` aceita os dois e
-  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 96 casos em
+  `sql/contas-cartao-tipo-v1.sql` acerta as contas antigas. 103 casos em
   `testes/balanco.mts` (com varredura de 300 livros aleatórios que precisam
   fechar, e o Balanço de uma data passada que não muda quando o saldo de hoje
-  muda) e 43 em `testes/demonstrativo.mts`; 17 conferências na auditoria,
-  sabotadas de 25 jeitos. **Não verificado**: dados reais de produção —
+  muda) e 45 em `testes/demonstrativo.mts`; 20 conferências na auditoria,
+  sabotadas de 37 jeitos. **Não verificado**: dados reais de produção —
   conta com extrato e Plaid duplicados no mesmo período sai com o caixa
   dobrado (é o caso da sobreposição ainda a conferir). Fornecedores, 1099 e
   Detalhe por conta seguem com o timbre.

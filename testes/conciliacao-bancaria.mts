@@ -8,7 +8,7 @@
 import {
   apurarConciliacao, emLotes, LOTE_DA_MARCACAO, dataISO, normalizarConciliacao, juntarElegiveis,
   linhaParaATela, DESCRICAO_NA_TELA, mensagemDeExcesso, gravarSemColunasAusentes, avisoDeColunas,
-  CAMPOS_ESSENCIAIS, TETO_DA_RESPOSTA, TETO_DE_LANCAMENTOS,
+  CAMPOS_ESSENCIAIS, TETO_DA_RESPOSTA, TETO_DE_LANCAMENTOS, sinalDoExtrato
 } from '../lib/conciliacao-bancaria.ts'
 import { colunaAusente } from '../lib/caixa-firma.ts'
 
@@ -189,6 +189,29 @@ eq('vazio e nulo viram nulo', [dataISO(''), dataISO(null), dataISO(undefined)], 
   eq('sem coluna de fora, sem aviso', avisoDeColunas([]), null)
   eq('o aviso manda rodar a migração', /sql\/conciliacao-bancaria-v1\.sql/.test(avisoDeColunas(['completed_at']) || ''), true)
   eq('…no singular e no plural', [/essa coluna/.test(avisoDeColunas(['a']) || ''), /essas colunas/.test(avisoDeColunas(['a', 'b']) || '')], [true, true])
+}
+
+// ── Cartão: o saldo se digita como na FATURA ──────────────────────────────
+// Na fatura a dívida é positiva; o livro grava compra negativa e pagamento
+// positivo. A tela multiplica por sinalDoExtrato na ida e na volta.
+{
+  const sim = (n: string, c: boolean) => eq(n, c, true)
+  eq('cartão (credit_card): o saldo digitado é a dívida', sinalDoExtrato('credit_card'), -1)
+  eq('cartão importado do QuickBooks (credit) também', sinalDoExtrato('credit'), -1)
+  eq('conta corrente: como está', sinalDoExtrato('checking'), 1)
+  eq('poupança: como está', sinalDoExtrato('savings'), 1)
+  eq('tipo desconhecido: como está', sinalDoExtrato(null), 1)
+  // Fatura: anterior 1.000 de dívida, compras 500, pagamento 300 → nova 1.200 de dívida
+  const elegiveis = [{ id: 'c1', amount: -500 }, { id: 'p1', amount: 300 }]
+  const s = sinalDoExtrato('credit_card')
+  const certo = apurarConciliacao({ saldoInicial: s * 1000, saldoFinal: s * 1200, elegiveis, marcados: ['c1', 'p1'] })
+  sim('cartão com os saldos da fatura (positivos): fecha', certo.fecha)
+  const semConverter = apurarConciliacao({ saldoInicial: 1000, saldoFinal: 1200, elegiveis, marcados: ['c1', 'p1'] })
+  sim('sem converter, os mesmos números NÃO fechavam (era preciso digitar negativo)', !semConverter.fecha)
+  // Cartão sem lançamento no mês: fecha com qualquer sinal — por isso a tela tem de converter
+  const vazio = apurarConciliacao({ saldoInicial: s * 7847.01, saldoFinal: s * 7847.01, elegiveis: [], marcados: [] })
+  sim('cartão sem lançamento no mês: fecha', vazio.fecha)
+  eq('e o que se grava é a dívida no sinal do livro (negativa)', s * 7847.01, -7847.01)
 }
 
 console.log(`conciliacao-bancaria: ${passou} passaram, ${falhou} falharam`)

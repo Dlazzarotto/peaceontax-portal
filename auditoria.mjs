@@ -3200,9 +3200,13 @@ titulo('DEMONSTRATIVO DO CLIENTE: FORMATO QUICKBOOKS, BALANCO QUE FECHA, A FIRMA
     confere('O lancamento manual nao entra na referencia do banco',
       /ORIGENS_FORA_DO_BANCO: readonly string\[\] = \['manual', \.\.\.ORIGENS_DE_PASSAGEM\]/.test(bal),
       'o cheque nao compensado seria engolido pelo saldo de abertura')
-    confere('Cartao: o Balanco aceita os dois tipos e a importacao grava credit_card',
-      /return t === 'credit_card' \|\| t === 'credit'/.test(bal) && /\? 'credit_card' : 'checking'/.test(qb) && !/\? 'credit' : 'checking'/.test(qb),
-      "conta 'credit' entra no balanco e no fluxo de caixa como dinheiro em banco")
+    const tipo = semComentarios('lib/tipo-de-conta.ts') || '', conc = semComentarios('lib/conciliacao-bancaria.ts') || ''
+    confere('Cartao: uma definicao so, que aceita os dois tipos, e a importacao grava credit_card',
+      /return t === 'credit_card' \|\| t === 'credit'/.test(tipo)
+      && /import \{ ehCartao \} from '\.\/tipo-de-conta\.ts'/.test(bal) && /import \{ ehCartao \} from '\.\/tipo-de-conta\.ts'/.test(conc)
+      && !/function ehCartao/.test(bal + conc)
+      && /\? 'credit_card' : 'checking'/.test(qb) && !/\? 'credit' : 'checking'/.test(qb),
+      "conta 'credit' entra no balanco e no fluxo de caixa como dinheiro em banco; duas definicoes de cartao discordam")
     // Decisao do socio (11/2026): sem linha de Opening Balance Equity nem de
     // Transfers in Transit. Os dois compoem o Retained Earnings -- tirar a
     // linha sem levar o valor deixaria o Balanco sem fechar.
@@ -3224,6 +3228,28 @@ titulo('DEMONSTRATIVO DO CLIENTE: FORMATO QUICKBOOKS, BALANCO QUE FECHA, A FIRMA
     confere('A estimativa pelo saldo posterior so vai para as notas da equipe', /seria \$\{valorDoTotal\(sinal\(c\.estimativa\.saldo\)\)\}/.test(bs)
       && /c\.estimativa && c\.estimativa\.saldo !== 0/.test(bs),
       'sem a estimativa, a conta sem saldo ate a data some do Balanco sem a equipe saber quanto conferir')
+    // O cartao da Capital One (90 dias no Plaid) sumiu do Balanco de 2025 e o
+    // aviso so estava no fim da pagina: parecia defeito. O aviso vai no TOPO.
+    confere('A conta fora do Balanco e apontada no topo da tela', /const sem = contasSemSaldoNaData\(b\)/.test(bs)
+      && /Não aparecem neste Balanço, por falta de saldo em/.test(bs) && /have not been confirmed yet/.test(bs)
+      && dem.indexOf('${avisos.length ? `<div class="so-tela topo"><div class="avisos">${avisos.map(') > 0
+      && dem.indexOf('${avisos.length ? `<div class="so-tela topo"><div class="avisos">${avisos.map(') < dem.indexOf('<div class="folha">')
+      && dem.indexOf('avisos.map(', dem.indexOf('<div class="folha">')) < 0,
+      'a conta some do demonstrativo e quem abre o relatorio acha que o sistema perdeu a conta')
+    // Na fatura a divida e positiva; o livro grava compra negativa. Sem converter,
+    // o cartao sem lancamento no mes fechava com o saldo invertido.
+    const rec = semComentarios('components/ReconcileTab.tsx') || ''
+    confere('A conciliacao de cartao recebe o saldo como na fatura', /return ehCartao\(tipoDaConta\) \? -1 : 1/.test(conc)
+      && /const sinal = sinalDoExtrato\(/.test(rec)
+      && /beginningBalance: sinal \* \(Number\(beginning\) \|\| 0\)/.test(rec) && /endingBalance: sinal \* \(Number\(ending\) \|\| 0\)/.test(rec)
+      && /apurarConciliacao\(\{ saldoInicial: sinal \* \(Number\(beginning\) \|\| 0\), saldoFinal: sinal \* \(Number\(ending\) \|\| 0\)/.test(rec)
+      && /setBeginning\(String\(sinal \* Number\(d\.saldoInicialSugerido/.test(rec),
+      'o saldo do cartao digitado como na fatura sairia com a divida invertida no Balanco')
+    // O habito antigo (cartao so fechava com saldo NEGATIVO) num mes sem lancamento ainda
+    // fecha — inicial = final — e gravaria a divida ao contrario. A diferenca nao pega; o aviso pega.
+    confere('Saldo de cartao digitado negativo e avisado na conciliacao',
+      /\{sinal < 0 && \(Number\(beginning\) < 0 \|\| Number\(ending\) < 0\) && \([\s\S]{0,400}?é <b>crédito<\/b> a favor do cliente[\s\S]{0,300}?faz o Balanço ler o cartão como dinheiro/.test(rec),
+      'quem digitasse a divida do cartao negativa, como antes, gravaria o cartao como dinheiro no Balanco sem aviso')
   }
 }
 
