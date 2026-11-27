@@ -7,8 +7,11 @@
 // empresa dele no topo e a Peace on Tax só no rodapé (decisão do sócio).
 // Quem pode: a equipe com acesso ao cliente, ou o próprio cliente (empresa)
 // pelo portal. As notas da equipe (de onde veio o saldo de cada conta, o que
-// ainda está na fila) só aparecem na tela da equipe — nunca no impresso nem
-// no portal.
+// ainda está na fila, de que se compõe o Retained Earnings) só aparecem na
+// tela da equipe — nunca no impresso nem no portal.
+// Decisão do sócio (11/2026): o Balanço não mostra o saldo de abertura nem as
+// transferências sem par como linhas próprias — os dois compõem o Retained
+// Earnings (lib/balanco.ts), e o Balanço continua fechando.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuth, canAccessClient, serviceDb } from '@/lib/api-auth'
@@ -107,20 +110,13 @@ export async function GET(req: NextRequest) {
 
   const totalBancos = soma(b.bancos) + b.semConta.valor
   titulo('ASSETS', 0)
-  if (b.bancos.length || b.semConta.valor || b.emTransito) {
+  if (b.bancos.length || b.semConta.valor) {
     titulo('Current Assets', 1)
-    if (b.bancos.length || b.semConta.valor) {
-      titulo('Bank Accounts', 2)
-      for (const x of b.bancos) conta(x.conta, 3, x.valor)
-      if (b.semConta.valor) conta('Transactions Without a Bank Account', 3, b.semConta.valor)
-      total('Total Bank Accounts', 2, totalBancos)
-    }
-    if (b.emTransito) {
-      titulo('Other Current Assets', 2)
-      conta('Transfers in Transit', 3, b.emTransito)
-      total('Total Other Current Assets', 2, b.emTransito)
-    }
-    total('Total Current Assets', 1, totalBancos + b.emTransito)
+    titulo('Bank Accounts', 2)
+    for (const x of b.bancos) conta(x.conta, 3, x.valor)
+    if (b.semConta.valor) conta('Transactions Without a Bank Account', 3, b.semConta.valor)
+    total('Total Bank Accounts', 2, totalBancos)
+    total('Total Current Assets', 1, totalBancos)
   }
   if (b.outrosAtivos.length) {
     titulo('Other Assets', 1)
@@ -163,8 +159,25 @@ export async function GET(req: NextRequest) {
   if (b.aguardandoRevisao.quantidade > 0) {
     frases.push(`${b.aguardandoRevisao.quantidade} lançamento(s) até ${mmddyyyy(cutoff)} ainda estão na fila (pendentes ou reconhecidos, sem aprovação), líquido de ${valorDoTotal(b.aguardandoRevisao.valor)}. O caixa já os inclui, porque o dinheiro passou pelo banco; o resultado ainda não — por isso a linha "Transactions Awaiting Review". Aprovados, eles vão para o Net Income (ou para a conta de balanço deles) e a linha some.`)
   }
-  if (b.emTransito) {
-    frases.push(`"Transfers in Transit" (${valorDoTotal(b.emTransito)}): transferência entre contas ou pagamento de cartão com uma ponta só até ${mmddyyyy(cutoff)}. Ou a outra ponta caiu depois da data (dinheiro em trânsito, normal na virada do mês), ou ela está numa conta que não foi importada.`)
+  {
+    // O Retained Earnings do Balanço junta quatro coisas (decisão do sócio).
+    // A equipe precisa ver a composição: saldo de abertura alto ou
+    // transferência sem par grande é histórico faltando ou conta em dobro.
+    const k = b.composicaoDosLucros
+    // O saldo de abertura tem duas origens: o deduzido de cada conta (a tabela
+    // abaixo) e a conta "Opening Balance Equity" do plano, que a importação do
+    // QuickBooks traz. Sem separar, a frase diria um valor que a tabela não soma.
+    const aberturaDasContas = b.contas.reduce((s, c) => s + c.abertura, 0)
+    const aberturaDoPlano = k.saldoDeAbertura - aberturaDasContas
+    const partes = [
+      `resultado dos anos anteriores ${valorDoTotal(k.resultadoAnterior)}`,
+      aberturaDoPlano
+        ? `saldo de abertura ${valorDoTotal(k.saldoDeAbertura)} (das contas ${valorDoTotal(aberturaDasContas)} + conta Opening Balance Equity do plano ${valorDoTotal(aberturaDoPlano)})`
+        : `saldo de abertura das contas ${valorDoTotal(k.saldoDeAbertura)}`,
+      `transferências e pagamentos de cartão com uma ponta só até ${mmddyyyy(cutoff)} ${valorDoTotal(k.transferenciasSemPar)}`,
+      ...(k.contaDoPlano ? [`lançamentos na conta Retained Earnings do plano ${valorDoTotal(k.contaDoPlano)}`] : []),
+    ]
+    frases.push(`Retained Earnings (${valorDoTotal(b.lucrosAcumulados)}) = ${partes.join(' + ')}. O saldo de abertura e as transferências sem par entram aqui em vez de aparecer em linhas próprias. Saldo de abertura muito acima do patrimônio do ano anterior quer dizer histórico que falta (meses, anos ou contas inteiras) ou conta cadastrada em dobro; transferência sem par quer dizer que a outra ponta caiu depois da data ou está numa conta ou num período que não está no sistema.`)
   }
   if (b.semConta.quantidade > 0) {
     frases.push(`${b.semConta.quantidade} lançamento(s) sem conta bancária (${valorDoTotal(b.semConta.valor)}) — aparecem em "Transactions Without a Bank Account". Atribua a conta no lançamento.`)
@@ -180,6 +193,7 @@ export async function GET(req: NextRequest) {
     .map(c => [
       c.cartao ? `${c.nome} (cartão)` : c.nome,
       valorDoTotal(c.cartao ? -c.saldo : c.saldo),
+      valorDoTotal(c.cartao ? -c.abertura : c.abertura),
       deOndeVeio(c.referencia),
     ])
 
@@ -205,7 +219,7 @@ export async function GET(req: NextRequest) {
     notas: isClient ? undefined : {
       titulo: 'Notas da equipe — não saem na impressão nem no portal do cliente',
       frases,
-      tabela: { cabecalho: ['Conta', 'Saldo na data', 'Saldo de abertura deduzido de'], linhas: linhasDasNotas },
+      tabela: { cabecalho: ['Conta', 'Saldo na data', 'Saldo de abertura', 'Deduzido de'], linhas: linhasDasNotas },
     },
   })
   return new NextResponse(html, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store, max-age=0' } })

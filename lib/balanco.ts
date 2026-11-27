@@ -18,22 +18,31 @@
 //   · Conta de passivo do plano: o que entrou dela (+valor), acumulado. Pagar
 //     o empréstimo DIMINUI a dívida; sem o saldo inicial do empréstimo
 //     lançado, ela fica negativa — exatamente como o QuickBooks mostra.
-//   · Patrimônio: o saldo de abertura das contas (Opening Balance Equity), as
-//     contas "fora do resultado" do plano (retirada, aporte do sócio), os
-//     lucros dos anos anteriores (Retained Earnings) e o do ano até a data
-//     (Net Income) — a MESMA conta do P&L (grupoNoResultado, só o livro
-//     aprovado), senão o Net Income do Balanço diverge do P&L do mesmo ano.
+//   · Patrimônio: as contas "fora do resultado" do plano (retirada, aporte do
+//     sócio), o Retained Earnings e o resultado do ano até a data (Net
+//     Income) — a MESMA conta do P&L (grupoNoResultado, só o livro aprovado),
+//     senão o Net Income do Balanço diverge do P&L do mesmo ano.
 //
-// Duas linhas que o QuickBooks não tem, porque lá cada transferência é UM
-// lançamento com as duas pontas, e o que está "For Review" não entrou no
-// livro. Aqui o caixa vem do banco (inclui o que ainda está na fila), então:
-//   · "Transactions Awaiting Review" (patrimônio): o líquido do que está na
-//     fila (pending/auto) até a data. Some quando a fila é revisada.
-//   · "Transfers in Transit" (ativo): transferência ou pagamento de cartão com
-//     uma ponta só até a data — saiu numa conta em 31/12 e entrou na outra em
-//     02/01 é dinheiro em trânsito; ponta sem par é sinal para a equipe.
-// Com elas o Balanço fecha por construção, ao centavo. Sem elas, ou ele não
-// fecharia, ou a diferença teria de se esconder no Opening Balance Equity.
+// RETAINED EARNINGS JUNTA QUATRO COISAS (decisão do sócio, 11/2026: o
+// Balanço não mostra Opening Balance Equity nem Transfers in Transit):
+//   · o resultado dos anos anteriores (o P&L aprovado antes de 1º de janeiro);
+//   · a conta "Retained Earnings" do plano, se houver lançamento nela;
+//   · o SALDO DE ABERTURA das contas (o deduzido da referência, abaixo, e a
+//     conta "Opening Balance Equity" do plano, que a importação do QuickBooks
+//     traz) — é o que o contador faz no QuickBooks ao zerar o OBE;
+//   · as TRANSFERÊNCIAS SEM PAR até a data: transferência ou pagamento de
+//     cartão com uma ponta só (a outra caiu depois da data, ou está numa conta
+//     ou num período que não está no sistema). Aqui o caixa vem do banco, e no
+//     QuickBooks a transferência é UM lançamento com as duas pontas: lá isso
+//     não existe.
+// Apagar as duas linhas sem levar o valor a lugar nenhum deixaria o ativo
+// diferente do passivo + patrimônio. A composição vai em `composicaoDosLucros`
+// e aparece nas notas da equipe — saldo de abertura alto ou transferência sem
+// par grande é sinal de histórico faltando ou de conta cadastrada em dobro.
+// A linha que FICA é "Transactions Awaiting Review": o líquido do que está na
+// fila (pending/auto) até a data — o dinheiro passou pelo banco, a
+// classificação ainda não. Some quando a fila é revisada.
+// Com tudo isso o Balanço fecha por construção, ao centavo.
 //
 // SALDO DE ABERTURA. O sistema não tem um "saldo inicial" digitado por conta;
 // ele é deduzido de uma REFERÊNCIA: um saldo conhecido numa data. São três, e
@@ -61,7 +70,7 @@ export const STATUS_FORA: readonly string[] = ['excluded']
 /** Não passam pelo saldo do banco: o lançamento manual e a conta de passagem. */
 export const ORIGENS_FORA_DO_BANCO: readonly string[] = ['manual', ...ORIGENS_DE_PASSAGEM]
 
-/** A conta que o Balanço usa para o saldo de abertura (e a do plano com esse nome se soma a ela). */
+/** A conta do plano com este nome (a importação do QuickBooks a traz) entra no saldo de abertura — que compõe o Retained Earnings. */
 export const CONTA_DE_ABERTURA = 'Opening Balance Equity'
 export const CONTA_DE_LUCROS_ACUMULADOS = 'Retained Earnings'
 
@@ -268,17 +277,27 @@ export interface Balanco {
   bancos: LinhaDeValor[]
   /** Ativo: lançamentos sem conta bancária (o caixa deles não tem onde ficar). */
   semConta: { quantidade: number; valor: number }
-  /** Ativo: transferência / pagamento de cartão com uma ponta só até a data. */
-  emTransito: number
   /** Ativo: contas de ativo do plano. */
   outrosAtivos: LinhaDeValor[]
   /** Passivo: cartões, dívida positiva. */
   cartoes: LinhaDeValor[]
   /** Passivo: contas de passivo do plano. */
   outrosPassivos: LinhaDeValor[]
-  /** Patrimônio: Opening Balance Equity primeiro, depois as contas do plano em ordem alfabética. */
+  /** Patrimônio: as contas do plano (retirada, aporte), em ordem alfabética — sem a de abertura nem a de lucros acumulados. */
   patrimonio: LinhaDeValor[]
+  /** Retained Earnings como sai no Balanço: a soma das quatro partes de `composicaoDosLucros`. */
   lucrosAcumulados: number
+  /** De onde vem o Retained Earnings — para as notas da equipe. */
+  composicaoDosLucros: {
+    /** P&L aprovado antes de 1º de janeiro do ano da data. */
+    resultadoAnterior: number
+    /** Lançamentos na conta "Retained Earnings" do plano. */
+    contaDoPlano: number
+    /** Saldo de abertura das contas (deduzido da referência) + a conta "Opening Balance Equity" do plano. */
+    saldoDeAbertura: number
+    /** Transferências e pagamentos de cartão com uma ponta só até a data (líquido). */
+    transferenciasSemPar: number
+  }
   aguardandoRevisao: { quantidade: number; valor: number }
   resultadoDoExercicio: number
   totais: { ativo: number; passivo: number; patrimonio: number; passivoEPatrimonio: number }
@@ -364,35 +383,39 @@ export function montarBalanco(e: {
     else somar(patrimonio, conta, a)
   }
 
-  // ── Patrimônio: a abertura se soma ao Opening Balance Equity do plano ──
+  // ── Patrimônio ──────────────────────────────────────────────────────────
+  // O saldo de abertura e as transferências sem par compõem o Retained
+  // Earnings (decisão do sócio — ver o cabeçalho). A conta "Opening Balance
+  // Equity" e a "Retained Earnings" do plano saem da lista e entram nele.
   const aberturaDeContas = contas.reduce((s, c) => s + c.abertura, 0)
-  let chaveDaAbertura = CONTA_DE_ABERTURA
-  let lucrosDoPlano = 0
+  let aberturaDoPlano = 0, lucrosDoPlano = 0
   patrimonio.forEach((v, k) => {
-    if (k.trim().toLowerCase() === CONTA_DE_ABERTURA.toLowerCase()) chaveDaAbertura = k
-    if (k.trim().toLowerCase() === CONTA_DE_LUCROS_ACUMULADOS.toLowerCase()) { lucrosDoPlano += v; patrimonio.delete(k) }
+    const nome = k.trim().toLowerCase()
+    if (nome === CONTA_DE_ABERTURA.toLowerCase()) { aberturaDoPlano += v; patrimonio.delete(k) }
+    else if (nome === CONTA_DE_LUCROS_ACUMULADOS.toLowerCase()) { lucrosDoPlano += v; patrimonio.delete(k) }
   })
-  somar(patrimonio, chaveDaAbertura, aberturaDeContas)
+  const composicaoDosLucros = {
+    resultadoAnterior: lucros,
+    contaDoPlano: lucrosDoPlano,
+    saldoDeAbertura: aberturaDeContas + aberturaDoPlano,
+    transferenciasSemPar: movimento,
+  }
+  const lucrosAcumulados = composicaoDosLucros.resultadoAnterior + composicaoDosLucros.contaDoPlano
+    + composicaoDosLucros.saldoDeAbertura + composicaoDosLucros.transferenciasSemPar
   const contasDePatrimonio = naoZeradas(patrimonio)
-  const aberturaPrimeiro = [
-    ...contasDePatrimonio.filter(l => l.conta === chaveDaAbertura),
-    ...contasDePatrimonio.filter(l => l.conta !== chaveDaAbertura),
-  ]
-  const lucrosAcumulados = lucros + lucrosDoPlano
 
   const bancos = contas.filter(c => !c.cartao && c.saldo !== 0).map(c => ({ conta: c.nome, valor: c.saldo })).sort((a, b) => ordem(a.conta, b.conta))
   const cartoes = contas.filter(c => c.cartao && c.saldo !== 0).map(c => ({ conta: c.nome, valor: -c.saldo })).sort((a, b) => ordem(a.conta, b.conta))
   const outrosAtivos = naoZeradas(ativos), outrosPassivos = naoZeradas(passivos)
-  const emTransito = -movimento
 
-  const ativo = soma(bancos) + semContaValor + emTransito + soma(outrosAtivos)
+  const ativo = soma(bancos) + semContaValor + soma(outrosAtivos)
   const passivo = soma(cartoes) + soma(outrosPassivos)
-  const pl = soma(aberturaPrimeiro) + lucrosAcumulados + aguardando + resultado
+  const pl = soma(contasDePatrimonio) + lucrosAcumulados + aguardando + resultado
   return {
     corte, inicioDoExercicio: inicio, contas,
-    bancos, semConta: { quantidade: semContaQtd, valor: semContaValor }, emTransito, outrosAtivos,
+    bancos, semConta: { quantidade: semContaQtd, valor: semContaValor }, outrosAtivos,
     cartoes, outrosPassivos,
-    patrimonio: aberturaPrimeiro, lucrosAcumulados,
+    patrimonio: contasDePatrimonio, lucrosAcumulados, composicaoDosLucros,
     aguardandoRevisao: { quantidade: aguardandoQtd, valor: aguardando }, resultadoDoExercicio: resultado,
     totais: { ativo, passivo, patrimonio: pl, passivoEPatrimonio: passivo + pl },
     fecha: ativo === passivo + pl,
